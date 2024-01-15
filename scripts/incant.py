@@ -11,7 +11,8 @@ from modules.prompt_parser import reconstruct_multicond_batch
 from modules.processing import StableDiffusionProcessing, decode_latent_batch
 #from modules.shared import sd_model, opts
 from modules.sd_samplers_cfg_denoiser import pad_cond
-from modules import shared, devices
+from modules import shared, devices, errors
+from modules.interrogate import InterrogateModels
 
 import torch
 
@@ -41,6 +42,15 @@ class IncantStateParams:
         def __init__(self):
                 self.coarse = 10
                 self.fine = 30
+                self.prompt = ''
+                self.prompts = []
+                self.prompt_tokens = []
+                self.img_coarse = []
+                self.img_fine = []
+                self.emb_img_coarse = []
+                self.emb_img_fine = []
+                self.emb_txt_coarse = []
+                self.emb_txt_fine = []
 
 class IncantExtensionScript(scripts.Script):
         def __init__(self):
@@ -121,8 +131,12 @@ class IncantExtensionScript(scripts.Script):
                 return [x.strip() for x in prompt.split(",")]
 
         def create_hook(self, p, active, quality, coarse, fine, *args, **kwargs):
+                import clip
                 # Create a list of parameters for each concept
                 incant_params = IncantStateParams()
+                incant_params.prompt = p.prompt
+                incant_params.prompts = [pr for pr in p.prompts]
+                #incant_params.prompt_tokens = clip.tokenize(list(p.prompt), truncate=True).to(devices.device_interrogate)
                 incant_params.coarse = coarse
                 incant_params.fine = fine 
 
@@ -152,23 +166,95 @@ class IncantExtensionScript(scripts.Script):
                 script_callbacks.remove_current_script_callbacks()
 
         def on_cfg_denoised_callback(self, params: CFGDenoisedParams, incant_params: IncantStateParams):
+                import clip
+
                 coarse = incant_params.coarse
                 fine= incant_params.coarse
                 x = params.x
                 step = params.sampling_step
                 max_step = params.total_sampling_steps
-                batch_images = []
+
+                # save the coarse images
                 if step == coarse:
-                        # decode the latent
-                        x_samples_ddim = decode_latent_batch(shared.sd_model, x, target_device=devices.cpu, check_for_nans=True)
-                        x_samples_ddim = torch.stack(x_samples_ddim).float()
-                        x_samples_ddim = torch.clamp((x_samples_ddim + 1.0) / 2.0, min=0.0, max=1.0)
-                        for i, x_sample in enumerate(x_samples_ddim):
-                                x_sample = 255. * np.moveaxis(x_sample.cpu().numpy(), 0, 2)
-                                x_sample = x_sample.astype(np.uint8)
-                                image = Image.fromarray(x_sample)
-                                batch_images.append(image)
-                                #image.show()
+                        # decode the coarse latents
+                        coarse_images = self.decode_images(x)
+                        incant_params.img_coarse = coarse_images
+                        devices.torch_gc()
+
+                elif step == fine:
+                        # decode fine images
+                        fine_images = self.decode_images(x)
+                        incant_params.img_fine = fine_images 
+                        devices.torch_gc()
+                        
+                        # init interrogator
+                        interrogator = shared.interrogator
+                        interrogator.load()
+
+                        # calculate text/image embeddings
+
+                        text_array = incant_params.prompt.split()
+
+                        shared.state.begin(job="interrogate")
+                        # coarse features
+                        for i, pil_image in enumerate(incant_params.img_coarse):
+                                caption = interrogator.generate_caption(pil_image)
+
+                                devices.torch_gc()
+                                res = caption
+                                clip_image = interrogator.clip_preprocess(pil_image).unsqueeze(0).type(interrogator.dtype).to(devices.device_interrogate)
+
+                                with torch.no_grad(), devices.autocast():
+                                        # calculate image embeddings
+                                        image_features = interrogator.clip_model.encode_image(clip_image).type(interrogator.dtype)
+                                        image_features /= image_features.norm(dim=-1, keepdim=True)
+                                        incant_params.emb_img_coarse.append(image_features)
+
+                                        # calculate text embeddings
+                                        matches = interrogator.rank(image_features, text_array, top_count=len(text_array))
+                                        incant_params.emb_img_coarse.append(matches)
+                                        print(f"{i}-coarse: {matches}")
+
+                        # fine features
+                        for i, pil_image in enumerate(incant_params.img_fine):
+                                caption = interrogator.generate_caption(pil_image)
+
+                                devices.torch_gc()
+                                res = caption
+                                clip_image = interrogator.clip_preprocess(pil_image).unsqueeze(0).type(interrogator.dtype).to(devices.device_interrogate)
+
+                                with torch.no_grad(), devices.autocast():
+                                        # calculate image embeddings
+                                        image_features = interrogator.clip_model.encode_image(clip_image).type(interrogator.dtype)
+                                        image_features /= image_features.norm(dim=-1, keepdim=True)
+                                        incant_params.emb_img_fine.append(image_features)
+
+                                        # calculate text embeddings
+                                        matches = interrogator.rank(image_features, text_array, top_count=len(text_array))
+                                        incant_params.emb_img_fine.append(matches)
+                                        print(f"{i}-fine:{matches}")
+
+
+                        interrogator.unload()
+                        shared.state.end()
+                else:
+                        pass
+
+
+                        return res
+
+        def decode_images(self, x):
+            batch_images = []
+            x_samples_ddim = decode_latent_batch(shared.sd_model, x, target_device=devices.cpu, check_for_nans=True)
+            x_samples_ddim = torch.stack(x_samples_ddim).float()
+            x_samples_ddim = torch.clamp((x_samples_ddim + 1.0) / 2.0, min=0.0, max=1.0)
+            for i, x_sample in enumerate(x_samples_ddim):
+                    x_sample = 255. * np.moveaxis(x_sample.cpu().numpy(), 0, 2)
+                    x_sample = x_sample.astype(np.uint8)
+                    image = Image.fromarray(x_sample)
+                    batch_images.append(image)
+            return batch_images
+
 
                 #decoded_samples = torch.from_numpy(np.array(batch_images))
                 #decoded_samples = decoded_samples.to(shared.device, dtype=devices.dtype_vae)
