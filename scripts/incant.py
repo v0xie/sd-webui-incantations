@@ -58,7 +58,7 @@ class IncantStateParams:
                 self.emb_txt_fine = []
                 self.matches_coarse = []
                 self.matches_fine = []
-                self.masked_prompt = None
+                self.masked_prompt = []
                 self.get_conds_with_caching = None
                 self.steps = None
                 self.iteration = None
@@ -90,7 +90,7 @@ class IncantExtensionScript(scripts.Script):
                         quality = gr.Checkbox(value=True, default=True, label="Quality Guidance", elem_id='incant_quality')
                         with gr.Row():
                                 coarse_step = gr.Slider(value = 10, minimum = 0, maximum = 100, step = 1, label="Coarse Step", elem_id = 'incant_coarse')
-                                fine_step = gr.Slider(value = 30, minimum = 0, maximum = 100, step = 1, label="Fine Step", elem_id = 'incant_fine')
+                                fine_step = gr.Slider(value = 20, minimum = 0, maximum = 100, step = 1, label="Fine Step", elem_id = 'incant_fine')
                                 gamma = gr.Slider(value = 0.25, minimum = 0, maximum = 1.0, step = 0.01, label="Gamma", elem_id = 'incant_gamma')
                 active.do_not_save_to_config = True
                 quality.do_not_save_to_config = True
@@ -137,20 +137,20 @@ class IncantExtensionScript(scripts.Script):
                         ]
 
                         for param_name in param_list:
-                                run_fn_on_attr(p, param_name, duplicate_alternate_elements)
+                                run_fn_on_attr(p, param_name, duplicate_alternate_elements, p.batch_size)
 
                 # assign
                         for n in range(1, p.n_iter, 2):
                                 start_idx = n * p.batch_size
                                 end_idx = (n + 1) * p.batch_size
                                 p.all_prompts[start_idx:end_idx] = [prompt + ' BREAK <<REPLACEME>>' for prompt in p.all_prompts[start_idx:end_idx]]
-                elif p.iteration % 2 == 1:
-                        n = p.iteration
-                        start_idx = n * p.batch_size
-                        end_idx = (n + 1) * p.batch_size
-                        p.all_prompts[start_idx:end_idx] = [prompt.replace('<<REPLACEME>>', self.stage_1.masked_prompt) for prompt in p.all_prompts[start_idx:end_idx]]
-                        kwargs['prompts'] = [x.replace('<<REPLACEME>>', self.stage_1.masked_prompt) for x in kwargs['prompts']]
-
+                # elif p.iteration % 2 == 1:
+                #         n = p.iteration
+                #         start_idx = n * p.batch_size
+                #         end_idx = (n + 1) * p.batch_size
+                #         p.all_prompts[start_idx:end_idx] = [prompt.replace('<<REPLACEME>>', self.stage_1.masked_prompt) for prompt in p.all_prompts[start_idx:end_idx]]
+                #         kwargs['prompts'] = [x.replace('<<REPLACEME>>', self.stage_1.masked_prompt) for x in kwargs['prompts']]
+        
 
         # def before_process_batch(self, p: StableDiffusionProcessing, active, quality, coarse, fine, gamma, *args, **kwargs):
         #         active = getattr(p, "incant_active", active)
@@ -228,8 +228,10 @@ class IncantExtensionScript(scripts.Script):
                         n = p.iteration
                         start_idx = n * p.batch_size
                         end_idx = (n + 1) * p.batch_size
-                        p.all_prompts[start_idx:end_idx] = [prompt.replace('<<REPLACEME>>', self.stage_1.masked_prompt) for prompt in p.all_prompts[start_idx:end_idx]]
-                        kwargs['prompts'] = [x.replace('<<REPLACEME>>', self.stage_1.masked_prompt) for x in kwargs['prompts']]
+                        for idx in range(start_idx, end_idx):
+                                mask_idx = idx - start_idx
+                                p.all_prompts[idx] = p.all_prompts[idx].replace('<<REPLACEME>>', self.stage_1.masked_prompt[mask_idx])
+                                kwargs['prompts'][mask_idx] = kwargs['prompts'][mask_idx].replace('<<REPLACEME>>', self.stage_1.masked_prompt[mask_idx])
 
                 # p.steps += fine_step
                 p.extra_generation_params = {
@@ -249,10 +251,10 @@ class IncantExtensionScript(scripts.Script):
                 gamma = getattr(p, 'incant_gamma', None)
 
                 # if is second stage
-                if p.iteration % 2 == 1:
-                        if self.stage_1 is None:
-                                print('\nerror: stage_1 is None')
-                        kwargs['prompts'] = [self.stage_1.masked_prompt for x in kwargs['prompts']]
+                # if p.iteration % 2 == 1:
+                #         if self.stage_1 is None:
+                #                 print('\nerror: stage_1 is None')
+                #         kwargs['prompts'] = [self.stage_1.masked_prompt for x in kwargs['prompts']]
 
         def parse_concept_prompt(self, prompt:str) -> list[str]:
                 """
@@ -280,6 +282,9 @@ class IncantExtensionScript(scripts.Script):
                 #incant_params.prompt_tokens = clip.tokenize(list(p.prompt), truncate=True).to(devices.device_interrogate)
                 incant_params.coarse = coarse
                 incant_params.fine = fine 
+                if fine > p.steps:
+                        print(f"Fine step {fine} is greater than total steps {p.steps}, setting to {p.steps}")
+                        fine = p.steps
                 incant_params.gamma = gamma
                 incant_params.iteration = p.iteration
                 incant_params.get_conds_with_caching = p.get_conds_with_caching
@@ -301,13 +306,13 @@ class IncantExtensionScript(scripts.Script):
 
                 # Use lambda to call the callback function with the parameters to avoid global variables
                 y = lambda params: self.on_cfg_denoiser_callback(params, incant_params)
-                y2 = lambda params: self.on_cfg_denoised_callback(params, incant_params)
-                y3 = lambda params: self.cfg_after_cfg_callback(params, incant_params)
+                y2 = lambda params: self.cfg_after_cfg_callback(params, incant_params)
+                #y3 = lambda params: self.cfg_after_cfg_callback(params, incant_params)
 
                 logger.debug('Hooked callbacks')
                 script_callbacks.on_cfg_denoiser(y)
-                script_callbacks.on_cfg_denoised(y2)
-                script_callbacks.cfg_after_cfg_callback(y3)
+                #script_callbacks.on_cfg_denoised(y2)
+                script_callbacks.on_cfg_after_cfg(y2)
                 script_callbacks.on_script_unloaded(self.unhook_callbacks)
         
         def calc_masked_prompt(self, incant_params: IncantStateParams, first_stage_cache):
@@ -325,11 +330,6 @@ class IncantExtensionScript(scripts.Script):
                 # mask prompt
                 pass
         
-        def cfg_after_cfg_callback(self, params: AfterCFGCallbackParams, incant_params):
-                #active = getattr(params, "incant_active", active)
-                pass
-
-
         def postprocess_batch(self, p, active, quality, coarse, fine, gamma, *args, **kwargs):
                 active = getattr(p, "incant_active", active)
                 if active is False:
@@ -435,7 +435,9 @@ class IncantExtensionScript(scripts.Script):
                 regex = r"\b{0}\b"
                 masked_prompt = prompt
                 for word, pct in word_list: 
-                        if pct < gamma:
+                        # FIXME: mask words that are less than gamma
+                        #if pct < gamma:
+                        if pct > gamma:
                                 repl_regex = regex.format(word)
                                         # replace word with -
                                 masked_prompt = re.sub(repl_regex, "-", masked_prompt)
@@ -447,15 +449,15 @@ class IncantExtensionScript(scripts.Script):
                 # else:
                 #         raise NotImplementedError("Only SD1.5 are supported for now")
 
-        def on_cfg_denoised_callback(self, params: CFGDenoisedParams, incant_params: IncantStateParams):
+        def cfg_after_cfg_callback(self, params: AfterCFGCallbackParams, incant_params: IncantStateParams):
                 import clip
                 p = incant_params.p
                 coarse = incant_params.coarse
                 fine = incant_params.fine
+                second_stage = incant_params.second_stage
                 x = params.x
                 step = params.sampling_step
                 max_step = params.total_sampling_steps
-                second_stage = incant_params.second_stage
 
                 # save the coarse images
                 if step == coarse and not second_stage:
@@ -474,7 +476,9 @@ class IncantExtensionScript(scripts.Script):
                         # compute embedding stuff
                         self.interrogate_images(incant_params, p)
                         devices.torch_gc()
-                        incant_params.masked_prompt = self.mask_prompt(incant_params.gamma*100.0, incant_params.matches_fine[0], p.prompt)
+                        # compute masked_prompts
+                        for i, matches in enumerate(incant_params.matches_fine):
+                                incant_params.masked_prompt.append(self.mask_prompt(incant_params.gamma*100.0, matches, p.prompt))
                         
                 else:
                         pass
@@ -547,23 +551,24 @@ class IncantExtensionScript(scripts.Script):
                 devices.torch_gc()
 
         def decode_images(self, x):
-            batch_images = []
-            x_samples_ddim = decode_latent_batch(shared.sd_model, x, target_device=devices.cpu, check_for_nans=True)
-            x_samples_ddim = torch.stack(x_samples_ddim).float()
-            x_samples_ddim = torch.clamp((x_samples_ddim + 1.0) / 2.0, min=0.0, max=1.0)
-            for i, x_sample in enumerate(x_samples_ddim):
-                    x_sample = 255. * np.moveaxis(x_sample.cpu().numpy(), 0, 2)
-                    x_sample = x_sample.astype(np.uint8)
-                    image = Image.fromarray(x_sample)
-                    batch_images.append(image)
-            return batch_images
+                batch_images = []
+                already_decoded = False
+                x_samples_ddim = decode_latent_batch(shared.sd_model, x, target_device=devices.cpu, check_for_nans=True)
+                for i, x_sample in enumerate(x_samples_ddim):
+                        x_sample = x_sample.to(torch.float32)
+                        x_sample = torch.clamp((x_sample + 1.0) / 2.0, min=0.0, max=1.0)
+                        x_sample = 255. * np.moveaxis(x_sample.cpu().numpy(), 0, 2)
+                        x_sample = x_sample.astype(np.uint8)
+                        image = Image.fromarray(x_sample)
+                        batch_images.append(image)
+                return batch_images
 
 
-def run_fn_on_attr(p, attr_name, fn):
+def run_fn_on_attr(p, attr_name, fn, *args):
         """ Run a function on an attribute of a class if it exists """
         try:
                 attr = getattr(p, attr_name)
-                setattr(p, attr_name, fn(attr))
+                setattr(p, attr_name, fn(attr, *args))
         except AttributeError:
                 # No attribute exists
                 return
@@ -571,14 +576,20 @@ def run_fn_on_attr(p, attr_name, fn):
                 # If the attribute is not iterable, return
                 return
 
-def duplicate_alternate_elements(input_list: list) -> list:
+def duplicate_alternate_elements(input_list: list, batch_size = 1) -> list:
         """ Duplicate each element in a list and return a new list
-        >>> duplicate_list([1,2,3,4])
+        >>> duplicate_list([1, 2, 3, 4], 1)
         [1, 1, 3, 3]
+        >>> duplicate_list([1, 2, 3, 4], 2)
+        [1, 2, 1, 2]
+        >>> duplicate_list([1, 2, 3, 4, 5, 6, 7, 8], 4)
+        [1, 2, 3, 4, 1, 2, 3, 4]
         """
-        result = input_list
-        for idx in range(0, len(result), 2):
-                result[idx+1] = result[idx]
+        result = []
+        for i in range(0, len(input_list), batch_size*2):
+                batch = input_list[i:i + batch_size]
+                result.extend(batch)
+                result.extend(batch)
         return result
 
 def duplicate_list(input_list: list) -> list:
