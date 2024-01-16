@@ -57,15 +57,18 @@ class IncantStateParams:
                 self.matches_fine = []
                 self.get_conds_with_caching = None
                 self.steps = None
+                self.iteration = None
                 self.batch_size = 1
                 self.p = None
                 self.init_noise = None
+                self.first_stage_cache = None
                 self.second_stage = False
                 self.denoiser = None
                 self.job = None
 
 class IncantExtensionScript(scripts.Script):
         def __init__(self):
+                self.stage_1 = [[]]
                 self.cached_c = [[None, None],[None, None]]
 
         # Extension title in menu UI
@@ -82,7 +85,7 @@ class IncantExtensionScript(scripts.Script):
         # Setup menu ui detail
         def ui(self, is_img2img):
                 with gr.Accordion('Incantations', open=False):
-                        active = gr.Checkbox(value=False, default=False, label="Active", elem_id='incant_active')
+                        active = gr.Checkbox(value=True, default=True, label="Active", elem_id='incant_active')
                         quality = gr.Checkbox(value=True, default=True, label="Quality Guidance", elem_id='incant_quality')
                         with gr.Row():
                                 coarse_step = gr.Slider(value = 10, minimum = 0, maximum = 100, step = 1, label="Coarse Step", elem_id = 'incant_coarse')
@@ -141,9 +144,9 @@ class IncantExtensionScript(scripts.Script):
                 coarse_step = getattr(p, "incant_coarse", coarse_step)
                 fine_step = getattr(p, "incant_fine", fine_step)
                 gamma = getattr(p, "incant_gamma", gamma)
-                if fine_step > p.steps:
-                        print(f"Fine step {fine_step} is greater than total steps {p.steps}, setting to {p.steps}")
-                        fine_step = p.steps
+                # if fine_step > p.steps:
+                #         print(f"Fine step {fine_step} is greater than total steps {p.steps}, setting to {p.steps}")
+                #         fine_step = p.steps
 
                 # Every even step will be when we use the previously calculated results
                 # p.n_iter = p.n_iter * 2
@@ -203,11 +206,20 @@ class IncantExtensionScript(scripts.Script):
                 incant_params.coarse = coarse
                 incant_params.fine = fine 
                 incant_params.gamma = gamma
+                incant_params.iteration = p.iteration
                 incant_params.get_conds_with_caching = p.get_conds_with_caching
                 incant_params.steps = p.steps
                 incant_params.batch_size = p.batch_size
                 incant_params.job = shared.state.job
+                #incant_params.first_stage_cache = self.stage_1[0]
+                incant_params.second_stage = (p.iteration % 2) == 1
                 tqdm = shared.total_tqdm
+
+                if p.iteration % 2 == 0:
+                        self.stage_1 = incant_params
+                else:
+                        # assign old cache to next iteration
+                        incant_params.first_stage_cache = self.stage_1
 
                 # Use lambda to call the callback function with the parameters to avoid global variables
                 y = lambda params: self.on_cfg_denoiser_callback(params, incant_params)
@@ -235,25 +247,32 @@ class IncantExtensionScript(scripts.Script):
                 logger.debug('Unhooked callbacks')
                 interrogator = shared.interrogator
                 interrogator.unload()
+                if self.stage_1 is not None:
+                        del self.stage_1
+                        self.stage_1 = None
                 script_callbacks.remove_current_script_callbacks()
 
         def on_cfg_denoised_callback(self, params: CFGDenoisedParams, incant_params: IncantStateParams):
                 import clip
                 p = incant_params.p
                 coarse = incant_params.coarse
-                fine= incant_params.fine
+                fine = incant_params.fine
                 x = params.x
                 step = params.sampling_step
                 max_step = params.total_sampling_steps
+                second_stage = incant_params.second_stage
 
                 # save the coarse images
-                if step == coarse and not incant_params.second_stage:
+                if step == coarse and not second_stage:
+                        print(f"Coarse step: {step}")
                         # decode the coarse latents
                         coarse_images = self.decode_images(x)
                         incant_params.img_coarse = coarse_images
                         devices.torch_gc()
 
-                elif step == fine and not incant_params.second_stage:
+                # FIXME: why is the max value of step 2 less than the total steps???
+                elif step == fine - 2 and not second_stage:
+                        print(f"Fine step: {step}")
                         # decode fine images
                         fine_images = self.decode_images(x)
                         incant_params.img_fine = fine_images 
@@ -317,20 +336,6 @@ class IncantExtensionScript(scripts.Script):
                                         matches = interrogator.rank(image_features, text_array, top_count=len(text_array))
                                         incant_params.matches_fine.append(matches)
                                         print(f"{i}-caption:{caption}\n{i}-fine:{matches}")
-                        #interrogator.unload()
-                        #shared.state.end()
-
-                        # reset the sampling process
-
-                        # print("Resetting sampling process for second stage")
-                        # incant_params.second_stage = True
-                        # incant_params.p.rng.is_first = True
-                        # incant_params.p.step = 0
-                        # incant_params.denoiser.step = 0
-                        # params.x = incant_params.init_noise
-                        # shared.state.sampling_step = 0
-                        # shared.state.current_image_sampling_step = 0
-                        # shared.state.current_latent = incant_params.init_noise
                 else:
                         pass
 
