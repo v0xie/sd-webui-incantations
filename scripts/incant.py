@@ -148,6 +148,8 @@ class IncantExtensionScript(scripts.Script):
                 #         print(f"Fine step {fine_step} is greater than total steps {p.steps}, setting to {p.steps}")
                 #         fine_step = p.steps
 
+                interrogator = shared.interrogator
+                interrogator.load()
                 # Every even step will be when we use the previously calculated results
                 # p.n_iter = p.n_iter * 2
                 print(f"n_iter: {p.n_iter}")
@@ -264,7 +266,7 @@ class IncantExtensionScript(scripts.Script):
 
                 # save the coarse images
                 if step == coarse and not second_stage:
-                        print(f"Coarse step: {step}")
+                        print(f"\nCoarse step: {step}\n")
                         # decode the coarse latents
                         coarse_images = self.decode_images(x)
                         incant_params.img_coarse = coarse_images
@@ -272,7 +274,7 @@ class IncantExtensionScript(scripts.Script):
 
                 # FIXME: why is the max value of step 2 less than the total steps???
                 elif step == fine - 2 and not second_stage:
-                        print(f"Fine step: {step}")
+                        print(f"\nFine step: {step}\n")
                         # decode fine images
                         fine_images = self.decode_images(x)
                         incant_params.img_fine = fine_images 
