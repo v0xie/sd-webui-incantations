@@ -8,7 +8,7 @@ import numpy as np
 from modules import script_callbacks, prompt_parser
 from modules.script_callbacks import CFGDenoiserParams, CFGDenoisedParams, AfterCFGCallbackParams
 from modules.prompt_parser import reconstruct_multicond_batch
-from modules.processing import StableDiffusionProcessing, decode_latent_batch
+from modules.processing import StableDiffusionProcessing, decode_latent_batch, txt2img_image_conditioning
 #from modules.shared import sd_model, opts
 from modules.sd_samplers_cfg_denoiser import pad_cond
 from modules import shared, devices, errors
@@ -42,6 +42,7 @@ class IncantStateParams:
         def __init__(self):
                 self.coarse = 10
                 self.fine = 30
+                self.gamma = 0.1
                 self.prompt = ''
                 self.prompts = []
                 self.prompt_tokens = []
@@ -51,10 +52,16 @@ class IncantStateParams:
                 self.emb_img_fine = []
                 self.emb_txt_coarse = []
                 self.emb_txt_fine = []
+                self.matches_coarse = []
+                self.matches_fine = []
+                self.get_conds_with_caching = None
+                self.steps = None
+                self.batch_size = 1
+                self.p = None
 
 class IncantExtensionScript(scripts.Script):
         def __init__(self):
-                self.cached_c = [None, None]
+                self.cached_c = [[None, None],[None, None]]
 
         # Extension title in menu UI
         def title(self):
@@ -72,6 +79,7 @@ class IncantExtensionScript(scripts.Script):
                         with gr.Row():
                                 coarse_step = gr.Slider(value = 10, minimum = 0, maximum = 100, step = 1, label="Coarse Step", elem_id = 'incant_coarse')
                                 fine_step = gr.Slider(value = 30, minimum = 0, maximum = 100, step = 1, label="Fine Step", elem_id = 'incant_fine')
+                                gamma = gr.Slider(value = 0.1, minimum = 0, maximum = 1.0, step = 0.01, label="Gamma", elem_id = 'incant_gamma')
                         # with gr.Row():
                         #         warmup = gr.Slider(value = 10, minimum = 0, maximum = 30, step = 1, label="Warmup Period", elem_id = 'incant_warmup', info="How many steps to wait before applying semantic guidance, default 10")
                         #         edit_guidance_scale = gr.Slider(value = 1.0, minimum = 0.0, maximum = 20.0, step = 0.01, label="Edit Guidance Scale", elem_id = 'incant_edit_guidance_scale', info="Scale of edit guidance, default 1.0")
@@ -82,6 +90,7 @@ class IncantExtensionScript(scripts.Script):
                 quality.do_not_save_to_config = True
                 coarse_step.do_not_save_to_config = True
                 fine_step.do_not_save_to_config = True
+                gamma.do_not_save_to_config = True
                 # self.infotext_fields = [
                 #         (active, lambda d: gr.Checkbox.update(value='INCANT Active' in d)),
                 #         (coarse_step, 'INCANT Prompt'),
@@ -93,26 +102,29 @@ class IncantExtensionScript(scripts.Script):
                 #         'incant_coarse',
                 #         'incant_fine',
                 # ]
-                return [active, quality, coarse_step, fine_step]
+                return [active, quality, coarse_step, fine_step, gamma]
 
-        def process_batch(self, p: StableDiffusionProcessing, active, quality, coarse_step, fine_step, *args, **kwargs):
+        def process_batch(self, p: StableDiffusionProcessing, active, quality, coarse_step, fine_step, gamma, *args, **kwargs):
                 active = getattr(p, "incant_active", active)
                 if active is False:
                         return
                 quality = getattr(p, "incant_quality", quality)
                 coarse_step = getattr(p, "incant_coarse", coarse_step)
                 fine_step = getattr(p, "incant_fine", fine_step)
-
-                sd_model = shared.sd_model
+                gamma = getattr(p, "incant_gamma", gamma)
+                if fine_step > p.steps:
+                        print(f"Fine step {fine_step} is greater than total steps {p.steps}, setting to {p.steps}")
+                        fine_step = p.steps
 
                 p.extra_generation_params = {
                         "INCANT Active": active,
                         "INCANT Quality": quality,
                         "INCANT Coarse": coarse_step,
                         "INCANT Fine": fine_step,
+                        "INCANT Gamma": gamma,
                 }
 
-                self.create_hook(p, active, quality, coarse_step, fine_step, *args, **kwargs)
+                self.create_hook(p, active, quality, coarse_step, fine_step, gamma, *args, **kwargs)
 
         def parse_concept_prompt(self, prompt:str) -> list[str]:
                 """
@@ -130,15 +142,20 @@ class IncantExtensionScript(scripts.Script):
                         return []
                 return [x.strip() for x in prompt.split(",")]
 
-        def create_hook(self, p, active, quality, coarse, fine, *args, **kwargs):
+        def create_hook(self, p, active, quality, coarse, fine, gamma, *args, **kwargs):
                 import clip
                 # Create a list of parameters for each concept
                 incant_params = IncantStateParams()
+                incant_params.p = p
                 incant_params.prompt = p.prompt
                 incant_params.prompts = [pr for pr in p.prompts]
                 #incant_params.prompt_tokens = clip.tokenize(list(p.prompt), truncate=True).to(devices.device_interrogate)
                 incant_params.coarse = coarse
                 incant_params.fine = fine 
+                incant_params.gamma = gamma
+                incant_params.get_conds_with_caching = p.get_conds_with_caching
+                incant_params.steps = p.steps
+                incant_params.batch_size = p.batch_size
 
                 # Use lambda to call the callback function with the parameters to avoid global variables
                 y = lambda params: self.on_cfg_denoiser_callback(params, incant_params)
@@ -155,7 +172,7 @@ class IncantExtensionScript(scripts.Script):
                 active = getattr(p, "incant_active", active)
                 pass
 
-        def postprocess_batch(self, p, active, quality, coarse, fine, *args, **kwargs):
+        def postprocess_batch(self, p, active, quality, coarse, fine, gamma, *args, **kwargs):
                 active = getattr(p, "incant_active", active)
                 if active is False:
                         return
@@ -167,9 +184,9 @@ class IncantExtensionScript(scripts.Script):
 
         def on_cfg_denoised_callback(self, params: CFGDenoisedParams, incant_params: IncantStateParams):
                 import clip
-
+                p = incant_params.p
                 coarse = incant_params.coarse
-                fine= incant_params.coarse
+                fine= incant_params.fine
                 x = params.x
                 step = params.sampling_step
                 max_step = params.total_sampling_steps
@@ -211,9 +228,15 @@ class IncantExtensionScript(scripts.Script):
                                         incant_params.emb_img_coarse.append(image_features)
 
                                         # calculate text embeddings
+                                        prompt_list = [caption] * p.batch_size
+                                        prompts = prompt_parser.SdConditioning(prompt_list, width=p.width, height=p.height)
+                                        c = incant_params.get_conds_with_caching(prompt_parser.get_multicond_learned_conditioning, prompts, p.steps, self.cached_c, p.extra_network_data)
+                                        incant_params.emb_txt_coarse.append(c)
+
+                                        # calculate image similarity
                                         matches = interrogator.rank(image_features, text_array, top_count=len(text_array))
-                                        incant_params.emb_img_coarse.append(matches)
-                                        print(f"{i}-coarse: {matches}")
+                                        print(f"{i}-caption:{caption}\n{i}-coarse: {matches}")
+                                        incant_params.matches_coarse.append(matches)
 
                         # fine features
                         for i, pil_image in enumerate(incant_params.img_fine):
@@ -230,18 +253,21 @@ class IncantExtensionScript(scripts.Script):
                                         incant_params.emb_img_fine.append(image_features)
 
                                         # calculate text embeddings
+                                        prompt_list = [caption] * p.batch_size
+                                        prompts = prompt_parser.SdConditioning(prompt_list, width=p.width, height=p.height)
+                                        c = incant_params.get_conds_with_caching(prompt_parser.get_multicond_learned_conditioning, prompts, p.steps, self.cached_c, p.extra_network_data)
+                                        incant_params.emb_txt_fine.append(c)
+
+                                        # calculate image similarity
                                         matches = interrogator.rank(image_features, text_array, top_count=len(text_array))
-                                        incant_params.emb_img_fine.append(matches)
-                                        print(f"{i}-fine:{matches}")
-
-
+                                        incant_params.matches_fine.append(matches)
+                                        print(f"{i}-caption:{caption}\n{i}-fine:{matches}")
                         interrogator.unload()
                         shared.state.end()
+
+
                 else:
                         pass
-
-
-                        return res
 
         def decode_images(self, x):
             batch_images = []
