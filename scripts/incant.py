@@ -20,6 +20,7 @@ logger = logging.getLogger(__name__)
 logger.setLevel(environ.get("SD_WEBUI_LOG_LEVEL", logging.INFO))
 
 """
+!!!Currently non-functional!!!
 
 An unofficial implementation of Seek for Incantations: Towards Accurate Text-to-Image Diffusion Synthesis
 through Prompt Engineering for Automatic1111 WebUI
@@ -78,18 +79,12 @@ class IncantExtensionScript(scripts.Script):
         # Setup menu ui detail
         def ui(self, is_img2img):
                 with gr.Accordion('Incantations', open=False):
-                        active = gr.Checkbox(value=True, default=True, label="Active", elem_id='incant_active')
+                        active = gr.Checkbox(value=False, default=False, label="Active", elem_id='incant_active')
                         quality = gr.Checkbox(value=True, default=True, label="Quality Guidance", elem_id='incant_quality')
                         with gr.Row():
                                 coarse_step = gr.Slider(value = 10, minimum = 0, maximum = 100, step = 1, label="Coarse Step", elem_id = 'incant_coarse')
                                 fine_step = gr.Slider(value = 30, minimum = 0, maximum = 100, step = 1, label="Fine Step", elem_id = 'incant_fine')
                                 gamma = gr.Slider(value = 0.1, minimum = 0, maximum = 1.0, step = 0.01, label="Gamma", elem_id = 'incant_gamma')
-                        # with gr.Row():
-                        #         warmup = gr.Slider(value = 10, minimum = 0, maximum = 30, step = 1, label="Warmup Period", elem_id = 'incant_warmup', info="How many steps to wait before applying semantic guidance, default 10")
-                        #         edit_guidance_scale = gr.Slider(value = 1.0, minimum = 0.0, maximum = 20.0, step = 0.01, label="Edit Guidance Scale", elem_id = 'incant_edit_guidance_scale', info="Scale of edit guidance, default 1.0")
-                        #         tail_percentage_threshold = gr.Slider(value = 0.05, minimum = 0.0, maximum = 1.0, step = 0.01, label="Tail Percentage Threshold", elem_id = 'incant_tail_percentage_threshold', info="The percentage of latents to modify, default 0.05")
-                        #         momentum_scale = gr.Slider(value = 0.3, minimum = 0.0, maximum = 1.0, step = 0.01, label="Momentum Scale", elem_id = 'incant_momentum_scale', info="Scale of momentum, default 0.3")
-                        #         momentum_beta = gr.Slider(value = 0.6, minimum = 0.0, maximum = 0.999, step = 0.01, label="Momentum Beta", elem_id = 'incant_momentum_beta', info="Beta for momentum, default 0.6")
                 active.do_not_save_to_config = True
                 quality.do_not_save_to_config = True
                 coarse_step.do_not_save_to_config = True
@@ -273,6 +268,7 @@ class IncantExtensionScript(scripts.Script):
                         #shared.state.end()
 
                         # reset the sampling process
+
                         print("Resetting sampling process for second stage")
                         incant_params.second_stage = True
                         incant_params.p.rng.is_first = True
@@ -297,10 +293,6 @@ class IncantExtensionScript(scripts.Script):
                     batch_images.append(image)
             return batch_images
 
-
-                #decoded_samples = torch.from_numpy(np.array(batch_images))
-                #decoded_samples = decoded_samples.to(shared.device, dtype=devices.dtype_vae)
-
         def on_cfg_denoiser_callback(self, params: CFGDenoiserParams, incant_params: IncantStateParams):
                 # TODO: add option to opt out of batching for performance
                 sampling_step = params.sampling_step
@@ -312,7 +304,6 @@ class IncantExtensionScript(scripts.Script):
                 if sampling_step == 0 and incant_params.init_noise is None:
                         incant_params.init_noise = params.x.clone().detach()
 
-        
 
 # XYZ Plot
 # Based on @mcmonkey4eva's XYZ Plot implementation here: https://github.com/mcmonkeyprojects/sd-dynamic-thresholding/blob/master/scripts/dynamic_thresholding.py
