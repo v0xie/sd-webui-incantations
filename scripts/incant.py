@@ -56,6 +56,8 @@ class IncantStateParams:
                 self.emb_img_fine = []
                 self.emb_txt_coarse = []
                 self.emb_txt_fine = []
+                self.grad_txt = []
+                self.grad_img = []
                 self.matches_coarse = []
                 self.matches_fine = []
                 self.masked_prompt = []
@@ -70,6 +72,8 @@ class IncantStateParams:
                 self.denoiser = None
                 self.job = None
 
+                self.loss_qual = [] # grad_img * grad txt
+                
 class IncantExtensionScript(scripts.Script):
         def __init__(self):
                 self.stage_1 = [[]]
@@ -302,7 +306,12 @@ class IncantExtensionScript(scripts.Script):
                         incant_params.first_stage_cache = self.stage_1
                         # init interrogator
                         # self.interrogate_images(incant_params, p)
-                        self.calc_quality_guidance(incant_params, self.stage_1)
+                        try:
+                                self.calc_quality_guidance(incant_params)
+                        except Exception as e:
+                                print('\nexception when calculating quality guidance:\n')
+                                print(e)
+
 
                 # Use lambda to call the callback function with the parameters to avoid global variables
                 y = lambda params: self.on_cfg_denoiser_callback(params, incant_params)
@@ -324,11 +333,10 @@ class IncantExtensionScript(scripts.Script):
                 masked_prompt = self.mask_prompt(repl_threshold, word_list, incant_params.p.prompt)
                 return masked_prompt
 
-        def calc_quality_guidance(self, incant_params: IncantStateParams, first_stage_cache):
-
-
-                # mask prompt
-                pass
+        def calc_quality_guidance(self, incant_params: IncantStateParams):
+                incant_params.loss_qual = []
+                for i, (grad_img, grad_txt) in enumerate(zip(incant_params.grad_img, incant_params.grad_txt)):
+                        incant_params.loss_qual.append(grad_img * grad_txt)
         
         def postprocess_batch(self, p, active, quality, coarse, fine, gamma, *args, **kwargs):
                 active = getattr(p, "incant_active", active)
@@ -360,84 +368,30 @@ class IncantExtensionScript(scripts.Script):
                 text_uncond = params.text_uncond
                 gamma = incant_params.gamma * 100.0
 
-                # generic regex to replace whole words that match
-                word_list = fs.matches_fine[0]
-                # compute masked prompt
-                masked_prompt = p.prompt
-                similarities = []
-                mask_prompt = self.mask_prompt(gamma, word_list, masked_prompt)
-                masked_prompt = mask_prompt
-                # print(f'\nmasked prompt: "{masked_prompt}"\n')
-                prompt_list = [masked_prompt] * p.batch_size
-                prompts = prompt_parser.SdConditioning(prompt_list, width=p.width, height=p.height)
-                c = incant_params.get_conds_with_caching(prompt_parser.get_multicond_learned_conditioning, prompts, p.steps, self.cached_c, p.extra_network_data)
-# 
-                # concatenate text_cond with c
-                #text_cond = torch.cat((text_cond, c), dim=1)
+                # compute the guidance
+                for i, (emb_fine, emb_coarse) in enumerate(zip(fs.emb_txt_fine, fs.emb_txt_coarse)):
+                        fine = emb_fine.batch[i][0].schedules[0].cond
+                        coarse = emb_coarse.batch[i][0].schedules[0].cond
+                        # TODO: scale t by hyperparameter (and use correct formula)
+                        t = fine-coarse
+                        t = t.unsqueeze(0)
+                        if t.shape[1] != text_cond.shape[1]:
+                                empty = shared.sd_model.cond_stage_model_empty_prompt
+                                num_repeats = (t.shape[1] - text_cond.shape[1]) // empty.shape[1]
 
-                # pad text_cond or text_uncond to match the length of the longest prompt
-                # i would prefer to let sd_samplers_cfg_denoiser.py handle the padding, but
-                # there isn't a callback that returns the padded conds
-                # if text_cond.shape[1] != text_uncond.shape[1]:
-                #         empty = shared.sd_model.cond_stage_model_empty_prompt
-                #         num_repeats = (text_cond.shape[1] - text_uncond.shape[1]) // empty.shape[1]
+                                if num_repeats < 0:
+                                        t = pad_cond(t, -num_repeats, empty)
+                                elif num_repeats > 0:
+                                        t = pad_cond(t, num_repeats, empty)
+                        text_cond[i] += t.squeeze(0)
 
-                #         if num_repeats < 0:
-                #                 text_cond = pad_cond(text_cond, -num_repeats, empty)
-                #         elif num_repeats > 0:
-                #                 text_uncond = pad_cond(text_uncond, num_repeats, empty)
 
-                # batch_conds_list = []
-                # batch_tensor = {}
-
-                # # sd 1.5 support
-                # if isinstance(text_cond, torch.Tensor):
-                #         text_cond = {'crossattn': text_cond}
-                # if isinstance(text_uncond, torch.Tensor):
-                #         text_uncond = {'crossattn': text_uncond}
-
-                # # for i, _ in enumerate(sega_params):
-                # # concept_cond, _ = concept_conds[i]
-                # conds_list, tensor_dict = reconstruct_multicond_batch(c, sampling_step)
-
-                # # sd 1.5 support
-                # if isinstance(tensor_dict, torch.Tensor):
-                #         tensor_dict = {'crossattn': tensor_dict}
-
-                # # initialize here because we don't know the shape/dtype of the tensor until we reconstruct it
-                # for key, tensor in tensor_dict.items():
-                #         if tensor.shape[1] != text_uncond[key].shape[1]:
-                #                 empty = shared.sd_model.cond_stage_model_empty_prompt
-                #                 num_repeats = (tensor.shape[1] - text_uncond.shape[1]) // empty.shape[1]
-                #                 if num_repeats < 0:
-                #                         tensor = pad_cond(tensor, -num_repeats, empty)
-                #         tensor = tensor.unsqueeze(0)
-                #         if key not in batch_tensor.keys():
-                #                 batch_tensor[key] = tensor
-                #         else:
-                #                 batch_tensor[key] = torch.cat((batch_tensor[key], tensor), dim=0)
-                # batch_conds_list.append(conds_list)
-                # if isinstance(params.text_cond, dict):
-                #         params.text_cond[key] = params.text_cond[key].cat(batch_tensor[key], dim=1)
-                # else:
-                #         params.text_cond = stack_conds([params.text_cond, batch_tensor[key].squeeze(0)])
-                #         #params.text_cond = params.text_cond.cat(batch_tensor[key], dim=1)
-                # if params.text_cond.shape[1] != params.text_uncond.shape[1]:
-                #         empty = shared.sd_model.cond_stage_model_empty_prompt
-                #         num_repeats = (params.text_cond.shape[1] - params.text_uncond.shape[1]) // empty.shape[1]
-
-                #         if num_repeats < 0:
-                #                 params.text_cond = pad_cond(params.text_cond, -num_repeats, empty)
-                #         elif num_repeats > 0:
-                #                 params.text_uncond = pad_cond(params.text_uncond, num_repeats, empty)
 
         def mask_prompt(self, gamma, word_list, prompt):
                 regex = r"\b{0}\b"
                 masked_prompt = prompt
                 for word, pct in word_list: 
-                        # FIXME: mask words that are less than gamma
-                        #if pct < gamma:
-                        if pct > gamma:
+                        if pct < gamma:
                                 repl_regex = regex.format(word)
                                         # replace word with -
                                 masked_prompt = re.sub(repl_regex, "-", masked_prompt)
@@ -470,18 +424,60 @@ class IncantExtensionScript(scripts.Script):
                 # FIXME: why is the max value of step 2 less than the total steps???
                 elif step == fine - 2 and not second_stage:
                         print(f"\nFine step: {step}\n")
+
                         # decode fine images
                         fine_images = self.decode_images(x)
                         incant_params.img_fine = fine_images 
+
                         # compute embedding stuff
                         self.interrogate_images(incant_params, p)
                         devices.torch_gc()
+
                         # compute masked_prompts
                         for i, matches in enumerate(incant_params.matches_fine):
                                 incant_params.masked_prompt.append(self.mask_prompt(incant_params.gamma*100.0, matches, p.prompt))
+
+                        # calculate gradients
+                        self.calculate_embedding_gradients(incant_params, p, step)
+
+                        # calculate quality guidance
+                        try:
+                                self.calc_quality_guidance(incant_params)
+                        except Exception as e:
+                                print('\nexception when calculating quality guidance:\n')
+                                print(e)
                         
                 else:
                         pass
+
+        def compute_gradients(self, emb_fine, emb_coarse):
+                out_gradients = []
+                # zip together list and iterate
+                for i, (fine, coarse) in enumerate(zip(emb_fine, emb_coarse)):
+                        # calculate norm of fine and coarse embeddings
+                        norm_fine = torch.norm(fine, dim=-1, keepdim=True)
+                        norm_fine **= 2
+                        norm_coarse = torch.norm(coarse, dim=-1, keepdim=True)
+                        norm_coarse **= 2
+                        grad = (fine/norm_fine) - (coarse/norm_coarse)
+                        out_gradients.append(grad)
+                return out_gradients
+
+        def calculate_embedding_gradients(self, incant_params, p, current_step):
+                # text embeddings
+                captions_coarse = incant_params.caption_coarse
+                captions_fine = incant_params.caption_fine
+                # txt_emb_coarse = incant_params.emb_txt_coarse
+                # txt_emb_fine = incant_params.emb_txt_fine
+                # txt_emb_fine = []
+                # txt_emb_coarse = []
+                for i in range(len(captions_coarse)):
+                        out = []
+                        incant_params.grad_txt.append(out)
+                # image embeddings
+                img_emb_coarse = incant_params.emb_img_coarse
+                img_emb_fine = incant_params.emb_img_fine
+                incant_params.grad_img = self.compute_gradients(img_emb_fine, img_emb_coarse)
 
         def interrogate_images(self, incant_params, p):
                 interrogator = shared.interrogator
@@ -509,7 +505,7 @@ class IncantExtensionScript(scripts.Script):
                         with torch.no_grad(), devices.autocast():
                                 # calculate image embeddings
                                 image_features = interrogator.clip_model.encode_image(clip_image).type(interrogator.dtype)
-                                image_features /= image_features.norm(dim=-1, keepdim=True)
+                                # image_features /= image_features.norm(dim=-1, keepdim=True)
                                 clip_img_embed_list.append(image_features)
 
                                 # calculate text embeddings
