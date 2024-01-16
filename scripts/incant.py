@@ -4,10 +4,11 @@ import modules.scripts as scripts
 import gradio as gr
 from PIL import Image
 import numpy as np
+import re
 
 from modules import script_callbacks, prompt_parser
 from modules.script_callbacks import CFGDenoiserParams, CFGDenoisedParams, AfterCFGCallbackParams
-from modules.prompt_parser import reconstruct_multicond_batch
+from modules.prompt_parser import reconstruct_multicond_batch, stack_conds
 from modules.processing import StableDiffusionProcessing, decode_latent_batch, txt2img_image_conditioning
 #from modules.shared import sd_model, opts
 from modules.sd_samplers_cfg_denoiser import pad_cond
@@ -43,7 +44,7 @@ class IncantStateParams:
         def __init__(self):
                 self.coarse = 10
                 self.fine = 30
-                self.gamma = 0.1
+                self.gamma = 0.25
                 self.prompt = ''
                 self.prompts = []
                 self.prompt_tokens = []
@@ -87,12 +88,12 @@ class IncantExtensionScript(scripts.Script):
         # Setup menu ui detail
         def ui(self, is_img2img):
                 with gr.Accordion('Incantations', open=False):
-                        active = gr.Checkbox(value=True, default=True, label="Active", elem_id='incant_active')
+                        active = gr.Checkbox(value=False, default=False, label="Active", elem_id='incant_active')
                         quality = gr.Checkbox(value=True, default=True, label="Quality Guidance", elem_id='incant_quality')
                         with gr.Row():
                                 coarse_step = gr.Slider(value = 10, minimum = 0, maximum = 100, step = 1, label="Coarse Step", elem_id = 'incant_coarse')
                                 fine_step = gr.Slider(value = 30, minimum = 0, maximum = 100, step = 1, label="Fine Step", elem_id = 'incant_fine')
-                                gamma = gr.Slider(value = 0.1, minimum = 0, maximum = 1.0, step = 0.01, label="Gamma", elem_id = 'incant_gamma')
+                                gamma = gr.Slider(value = 0.25, minimum = 0, maximum = 1.0, step = 0.01, label="Gamma", elem_id = 'incant_gamma')
                 active.do_not_save_to_config = True
                 quality.do_not_save_to_config = True
                 coarse_step.do_not_save_to_config = True
@@ -225,7 +226,7 @@ class IncantExtensionScript(scripts.Script):
                         # assign old cache to next iteration
                         incant_params.first_stage_cache = self.stage_1
                         # init interrogator
-                        self.interrogate_images(incant_params, p)
+                        # self.interrogate_images(incant_params, p)
                         self.calc_quality_guidance(incant_params, self.stage_1)
 
                 # Use lambda to call the callback function with the parameters to avoid global variables
@@ -240,9 +241,13 @@ class IncantExtensionScript(scripts.Script):
                 script_callbacks.on_script_unloaded(self.unhook_callbacks)
         
         def calc_masked_prompt(self, incant_params: IncantStateParams, first_stage_cache):
-                repl_threshold = incant_params.gamma * 100.0
+                fs = first_stage_cache
                 repl_word = '-'
-                pass
+                prompt = incant_params.p.prompt
+                repl_threshold = incant_params.gamma * 100.0
+                word_list = fs.matches_fine[0]
+                masked_prompt = self.mask_prompt(repl_threshold, word_list, incant_params.p.prompt)
+                return masked_prompt
 
         def calc_quality_guidance(self, incant_params: IncantStateParams, first_stage_cache):
 
@@ -275,52 +280,97 @@ class IncantExtensionScript(scripts.Script):
                 if not second_stage:
                         return
 
+                fs = incant_params.first_stage_cache
+
+                # TODO: handle batches
+
+                p = incant_params.p
                 sampling_step = params.sampling_step
                 text_cond = params.text_cond
                 text_uncond = params.text_uncond
+                gamma = incant_params.gamma * 100.0
 
-                # pad text_cond or text_uncond to match the length of the longest prompt
-                # i would prefer to let sd_samplers_cfg_denoiser.py handle the padding, but
-                # there isn't a callback that returns the padded conds
-                if text_cond.shape[1] != text_uncond.shape[1]:
-                        empty = shared.sd_model.cond_stage_model_empty_prompt
-                        num_repeats = (text_cond.shape[1] - text_uncond.shape[1]) // empty.shape[1]
+                # generic regex to replace whole words that match
+#                 word_list = fs.matches_fine[0]
+#                 # compute masked prompt
+#                 masked_prompt = p.prompt
+#                 similarities = []
+#                 mask_prompt = self.mask_prompt(gamma, word_list, masked_prompt)
+#                 masked_prompt = mask_prompt
+#                 print(f'\nmasked prompt: "{masked_prompt}"\n')
+#                 prompt_list = [masked_prompt] * p.batch_size
+#                 prompts = prompt_parser.SdConditioning(prompt_list, width=p.width, height=p.height)
+#                 c = incant_params.get_conds_with_caching(prompt_parser.get_multicond_learned_conditioning, prompts, p.steps, self.cached_c, p.extra_network_data)
+# 
+                # # # concatenate text_cond with c
+                # # text_cond = torch.cat((text_cond, c), dim=1)
 
-                        if num_repeats < 0:
-                                text_cond = pad_cond(text_cond, -num_repeats, empty)
-                        elif num_repeats > 0:
-                                text_uncond = pad_cond(text_uncond, num_repeats, empty)
+                # # pad text_cond or text_uncond to match the length of the longest prompt
+                # # i would prefer to let sd_samplers_cfg_denoiser.py handle the padding, but
+                # # there isn't a callback that returns the padded conds
+                # # if text_cond.shape[1] != text_uncond.shape[1]:
+                # #         empty = shared.sd_model.cond_stage_model_empty_prompt
+                # #         num_repeats = (text_cond.shape[1] - text_uncond.shape[1]) // empty.shape[1]
 
-                batch_conds_list = []
-                batch_tensor = {}
+                # #         if num_repeats < 0:
+                # #                 text_cond = pad_cond(text_cond, -num_repeats, empty)
+                # #         elif num_repeats > 0:
+                # #                 text_uncond = pad_cond(text_uncond, num_repeats, empty)
 
-                # sd 1.5 support
-                if isinstance(text_cond, torch.Tensor):
-                        text_cond = {'crossattn': text_cond}
-                if isinstance(text_uncond, torch.Tensor):
-                        text_uncond = {'crossattn': text_uncond}
+                # batch_conds_list = []
+                # batch_tensor = {}
 
-                # for i, _ in enumerate(sega_params):
-                #         concept_cond, _ = concept_conds[i]
-                #         conds_list, tensor_dict = reconstruct_multicond_batch(concept_cond, sampling_step)
+                # # sd 1.5 support
+                # if isinstance(text_cond, torch.Tensor):
+                #         text_cond = {'crossattn': text_cond}
+                # if isinstance(text_uncond, torch.Tensor):
+                #         text_uncond = {'crossattn': text_uncond}
 
-                #         # sd 1.5 support
-                #         if isinstance(tensor_dict, torch.Tensor):
-                #                 tensor_dict = {'crossattn': tensor_dict}
+                # # for i, _ in enumerate(sega_params):
+                # # concept_cond, _ = concept_conds[i]
+                # conds_list, tensor_dict = reconstruct_multicond_batch(c, sampling_step)
 
-                #         # initialize here because we don't know the shape/dtype of the tensor until we reconstruct it
-                #         for key, tensor in tensor_dict.items():
-                #                 if tensor.shape[1] != text_uncond[key].shape[1]:
-                #                         empty = shared.sd_model.cond_stage_model_empty_prompt
-                #                         num_repeats = (tensor.shape[1] - text_uncond.shape[1]) // empty.shape[1]
-                #                         if num_repeats < 0:
-                #                                 tensor = pad_cond(tensor, -num_repeats, empty)
-                #                 tensor = tensor.unsqueeze(0)
-                #                 if key not in batch_tensor.keys():
-                #                         batch_tensor[key] = tensor
-                #                 else:
-                #                         batch_tensor[key] = torch.cat((batch_tensor[key], tensor), dim=0)
-                #         batch_conds_list.append(conds_list)
+                # # sd 1.5 support
+                # if isinstance(tensor_dict, torch.Tensor):
+                #         tensor_dict = {'crossattn': tensor_dict}
+
+                # # initialize here because we don't know the shape/dtype of the tensor until we reconstruct it
+                # for key, tensor in tensor_dict.items():
+                #         if tensor.shape[1] != text_uncond[key].shape[1]:
+                #                 empty = shared.sd_model.cond_stage_model_empty_prompt
+                #                 num_repeats = (tensor.shape[1] - text_uncond.shape[1]) // empty.shape[1]
+                #                 if num_repeats < 0:
+                #                         tensor = pad_cond(tensor, -num_repeats, empty)
+                #         tensor = tensor.unsqueeze(0)
+                #         if key not in batch_tensor.keys():
+                #                 batch_tensor[key] = tensor
+                #         else:
+                #                 batch_tensor[key] = torch.cat((batch_tensor[key], tensor), dim=0)
+                # batch_conds_list.append(conds_list)
+                # if isinstance(params.text_cond, dict):
+                #         params.text_cond[key] = params.text_cond[key].cat(batch_tensor[key], dim=1)
+                # else:
+                #         params.text_cond = stack_conds([params.text_cond, batch_tensor[key].squeeze(0)])
+                #         #params.text_cond = params.text_cond.cat(batch_tensor[key], dim=1)
+                # if params.text_cond.shape[1] != params.text_uncond.shape[1]:
+                #         empty = shared.sd_model.cond_stage_model_empty_prompt
+                #         num_repeats = (params.text_cond.shape[1] - params.text_uncond.shape[1]) // empty.shape[1]
+
+                #         if num_repeats < 0:
+                #                 params.text_cond = pad_cond(params.text_cond, -num_repeats, empty)
+                #         elif num_repeats > 0:
+                #                 params.text_uncond = pad_cond(params.text_uncond, num_repeats, empty)
+
+        def mask_prompt(self, gamma, word_list, prompt):
+                regex = r"\b{0}\b"
+                masked_prompt = prompt
+                for word, pct in word_list: 
+                        if pct < gamma:
+                                repl_regex = regex.format(word)
+                                        # replace word with -
+                                masked_prompt = re.sub(repl_regex, "-", masked_prompt)
+                return masked_prompt
+
 
                 # if isinstance(text_cond, torch.Tensor) and isinstance(text_uncond, torch.Tensor):
                 #         pass
