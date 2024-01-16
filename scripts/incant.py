@@ -47,6 +47,8 @@ class IncantStateParams:
                 self.prompt = ''
                 self.prompts = []
                 self.prompt_tokens = []
+                self.caption_coarse = []
+                self.caption_fine = []
                 self.img_coarse = []
                 self.img_fine = []
                 self.emb_img_coarse = []
@@ -222,6 +224,9 @@ class IncantExtensionScript(scripts.Script):
                 else:
                         # assign old cache to next iteration
                         incant_params.first_stage_cache = self.stage_1
+                        # init interrogator
+                        self.interrogate_images(incant_params, p)
+                        self.calc_quality_guidance(incant_params, self.stage_1)
 
                 # Use lambda to call the callback function with the parameters to avoid global variables
                 y = lambda params: self.on_cfg_denoiser_callback(params, incant_params)
@@ -233,6 +238,17 @@ class IncantExtensionScript(scripts.Script):
                 script_callbacks.on_cfg_denoised(y2)
                 script_callbacks.cfg_after_cfg_callback(y3)
                 script_callbacks.on_script_unloaded(self.unhook_callbacks)
+        
+        def calc_masked_prompt(self, incant_params: IncantStateParams, first_stage_cache):
+                repl_threshold = incant_params.gamma * 100.0
+                repl_word = '-'
+                pass
+
+        def calc_quality_guidance(self, incant_params: IncantStateParams, first_stage_cache):
+
+
+                # mask prompt
+                pass
         
         def cfg_after_cfg_callback(self, params: AfterCFGCallbackParams, incant_params):
                 #active = getattr(params, "incant_active", active)
@@ -249,10 +265,67 @@ class IncantExtensionScript(scripts.Script):
                 logger.debug('Unhooked callbacks')
                 interrogator = shared.interrogator
                 interrogator.unload()
-                if self.stage_1 is not None:
-                        del self.stage_1
-                        self.stage_1 = None
+                # if self.stage_1 is not None:
+                #         del self.stage_1
+                #         self.stage_1 = None
                 script_callbacks.remove_current_script_callbacks()
+
+        def on_cfg_denoiser_callback(self, params: CFGDenoiserParams, incant_params: IncantStateParams):
+                second_stage = incant_params.second_stage
+                if not second_stage:
+                        return
+
+                sampling_step = params.sampling_step
+                text_cond = params.text_cond
+                text_uncond = params.text_uncond
+
+                # pad text_cond or text_uncond to match the length of the longest prompt
+                # i would prefer to let sd_samplers_cfg_denoiser.py handle the padding, but
+                # there isn't a callback that returns the padded conds
+                if text_cond.shape[1] != text_uncond.shape[1]:
+                        empty = shared.sd_model.cond_stage_model_empty_prompt
+                        num_repeats = (text_cond.shape[1] - text_uncond.shape[1]) // empty.shape[1]
+
+                        if num_repeats < 0:
+                                text_cond = pad_cond(text_cond, -num_repeats, empty)
+                        elif num_repeats > 0:
+                                text_uncond = pad_cond(text_uncond, num_repeats, empty)
+
+                batch_conds_list = []
+                batch_tensor = {}
+
+                # sd 1.5 support
+                if isinstance(text_cond, torch.Tensor):
+                        text_cond = {'crossattn': text_cond}
+                if isinstance(text_uncond, torch.Tensor):
+                        text_uncond = {'crossattn': text_uncond}
+
+                # for i, _ in enumerate(sega_params):
+                #         concept_cond, _ = concept_conds[i]
+                #         conds_list, tensor_dict = reconstruct_multicond_batch(concept_cond, sampling_step)
+
+                #         # sd 1.5 support
+                #         if isinstance(tensor_dict, torch.Tensor):
+                #                 tensor_dict = {'crossattn': tensor_dict}
+
+                #         # initialize here because we don't know the shape/dtype of the tensor until we reconstruct it
+                #         for key, tensor in tensor_dict.items():
+                #                 if tensor.shape[1] != text_uncond[key].shape[1]:
+                #                         empty = shared.sd_model.cond_stage_model_empty_prompt
+                #                         num_repeats = (tensor.shape[1] - text_uncond.shape[1]) // empty.shape[1]
+                #                         if num_repeats < 0:
+                #                                 tensor = pad_cond(tensor, -num_repeats, empty)
+                #                 tensor = tensor.unsqueeze(0)
+                #                 if key not in batch_tensor.keys():
+                #                         batch_tensor[key] = tensor
+                #                 else:
+                #                         batch_tensor[key] = torch.cat((batch_tensor[key], tensor), dim=0)
+                #         batch_conds_list.append(conds_list)
+
+                # if isinstance(text_cond, torch.Tensor) and isinstance(text_uncond, torch.Tensor):
+                #         pass
+                # else:
+                #         raise NotImplementedError("Only SD1.5 are supported for now")
 
         def on_cfg_denoised_callback(self, params: CFGDenoisedParams, incant_params: IncantStateParams):
                 import clip
@@ -278,68 +351,79 @@ class IncantExtensionScript(scripts.Script):
                         # decode fine images
                         fine_images = self.decode_images(x)
                         incant_params.img_fine = fine_images 
+
+                        self.interrogate_images(incant_params, p)
                         devices.torch_gc()
                         
-                        # init interrogator
-                        interrogator = shared.interrogator
-                        interrogator.load()
-
-                        # calculate text/image embeddings
-
-                        text_array = incant_params.prompt.split()
-
-                        #shared.state.begin(job="interrogate")
-                        # coarse features
-                        for i, pil_image in enumerate(incant_params.img_coarse):
-                                caption = interrogator.generate_caption(pil_image)
-
-                                devices.torch_gc()
-                                res = caption
-                                clip_image = interrogator.clip_preprocess(pil_image).unsqueeze(0).type(interrogator.dtype).to(devices.device_interrogate)
-
-                                with torch.no_grad(), devices.autocast():
-                                        # calculate image embeddings
-                                        image_features = interrogator.clip_model.encode_image(clip_image).type(interrogator.dtype)
-                                        image_features /= image_features.norm(dim=-1, keepdim=True)
-                                        incant_params.emb_img_coarse.append(image_features)
-
-                                        # calculate text embeddings
-                                        prompt_list = [caption] * p.batch_size
-                                        prompts = prompt_parser.SdConditioning(prompt_list, width=p.width, height=p.height)
-                                        c = incant_params.get_conds_with_caching(prompt_parser.get_multicond_learned_conditioning, prompts, p.steps, self.cached_c, p.extra_network_data)
-                                        incant_params.emb_txt_coarse.append(c)
-
-                                        # calculate image similarity
-                                        matches = interrogator.rank(image_features, text_array, top_count=len(text_array))
-                                        print(f"{i}-caption:{caption}\n{i}-coarse: {matches}")
-                                        incant_params.matches_coarse.append(matches)
-
-                        # fine features
-                        for i, pil_image in enumerate(incant_params.img_fine):
-                                caption = interrogator.generate_caption(pil_image)
-
-                                devices.torch_gc()
-                                res = caption
-                                clip_image = interrogator.clip_preprocess(pil_image).unsqueeze(0).type(interrogator.dtype).to(devices.device_interrogate)
-
-                                with torch.no_grad(), devices.autocast():
-                                        # calculate image embeddings
-                                        image_features = interrogator.clip_model.encode_image(clip_image).type(interrogator.dtype)
-                                        image_features /= image_features.norm(dim=-1, keepdim=True)
-                                        incant_params.emb_img_fine.append(image_features)
-
-                                        # calculate text embeddings
-                                        prompt_list = [caption] * p.batch_size
-                                        prompts = prompt_parser.SdConditioning(prompt_list, width=p.width, height=p.height)
-                                        c = incant_params.get_conds_with_caching(prompt_parser.get_multicond_learned_conditioning, prompts, p.steps, self.cached_c, p.extra_network_data)
-                                        incant_params.emb_txt_fine.append(c)
-
-                                        # calculate image similarity
-                                        matches = interrogator.rank(image_features, text_array, top_count=len(text_array))
-                                        incant_params.matches_fine.append(matches)
-                                        print(f"{i}-caption:{caption}\n{i}-fine:{matches}")
                 else:
                         pass
+
+        def interrogate_images(self, incant_params, p):
+                interrogator = shared.interrogator
+                interrogator.load()
+
+                # calculate text/image embeddings
+                text_array = incant_params.prompt.split()
+
+                #shared.state.begin(job="interrogate")
+                # coarse features
+                # for refactoring later
+                img_list = incant_params.img_coarse
+                caption_list = incant_params.caption_coarse
+                clip_img_embed_list = incant_params.emb_img_coarse
+                cond_list = incant_params.emb_txt_coarse
+                matches_list = incant_params.matches_coarse
+
+                for i, pil_image in enumerate(img_list):
+                        caption = interrogator.generate_caption(pil_image)
+                        caption_list.append(caption)
+
+                        devices.torch_gc()
+                        res = caption
+                        clip_image = interrogator.clip_preprocess(pil_image).unsqueeze(0).type(interrogator.dtype).to(devices.device_interrogate)
+                        with torch.no_grad(), devices.autocast():
+                                # calculate image embeddings
+                                image_features = interrogator.clip_model.encode_image(clip_image).type(interrogator.dtype)
+                                image_features /= image_features.norm(dim=-1, keepdim=True)
+                                clip_img_embed_list.append(image_features)
+
+                                # calculate text embeddings
+                                prompt_list = [caption] * p.batch_size
+                                prompts = prompt_parser.SdConditioning(prompt_list, width=p.width, height=p.height)
+                                c = incant_params.get_conds_with_caching(prompt_parser.get_multicond_learned_conditioning, prompts, p.steps, self.cached_c, p.extra_network_data)
+                                cond_list.append(c)
+
+                                # calculate image similarity
+                                matches = interrogator.rank(image_features, text_array, top_count=len(text_array))
+                                print(f"{i}-caption:{caption}\n{i}-coarse: {matches}")
+                                matches_list.append(matches)
+
+                # fine features
+                for i, pil_image in enumerate(incant_params.img_fine):
+                        caption = interrogator.generate_caption(pil_image)
+                        incant_params.caption_fine.append(caption)
+
+                        devices.torch_gc()
+                        res = caption
+                        clip_image = interrogator.clip_preprocess(pil_image).unsqueeze(0).type(interrogator.dtype).to(devices.device_interrogate)
+
+                        with torch.no_grad(), devices.autocast():
+                                # calculate image embeddings
+                                image_features = interrogator.clip_model.encode_image(clip_image).type(interrogator.dtype)
+                                image_features /= image_features.norm(dim=-1, keepdim=True)
+                                incant_params.emb_img_fine.append(image_features)
+
+                                # calculate text embeddings
+                                prompt_list = [caption] * p.batch_size
+                                prompts = prompt_parser.SdConditioning(prompt_list, width=p.width, height=p.height)
+                                c = incant_params.get_conds_with_caching(prompt_parser.get_multicond_learned_conditioning, prompts, p.steps, self.cached_c, p.extra_network_data)
+                                incant_params.emb_txt_fine.append(c)
+
+                                # calculate image similarity
+                                matches = interrogator.rank(image_features, text_array, top_count=len(text_array))
+                                incant_params.matches_fine.append(matches)
+                                print(f"{i}-caption:{caption}\n{i}-fine:{matches}")
+                devices.torch_gc()
 
         def decode_images(self, x):
             batch_images = []
@@ -353,16 +437,6 @@ class IncantExtensionScript(scripts.Script):
                     batch_images.append(image)
             return batch_images
 
-        def on_cfg_denoiser_callback(self, params: CFGDenoiserParams, incant_params: IncantStateParams):
-                # TODO: add option to opt out of batching for performance
-                sampling_step = params.sampling_step
-                text_cond = params.text_cond
-                text_uncond = params.text_uncond
-                # copy the init noise tensor
-                if incant_params.denoiser is None:
-                       incant_params.denoiser = params.denoiser
-                if sampling_step == 0 and incant_params.init_noise is None:
-                        incant_params.init_noise = params.x.clone().detach()
 
 def run_fn_on_attr(p, attr_name, fn):
         """ Run a function on an attribute of a class if it exists """
