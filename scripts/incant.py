@@ -76,6 +76,9 @@ class IncantExtensionScript(scripts.Script):
         def show(self, is_img2img):
                 return scripts.AlwaysVisible
 
+        def before_process(self, p: StableDiffusionProcessing, active, quality, coarse, fine, gamma, *args, **kwargs):
+                p.n_iter = p.n_iter * 2
+
         # Setup menu ui detail
         def ui(self, is_img2img):
                 with gr.Accordion('Incantations', open=False):
@@ -103,7 +106,34 @@ class IncantExtensionScript(scripts.Script):
                 # ]
                 return [active, quality, coarse_step, fine_step, gamma]
 
-        def process_batch(self, p: StableDiffusionProcessing, active, quality, coarse_step, fine_step, gamma, *args, **kwargs):
+        # def before_process_batch(self, p: StableDiffusionProcessing, active, quality, coarse, fine, gamma, *args, **kwargs):
+        #         active = getattr(p, "incant_active", active)
+        #         if active is False:
+        #                 return
+
+                # TODO: Find more robust way to do this
+
+                # Every even step will be when we use the previously calculated results
+                # p.n_iter = p.n_iter * 2
+                # print(f"n_iter: {p.n_iter}")
+
+                # # Duplicate every element in each list if it exists
+                # param_list = [
+                #        "prompts",
+                #        "negative_prompts",
+                #        "seeds",
+                #        "subseeds",
+                #        "all_hr_negative_prompts",
+                #        "all_hr_prompts",
+                #        "all_negative_prompts",
+                #        "all_prompts",
+                #        "all_seeds",
+                #        "all_subseeds",
+                # ]
+                # for param_name in param_list:
+                #         run_fn_on_attr(p, param_name, duplicate_list)
+
+        def before_process_batch(self, p: StableDiffusionProcessing, active, quality, coarse_step, fine_step, gamma, *args, **kwargs):
                 active = getattr(p, "incant_active", active)
                 if active is False:
                         return
@@ -114,7 +144,27 @@ class IncantExtensionScript(scripts.Script):
                 if fine_step > p.steps:
                         print(f"Fine step {fine_step} is greater than total steps {p.steps}, setting to {p.steps}")
                         fine_step = p.steps
-                p.steps += fine_step
+
+                # Every even step will be when we use the previously calculated results
+                # p.n_iter = p.n_iter * 2
+                print(f"n_iter: {p.n_iter}")
+
+                # Duplicate every element in each list if it exists
+                param_list = [
+                       # "prompts",
+                       # "negative_prompts",
+                       # "seeds",
+                       # "subseeds",
+                       "all_hr_negative_prompts",
+                       "all_hr_prompts",
+                       "all_negative_prompts",
+                       "all_prompts",
+                       "all_seeds",
+                       "all_subseeds",
+                ]
+                for param_name in param_list:
+                        run_fn_on_attr(p, param_name, duplicate_alternate_elements)
+                # p.steps += fine_step
 
                 p.extra_generation_params = {
                         "INCANT Active": active,
@@ -171,8 +221,9 @@ class IncantExtensionScript(scripts.Script):
                 script_callbacks.on_script_unloaded(self.unhook_callbacks)
         
         def cfg_after_cfg_callback(self, params: AfterCFGCallbackParams, incant_params):
-                active = getattr(p, "incant_active", active)
+                #active = getattr(params, "incant_active", active)
                 pass
+
 
         def postprocess_batch(self, p, active, quality, coarse, fine, gamma, *args, **kwargs):
                 active = getattr(p, "incant_active", active)
@@ -182,6 +233,8 @@ class IncantExtensionScript(scripts.Script):
 
         def unhook_callbacks(self):
                 logger.debug('Unhooked callbacks')
+                interrogator = shared.interrogator
+                interrogator.unload()
                 script_callbacks.remove_current_script_callbacks()
 
         def on_cfg_denoised_callback(self, params: CFGDenoisedParams, incant_params: IncantStateParams):
@@ -264,20 +317,20 @@ class IncantExtensionScript(scripts.Script):
                                         matches = interrogator.rank(image_features, text_array, top_count=len(text_array))
                                         incant_params.matches_fine.append(matches)
                                         print(f"{i}-caption:{caption}\n{i}-fine:{matches}")
-                        interrogator.unload()
+                        #interrogator.unload()
                         #shared.state.end()
 
                         # reset the sampling process
 
-                        print("Resetting sampling process for second stage")
-                        incant_params.second_stage = True
-                        incant_params.p.rng.is_first = True
-                        incant_params.p.step = 0
-                        incant_params.denoiser.step = 0
-                        params.x = incant_params.init_noise
-                        shared.state.sampling_step = 0
-                        shared.state.current_image_sampling_step = 0
-                        shared.state.current_latent = incant_params.init_noise
+                        # print("Resetting sampling process for second stage")
+                        # incant_params.second_stage = True
+                        # incant_params.p.rng.is_first = True
+                        # incant_params.p.step = 0
+                        # incant_params.denoiser.step = 0
+                        # params.x = incant_params.init_noise
+                        # shared.state.sampling_step = 0
+                        # shared.state.current_image_sampling_step = 0
+                        # shared.state.current_latent = incant_params.init_noise
                 else:
                         pass
 
@@ -303,6 +356,35 @@ class IncantExtensionScript(scripts.Script):
                        incant_params.denoiser = params.denoiser
                 if sampling_step == 0 and incant_params.init_noise is None:
                         incant_params.init_noise = params.x.clone().detach()
+
+def run_fn_on_attr(p, attr_name, fn):
+        """ Run a function on an attribute of a class if it exists """
+        try:
+                attr = getattr(p, attr_name)
+                setattr(p, attr_name, fn(attr))
+        except AttributeError:
+                # No attribute exists
+                return
+        except TypeError:
+                # If the attribute is not iterable, return
+                return
+
+def duplicate_alternate_elements(input_list: list) -> list:
+        """ Duplicate each element in a list and return a new list
+        >>> duplicate_list([1,2,3,4])
+        [1, 1, 3, 3]
+        """
+        result = input_list
+        for idx in range(0, len(result), 2):
+                result[idx+1] = result[idx]
+        return result
+
+def duplicate_list(input_list: list) -> list:
+        """ Duplicate each element in a list and return a new list
+        >>> duplicate_list([1,2,3])
+        [1, 1, 2, 2, 3, 3]
+        """
+        return [element for item in input_list for element in (item, item)]
 
 
 # XYZ Plot
