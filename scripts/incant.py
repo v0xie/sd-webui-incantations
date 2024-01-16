@@ -58,6 +58,10 @@ class IncantStateParams:
                 self.steps = None
                 self.batch_size = 1
                 self.p = None
+                self.init_noise = None
+                self.second_stage = False
+                self.denoiser = None
+                self.job = None
 
 class IncantExtensionScript(scripts.Script):
         def __init__(self):
@@ -115,6 +119,7 @@ class IncantExtensionScript(scripts.Script):
                 if fine_step > p.steps:
                         print(f"Fine step {fine_step} is greater than total steps {p.steps}, setting to {p.steps}")
                         fine_step = p.steps
+                p.steps += fine_step
 
                 p.extra_generation_params = {
                         "INCANT Active": active,
@@ -156,6 +161,8 @@ class IncantExtensionScript(scripts.Script):
                 incant_params.get_conds_with_caching = p.get_conds_with_caching
                 incant_params.steps = p.steps
                 incant_params.batch_size = p.batch_size
+                incant_params.job = shared.state.job
+                tqdm = shared.total_tqdm
 
                 # Use lambda to call the callback function with the parameters to avoid global variables
                 y = lambda params: self.on_cfg_denoiser_callback(params, incant_params)
@@ -192,13 +199,13 @@ class IncantExtensionScript(scripts.Script):
                 max_step = params.total_sampling_steps
 
                 # save the coarse images
-                if step == coarse:
+                if step == coarse and not incant_params.second_stage:
                         # decode the coarse latents
                         coarse_images = self.decode_images(x)
                         incant_params.img_coarse = coarse_images
                         devices.torch_gc()
 
-                elif step == fine:
+                elif step == fine and not incant_params.second_stage:
                         # decode fine images
                         fine_images = self.decode_images(x)
                         incant_params.img_fine = fine_images 
@@ -212,7 +219,7 @@ class IncantExtensionScript(scripts.Script):
 
                         text_array = incant_params.prompt.split()
 
-                        shared.state.begin(job="interrogate")
+                        #shared.state.begin(job="interrogate")
                         # coarse features
                         for i, pil_image in enumerate(incant_params.img_coarse):
                                 caption = interrogator.generate_caption(pil_image)
@@ -263,9 +270,18 @@ class IncantExtensionScript(scripts.Script):
                                         incant_params.matches_fine.append(matches)
                                         print(f"{i}-caption:{caption}\n{i}-fine:{matches}")
                         interrogator.unload()
-                        shared.state.end()
+                        #shared.state.end()
 
-
+                        # reset the sampling process
+                        print("Resetting sampling process for second stage")
+                        incant_params.second_stage = True
+                        incant_params.p.rng.is_first = True
+                        incant_params.p.step = 0
+                        incant_params.denoiser.step = 0
+                        params.x = incant_params.init_noise
+                        shared.state.sampling_step = 0
+                        shared.state.current_image_sampling_step = 0
+                        shared.state.current_latent = incant_params.init_noise
                 else:
                         pass
 
@@ -290,6 +306,12 @@ class IncantExtensionScript(scripts.Script):
                 sampling_step = params.sampling_step
                 text_cond = params.text_cond
                 text_uncond = params.text_uncond
+                # copy the init noise tensor
+                if incant_params.denoiser is None:
+                       incant_params.denoiser = params.denoiser
+                if sampling_step == 0 and incant_params.init_noise is None:
+                        incant_params.init_noise = params.x.clone().detach()
+
         
 
 # XYZ Plot
