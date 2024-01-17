@@ -22,7 +22,11 @@ logger.setLevel(environ.get("SD_WEBUI_LOG_LEVEL", logging.INFO))
 
 
 """
+!!!
 !!! Only semi-functional !!!
+!!!
+
+!!! Might conflict with other extensions that modify the prompt !!!
 
 Appends a "learned" prompt to the end of your prompt that is optimized to maximize the similarity between the text and image embeddings at the end of the diffusion process.
 
