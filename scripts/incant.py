@@ -72,7 +72,20 @@ class IncantStateParams:
                 self.denoiser = None
                 self.job = None
 
-                self.loss_qual = [] # grad_img * grad txt
+                # is this loss
+                self.loss = [] # grad_img * grad txt
+                self.loss_qual = [] # quality guidance
+                self.loss_sem = [] # semantic guidance
+                self.loss_txt_txt = [] # txt - txt
+                self.loss_txt_img = [] # txt - img
+                self.loss_spar = [] # sparsity
+
+                # hyperparameters
+                self.qual_scale = 1.0
+                self.sem_scale = 1.0
+                self.txt_txt_scale = 1.0
+                self.txt_img_scale = 1.0
+                self.spar_scale = 1.0
                 
 class IncantExtensionScript(scripts.Script):
         def __init__(self):
@@ -90,17 +103,25 @@ class IncantExtensionScript(scripts.Script):
         # Setup menu ui detail
         def ui(self, is_img2img):
                 with gr.Accordion('Incantations', open=False):
-                        active = gr.Checkbox(value=True, default=True, label="Active", elem_id='incant_active')
-                        quality = gr.Checkbox(value=True, default=True, label="Quality Guidance", elem_id='incant_quality')
+                        active = gr.Checkbox(value=False, default=False, label="Active", elem_id='incant_active')
+                        quality = gr.Checkbox(value=True, default=True, label="Append Prompt", elem_id='incant_quality')
                         with gr.Row():
                                 coarse_step = gr.Slider(value = 10, minimum = 0, maximum = 100, step = 1, label="Coarse Step", elem_id = 'incant_coarse')
-                                fine_step = gr.Slider(value = 20, minimum = 0, maximum = 100, step = 1, label="Fine Step", elem_id = 'incant_fine')
+                                fine_step = gr.Slider(value = 30, minimum = 0, maximum = 100, step = 1, label="Fine Step", elem_id = 'incant_fine')
                                 gamma = gr.Slider(value = 0.25, minimum = 0, maximum = 1.0, step = 0.01, label="Gamma", elem_id = 'incant_gamma')
+                        with gr.Row():
+                                qual_scale = gr.Slider(value = 0.0, minimum = 0, maximum = 100.0, step = 0.01, label="Quality Guidance Scale", elem_id = 'incant_qual_scale')
+                                sem_scale = gr.Slider(value = 0.0, minimum = 0, maximum = 100.0, step = 0.01, label="Semantic Guidance Scale", elem_id = 'incant_sem_scale')
+                                # txt_txt_scale = 1.0
+                                # txt_img_scale = 1.0
+                                # spar_scale = 1.0
                 active.do_not_save_to_config = True
                 quality.do_not_save_to_config = True
                 coarse_step.do_not_save_to_config = True
                 fine_step.do_not_save_to_config = True
                 gamma.do_not_save_to_config = True
+                qual_scale.do_not_save_to_config = True
+                sem_scale.do_not_save_to_config = True
                 # self.infotext_fields = [
                 #         (active, lambda d: gr.Checkbox.update(value='INCANT Active' in d)),
                 #         (coarse_step, 'INCANT Prompt'),
@@ -112,18 +133,19 @@ class IncantExtensionScript(scripts.Script):
                 #         'incant_coarse',
                 #         'incant_fine',
                 # ]
-                return [active, quality, coarse_step, fine_step, gamma]
+                return [active, quality, coarse_step, fine_step, gamma, qual_scale, sem_scale]
 
-        def before_process(self, p: StableDiffusionProcessing, active, quality, coarse, fine, gamma, *args, **kwargs):
+        def before_process(self, p: StableDiffusionProcessing, active, quality, coarse, fine, gamma, qual_scale, sem_scale, *args, **kwargs):
                 active = getattr(p, "incant_active", active)
                 if active is False:
                         return
                 p.n_iter = p.n_iter * 2
         
-        def process(self, p: StableDiffusionProcessing, active, quality, coarse, fine, gamma, *args, **kwargs):
+        def process(self, p: StableDiffusionProcessing, active, quality, coarse, fine, gamma, qual_scale, sem_scale, *args, **kwargs):
                 active = getattr(p, "incant_active", active)
                 if active is False:
                         return
+                quality = getattr(p, "incant_quality", quality)
                 
                 # modifying the all_prompts* may conflict with extensions that do so
                 if p.iteration == 0:
@@ -144,10 +166,11 @@ class IncantExtensionScript(scripts.Script):
                                 run_fn_on_attr(p, param_name, duplicate_alternate_elements, p.batch_size)
 
                 # assign
-                        for n in range(1, p.n_iter, 2):
-                                start_idx = n * p.batch_size
-                                end_idx = (n + 1) * p.batch_size
-                                p.all_prompts[start_idx:end_idx] = [prompt + ' BREAK <<REPLACEME>>' for prompt in p.all_prompts[start_idx:end_idx]]
+                        if quality:
+                                for n in range(1, p.n_iter, 2):
+                                        start_idx = n * p.batch_size
+                                        end_idx = (n + 1) * p.batch_size
+                                        p.all_prompts[start_idx:end_idx] = [prompt + ' BREAK <<REPLACEME>>' for prompt in p.all_prompts[start_idx:end_idx]]
                 # elif p.iteration % 2 == 1:
                 #         n = p.iteration
                 #         start_idx = n * p.batch_size
@@ -183,7 +206,7 @@ class IncantExtensionScript(scripts.Script):
                 # for param_name in param_list:
                 #         run_fn_on_attr(p, param_name, duplicate_list)
 
-        def before_process_batch(self, p: StableDiffusionProcessing, active, quality, coarse_step, fine_step, gamma, *args, **kwargs):
+        def before_process_batch(self, p: StableDiffusionProcessing, active, quality, coarse_step, fine_step, gamma, qual_scale, sem_scale, *args, **kwargs):
                 active = getattr(p, "incant_active", active)
                 if active is False:
                         return
@@ -191,6 +214,8 @@ class IncantExtensionScript(scripts.Script):
                 coarse_step = getattr(p, "incant_coarse", coarse_step)
                 fine_step = getattr(p, "incant_fine", fine_step)
                 gamma = getattr(p, "incant_gamma", gamma)
+                qual_scale = getattr(p, "incant_qual_scale", qual_scale)
+                sem_scale = getattr(p, "incant_sem_scale", sem_scale)
                 # if fine_step > p.steps:
                 #         print(f"Fine step {fine_step} is greater than total steps {p.steps}, setting to {p.steps}")
                 #         fine_step = p.steps
@@ -228,26 +253,31 @@ class IncantExtensionScript(scripts.Script):
                 #                 start_idx = n * p.batch_size
                 #                 end_idx = (n + 1) * p.batch_size
                 #                 p.all_prompts[start_idx:end_idx] = [prompt + ' BREAK <<REPLACEME>>' for prompt in p.all_prompts[start_idx:end_idx]]
-                if p.iteration % 2 == 1:
-                        n = p.iteration
-                        start_idx = n * p.batch_size
-                        end_idx = (n + 1) * p.batch_size
-                        for idx in range(start_idx, end_idx):
-                                mask_idx = idx - start_idx
-                                p.all_prompts[idx] = p.all_prompts[idx].replace('<<REPLACEME>>', self.stage_1.masked_prompt[mask_idx])
-                                kwargs['prompts'][mask_idx] = kwargs['prompts'][mask_idx].replace('<<REPLACEME>>', self.stage_1.masked_prompt[mask_idx])
+                if quality:
+                        if p.iteration % 2 == 1:
+                                n = p.iteration
+                                start_idx = n * p.batch_size
+                                end_idx = (n + 1) * p.batch_size
+                                for idx in range(start_idx, end_idx):
+                                        mask_idx = idx - start_idx
+                                        p.all_prompts[idx] = p.all_prompts[idx].replace('<<REPLACEME>>', self.stage_1.masked_prompt[mask_idx])
+                                        kwargs['prompts'][mask_idx] = kwargs['prompts'][mask_idx].replace('<<REPLACEME>>', self.stage_1.masked_prompt[mask_idx])
 
                 # p.steps += fine_step
+                # TODO: nicely put this into a dict
                 p.extra_generation_params = {
                         "INCANT Active": active,
                         "INCANT Quality": quality,
                         "INCANT Coarse": coarse_step,
                         "INCANT Fine": fine_step,
                         "INCANT Gamma": gamma,
+                        "INCANT Qual Scale": qual_scale,
+                        "INCANT Sem Scale": sem_scale,
                 }
-                self.create_hook(p, active, quality, coarse_step, fine_step, gamma, *args, **kwargs)
+                self.create_hook(p, active, quality, coarse_step, fine_step, gamma, qual_scale, sem_scale, *args, **kwargs)
         
-        def process_batch(self, p: StableDiffusionProcessing, active, quality, coarse_step, fine_step, gamma, *args, **kwargs):
+        def process_batch(self, p: StableDiffusionProcessing, active, quality, coarse_step, fine_step, gamma, qual_scale, sem_scale, *args, **kwargs):
+
                 batch_number = kwargs.get('batch_number', None)
                 prompts = kwargs.get('prompts', None)
                 seeds = kwargs.get('seeds', None)
@@ -276,7 +306,8 @@ class IncantExtensionScript(scripts.Script):
                         return []
                 return [x.strip() for x in prompt.split(",")]
 
-        def create_hook(self, p, active, quality, coarse, fine, gamma, *args, **kwargs):
+        def create_hook(self, p, active, quality, coarse, fine, gamma, qual_scale, sem_scale, *args, **kwargs):
+
                 import clip
                 # Create a list of parameters for each concept
                 incant_params = IncantStateParams()
@@ -290,6 +321,8 @@ class IncantExtensionScript(scripts.Script):
                         print(f"Fine step {fine} is greater than total steps {p.steps}, setting to {p.steps}")
                         fine = p.steps
                 incant_params.gamma = gamma
+                incant_params.qual_scale = qual_scale 
+                incant_params.sem_scale = sem_scale 
                 incant_params.iteration = p.iteration
                 incant_params.get_conds_with_caching = p.get_conds_with_caching
                 incant_params.steps = p.steps
@@ -306,11 +339,11 @@ class IncantExtensionScript(scripts.Script):
                         incant_params.first_stage_cache = self.stage_1
                         # init interrogator
                         # self.interrogate_images(incant_params, p)
-                        try:
-                                self.calc_quality_guidance(incant_params)
-                        except Exception as e:
-                                print('\nexception when calculating quality guidance:\n')
-                                print(e)
+                        #try:
+                        #        self.calc_quality_guidance(incant_params)
+                        #except Exception as e:
+                        #        print('\nexception when calculating quality guidance:\n')
+                        #        print(e)
 
 
                 # Use lambda to call the callback function with the parameters to avoid global variables
@@ -337,8 +370,20 @@ class IncantExtensionScript(scripts.Script):
                 incant_params.loss_qual = []
                 for i, (grad_img, grad_txt) in enumerate(zip(incant_params.grad_img, incant_params.grad_txt)):
                         incant_params.loss_qual.append(grad_img * grad_txt)
+
+        def loss_sem(self, incant_params: IncantStateParams):
+                p = incant_params.p
+                caption = incant_params.prompt
+                incant_params.loss_sem = []
+                prompt_list = [caption] * p.batch_size
+                prompts = prompt_parser.SdConditioning(prompt_list, width=p.width, height=p.height)
+                c = incant_params.get_conds_with_caching(prompt_parser.get_multicond_learned_conditioning, prompts, p.steps, self.cached_c, p.extra_network_data)
+                masked_prompts = incant_params.masked_prompt
+                for i, (emb_fine, emb_coarse) in enumerate(zip(incant_params.emb_txt_fine, incant_params.emb_txt_coarse)):
+                        incant_params.loss_sem.append(emb_fine - emb_coarse)
         
-        def postprocess_batch(self, p, active, quality, coarse, fine, gamma, *args, **kwargs):
+        def postprocess_batch(self, p, active, quality, coarse_step, fine_step, gamma, qual_scale, sem_scale, *args, **kwargs):
+
                 active = getattr(p, "incant_active", active)
                 if active is False:
                         return
@@ -358,7 +403,7 @@ class IncantExtensionScript(scripts.Script):
                 if not second_stage:
                         return
 
-                fs = incant_params.first_stage_cache
+                fs: IncantStateParams = incant_params.first_stage_cache
 
                 # TODO: handle batches
 
@@ -368,22 +413,50 @@ class IncantExtensionScript(scripts.Script):
                 text_uncond = params.text_uncond
                 gamma = incant_params.gamma * 100.0
 
-                # compute the guidance
-                for i, (emb_fine, emb_coarse) in enumerate(zip(fs.emb_txt_fine, fs.emb_txt_coarse)):
-                        fine = emb_fine.batch[i][0].schedules[0].cond
-                        coarse = emb_coarse.batch[i][0].schedules[0].cond
-                        # TODO: scale t by hyperparameter (and use correct formula)
-                        t = fine-coarse
-                        t = t.unsqueeze(0)
-                        if t.shape[1] != text_cond.shape[1]:
-                                empty = shared.sd_model.cond_stage_model_empty_prompt
-                                num_repeats = (t.shape[1] - text_cond.shape[1]) // empty.shape[1]
+                if incant_params.qual_scale != 0:
+                        # quality guidance
+                        grad_img_batch = []
+                        grad_txt_batch = []
+                        loss_qual_batch = []
+                        for i in range(len(fs.emb_img_fine)):
+                        #for i, (emb_fine, emb_coarse) in enumerate(zip(fs.emb_img_fine, fs.emb_img_coarse)):
+                                img_fine = fs.emb_img_fine[i]
+                                img_norm_fine = torch.norm(img_fine, dim=-1, keepdim=True)
+                                img_coarse = fs.emb_img_coarse[i]
+                                img_norm_coarse = torch.norm(img_coarse, dim=-1, keepdim=True)
+                                grad_img = (img_fine / img_norm_fine**2) - (img_coarse / img_norm_coarse**2)
+                                grad_img_batch.append(grad_img)
 
-                                if num_repeats < 0:
-                                        t = pad_cond(t, -num_repeats, empty)
-                                elif num_repeats > 0:
-                                        t = pad_cond(t, num_repeats, empty)
-                        text_cond[i] += t.squeeze(0)
+                        # compute the text guidance
+                        #for i, (emb_fine, emb_coarse) in enumerate(zip(fs.emb_txt_fine, fs.emb_txt_coarse)):
+                                #for b in range(incant_params.batch_size):
+
+                                # not sure what to with batch, when is batch > 0? 
+                                b = 0
+                                txt_fine = fs.emb_txt_fine[i].batch[b][0].schedules[0].cond
+                                txt_norm_fine = torch.norm(txt_fine, dim=-1, keepdim=True)
+                                txt_coarse = fs.emb_txt_coarse[i].batch[b][0].schedules[0].cond
+                                txt_norm_coarse = torch.norm(txt_coarse, dim=-1, keepdim=True)
+                                grad_txt = (txt_fine / txt_norm_fine**2) - (txt_coarse / txt_norm_coarse**2)
+                                grad_txt_batch.append(grad_txt)
+                        
+                        for i, (grad_img, grad_txt) in enumerate(zip(grad_img_batch, grad_txt_batch)):
+                                loss_qual = grad_img * grad_txt
+                                loss_qual_batch.append(loss_qual)
+                                t = loss_qual * incant_params.qual_scale
+                                print(f'\nloss_qual:{t.norm()}')
+                                t = t.unsqueeze(0)
+
+                                ## TODO: scale t by hyperparameter (and use correct formula)
+                                if t.shape[1] != text_cond.shape[1]:
+                                        empty = shared.sd_model.cond_stage_model_empty_prompt
+                                        num_repeats = (t.shape[1] - text_cond.shape[1]) // empty.shape[1]
+
+                                        if num_repeats < 0:
+                                                t = pad_cond(t, -num_repeats, empty)
+                                        elif num_repeats > 0:
+                                                t = pad_cond(t, num_repeats, empty)
+                                text_cond[i] += t.squeeze(0)
 
 
 
@@ -414,6 +487,9 @@ class IncantExtensionScript(scripts.Script):
                 max_step = params.total_sampling_steps
 
                 # save the coarse images
+                # this isn't quite the same thing
+                # bc the paper says that the coarse image is the image where
+                # the total steps is equal to coarse step
                 if step == coarse and not second_stage:
                         print(f"\nCoarse step: {step}\n")
                         # decode the coarse latents
@@ -438,14 +514,14 @@ class IncantExtensionScript(scripts.Script):
                                 incant_params.masked_prompt.append(self.mask_prompt(incant_params.gamma*100.0, matches, p.prompt))
 
                         # calculate gradients
-                        self.calculate_embedding_gradients(incant_params, p, step)
+                        # self.calculate_embedding_gradients(incant_params, p, step)
 
                         # calculate quality guidance
-                        try:
-                                self.calc_quality_guidance(incant_params)
-                        except Exception as e:
-                                print('\nexception when calculating quality guidance:\n')
-                                print(e)
+                        # try:
+                        #         self.calc_quality_guidance(incant_params)
+                        # except Exception as e:
+                        #         print('\nexception when calculating quality guidance:\n')
+                        #         print(e)
                         
                 else:
                         pass
@@ -477,7 +553,7 @@ class IncantExtensionScript(scripts.Script):
                 # image embeddings
                 img_emb_coarse = incant_params.emb_img_coarse
                 img_emb_fine = incant_params.emb_img_fine
-                incant_params.grad_img = self.compute_gradients(img_emb_fine, img_emb_coarse)
+                # incant_params.grad_img = self.compute_gradients(img_emb_fine, img_emb_coarse)
 
         def interrogate_images(self, incant_params, p):
                 interrogator = shared.interrogator
@@ -509,7 +585,8 @@ class IncantExtensionScript(scripts.Script):
                                 clip_img_embed_list.append(image_features)
 
                                 # calculate text embeddings
-                                prompt_list = [caption] * p.batch_size
+                                prompt_list = [caption]
+                                #prompt_list = [caption] * p.batch_size
                                 prompts = prompt_parser.SdConditioning(prompt_list, width=p.width, height=p.height)
                                 c = incant_params.get_conds_with_caching(prompt_parser.get_multicond_learned_conditioning, prompts, p.steps, self.cached_c, p.extra_network_data)
                                 cond_list.append(c)
@@ -535,7 +612,8 @@ class IncantExtensionScript(scripts.Script):
                                 incant_params.emb_img_fine.append(image_features)
 
                                 # calculate text embeddings
-                                prompt_list = [caption] * p.batch_size
+                                prompt_list = [caption]
+                                #prompt_list = [caption] * p.batch_size
                                 prompts = prompt_parser.SdConditioning(prompt_list, width=p.width, height=p.height)
                                 c = incant_params.get_conds_with_caching(prompt_parser.get_multicond_learned_conditioning, prompts, p.steps, self.cached_c, p.extra_network_data)
                                 incant_params.emb_txt_fine.append(c)
