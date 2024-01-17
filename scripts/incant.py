@@ -508,6 +508,9 @@ class IncantExtensionScript(scripts.Script):
                         is_lora = word.startswith('<') and word.endswith('>')
                         if is_lora:
                                 masked_prompt = masked_prompt.replace(word, '')
+                # hack: remove text between pairs of brackets like <...>
+                masked_prompt = re.sub(r'<[^>]*>', '', masked_prompt)
+
                 return masked_prompt
 
 
