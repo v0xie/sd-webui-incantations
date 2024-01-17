@@ -12,7 +12,7 @@ from modules.prompt_parser import reconstruct_multicond_batch, stack_conds, reco
 from modules.processing import StableDiffusionProcessing, decode_latent_batch, txt2img_image_conditioning
 #from modules.shared import sd_model, opts
 from modules.sd_samplers_cfg_denoiser import pad_cond
-from modules import shared, devices, errors
+from modules import shared, devices, errors, deepbooru
 from modules.interrogate import InterrogateModels
 
 import torch
@@ -62,6 +62,55 @@ GitHub URL: https://github.com/v0xie/sd-webui-incantations
 
 """
 
+class Interrogator:
+        def __init__(self):
+                pass
+        def load(self):
+                pass
+        def generate_caption(self):
+                pass
+        def unload(self):
+                pass
+
+class InterrogatorCLIP(Interrogator):
+        def __init__(self):
+                self.interrogator = shared.interrogator
+
+        def load(self):
+                self.interrogator = shared.interrogator
+                self.interrogator.load()
+
+        def generate_caption(self, pil_image):
+                self.load()
+                return self.interrogator.generate_caption(pil_image)
+
+        def unload(self):
+                self.interrogator.unload()
+
+
+class InterrogatorDeepbooru(Interrogator):
+        def __init__(self):
+                self.interrogator = deepbooru.model
+
+        def load(self):
+                self.interrogator = deepbooru.model
+                self.interrogator.load()
+
+        def generate_caption(self, pil_image):
+                self.load()
+                if not shared.opts.interrogate_return_ranks: 
+                        print('\nincantations - warning: interrogate_return_ranks should be enabled for Deepbooru Interrogate to work')
+                threshold = shared.opts.interrogate_deepbooru_score_threshold
+                if threshold > 0.1:
+                        print('\nincantations - warning: deepbooru score threshold should be lowered for Deepbooru Interrogate to work')
+                tags = self.interrogator.tag(pil_image)
+                #prompts = prompt_parser.parse_prompt_attention(tags)
+                return tags
+
+        def unload(self):
+                pass
+
+
 class IncantStateParams:
         def __init__(self):
                 self.delim = ''
@@ -69,6 +118,7 @@ class IncantStateParams:
                 self.coarse = 10
                 self.fine = 30
                 self.gamma = 0.25
+                self.deepbooru = False
                 self.prompt = ''
                 self.prompts = []
                 self.prompt_tokens = []
@@ -130,6 +180,7 @@ class IncantExtensionScript(scripts.Script):
                 with gr.Accordion('Incantations', open=False):
                         active = gr.Checkbox(value=False, default=False, label="Active", elem_id='incant_active')
                         quality = gr.Checkbox(value=True, default=True, label="Append Prompt", elem_id='incant_quality')
+                        deepbooru = gr.Checkbox(value=False, default=False, label="Deepbooru Interrogate", elem_id='incant_deepbooru')
                         with gr.Row():
                                 delim = gr.Textbox(value='AND', label="Delimiter", elem_id='incant_delim', info="Prompt DELIM Optimized Prompt. Try BREAK, AND, NOT, etc.")
                                 word = gr.Textbox(value='-', label="Word Replacement", elem_id='incant_word', info="Replace masked words with this")
@@ -147,6 +198,7 @@ class IncantExtensionScript(scripts.Script):
                 quality.do_not_save_to_config = True
                 delim.do_not_save_to_config = True
                 word.do_not_save_to_config = True
+                deepbooru.do_not_save_to_config = True
                 coarse_step.do_not_save_to_config = True
                 fine_step.do_not_save_to_config = True
                 gamma.do_not_save_to_config = True
@@ -163,15 +215,22 @@ class IncantExtensionScript(scripts.Script):
                 #         'incant_coarse',
                 #         'incant_fine',
                 # ]
-                return [active, quality, delim, word, coarse_step, fine_step, gamma, qual_scale, sem_scale]
+                return [active, quality, deepbooru, delim, word, coarse_step, fine_step, gamma, qual_scale, sem_scale]
 
-        def before_process(self, p: StableDiffusionProcessing, active, quality, delim, word, coarse, fine, gamma, qual_scale, sem_scale, *args, **kwargs):
+        def interrogator(self, deepbooru=False): 
+                if deepbooru:
+                        return InterrogatorDeepbooru()
+                else:
+                        return shared.interrogator
+                        #return InterrogatorCLIP()
+        
+        def before_process(self, p: StableDiffusionProcessing, active, quality, deepbooru, delim, word, coarse, fine, gamma, qual_scale, sem_scale, *args, **kwargs):
                 active = getattr(p, "incant_active", active)
                 if active is False:
                         return
                 p.n_iter = p.n_iter * 2
         
-        def process(self, p: StableDiffusionProcessing, active, quality, delim, word, coarse, fine, gamma, qual_scale, sem_scale, *args, **kwargs):
+        def process(self, p: StableDiffusionProcessing, active, quality, deepbooru, delim, word, coarse, fine, gamma, qual_scale, sem_scale, *args, **kwargs):
                 active = getattr(p, "incant_active", active)
                 if active is False:
                         return
@@ -202,13 +261,14 @@ class IncantExtensionScript(scripts.Script):
                                         end_idx = (n + 1) * p.batch_size
                                         p.all_prompts[start_idx:end_idx] = [prompt + delim_str + '<<REPLACEME>>' for prompt in p.all_prompts[start_idx:end_idx]]
 
-        def before_process_batch(self, p: StableDiffusionProcessing, active, quality, delim, word, coarse_step, fine_step, gamma, qual_scale, sem_scale, *args, **kwargs):
+        def before_process_batch(self, p: StableDiffusionProcessing, active, quality, deepbooru, delim, word, coarse_step, fine_step, gamma, qual_scale, sem_scale, *args, **kwargs):
                 active = getattr(p, "incant_active", active)
                 if active is False:
                         return
                 quality = getattr(p, "incant_quality", quality)
                 delim = getattr(p, "incant_delim", delim)
                 word = getattr(p, "incant_word", word)
+                deepbooru = getattr(p, "incant_deepbooru", deepbooru)
                 coarse_step = getattr(p, "incant_coarse", coarse_step)
                 fine_step = getattr(p, "incant_fine", fine_step)
                 gamma = getattr(p, "incant_gamma", gamma)
@@ -218,7 +278,7 @@ class IncantExtensionScript(scripts.Script):
                         print(f"Fine step {fine_step} is greater than total steps {p.steps}, setting to {p.steps-2}")
                         fine_step = p.steps - 2
 
-                interrogator = shared.interrogator
+                interrogator = self.interrogator(deepbooru)
                 interrogator.load()
                 # Every even step will be when we use the previously calculated results
                 # p.n_iter = p.n_iter * 2
@@ -241,15 +301,16 @@ class IncantExtensionScript(scripts.Script):
                         "INCANT Quality": quality,
                         "INCANT Delim": delim,
                         "INCANT Word": word,
+                        "INCANT Deepbooru": deepbooru,
                         "INCANT Coarse": coarse_step,
                         "INCANT Fine": fine_step,
                         "INCANT Gamma": gamma,
                         "INCANT Qual Scale": qual_scale,
                         "INCANT Sem Scale": sem_scale,
                 }
-                self.create_hook(p, active, quality, delim, word, coarse_step, fine_step, gamma, qual_scale, sem_scale, *args, **kwargs)
+                self.create_hook(p, active, quality, deepbooru, delim, word, coarse_step, fine_step, gamma, qual_scale, sem_scale, *args, **kwargs)
         
-        def process_batch(self, p: StableDiffusionProcessing, active, quality, delim, word, coarse_step, fine_step, gamma, qual_scale, sem_scale, *args, **kwargs):
+        def process_batch(self, p: StableDiffusionProcessing, active, quality, deepbooru, delim, word, coarse_step, fine_step, gamma, qual_scale, sem_scale, *args, **kwargs):
 
                 batch_number = kwargs.get('batch_number', None)
                 prompts = kwargs.get('prompts', None)
@@ -279,7 +340,7 @@ class IncantExtensionScript(scripts.Script):
                         return []
                 return [x.strip() for x in prompt.split(",")]
 
-        def create_hook(self, p, active, quality, delim, word, coarse, fine, gamma, qual_scale, sem_scale, *args, **kwargs):
+        def create_hook(self, p, active, quality, deepbooru, delim, word, coarse, fine, gamma, qual_scale, sem_scale, *args, **kwargs):
 
                 import clip
                 # Create a list of parameters for each concept
@@ -291,6 +352,7 @@ class IncantExtensionScript(scripts.Script):
                 incant_params.coarse = coarse
                 incant_params.delim = delim
                 incant_params.word = word 
+                incant_params.deepbooru = deepbooru
                 incant_params.fine = fine 
                 if fine > p.steps:
                         print(f"Fine step {fine} is greater than total steps {p.steps}, setting to {p.steps}")
@@ -349,7 +411,7 @@ class IncantExtensionScript(scripts.Script):
                 for i, (emb_fine, emb_coarse) in enumerate(zip(incant_params.emb_txt_fine, incant_params.emb_txt_coarse)):
                         incant_params.loss_sem.append(emb_fine - emb_coarse)
         
-        def postprocess_batch(self, p, active, quality, delim, word, coarse_step, fine_step, gamma, qual_scale, sem_scale, *args, **kwargs):
+        def postprocess_batch(self, p, active, quality, deepbooru, delim, word, coarse_step, fine_step, gamma, qual_scale, sem_scale, *args, **kwargs):
 
                 active = getattr(p, "incant_active", active)
                 if active is False:
@@ -358,7 +420,7 @@ class IncantExtensionScript(scripts.Script):
 
         def unhook_callbacks(self):
                 logger.debug('Unhooked callbacks')
-                interrogator = shared.interrogator
+                interrogator = self.interrogator(False)
                 interrogator.unload()
                 # if self.stage_1 is not None:
                 #         del self.stage_1
@@ -432,9 +494,13 @@ class IncantExtensionScript(scripts.Script):
                 # TODO: refactor out removing <>
                 regex = r"\b{0}\b"
                 masked_prompt = prompt
+                mask_less_similar = gamma > 0
+                gamma = abs(gamma)
                 for word, pct in word_list: 
-                        word = word.strip(',')
-                        condition = (pct < gamma) if gamma >= 0 else (pct > -gamma)
+                        word = word.strip(', ')
+                        if len(word) == 0:
+                                continue
+                        condition = (pct < gamma) if mask_less_similar else (pct > gamma)
                         if condition:
                                 repl_regex = regex.format(word)
                                         # replace word with -
@@ -539,7 +605,8 @@ class IncantExtensionScript(scripts.Script):
                 debug_compute_coarse = False
                 compute_conds = False
 
-                interrogator = shared.interrogator
+                #interrogator = shared.interrogator
+                interrogator = self.interrogator(incant_params.deepbooru)
                 interrogator.load()
 
                 # calculate text/image embeddings
@@ -563,24 +630,37 @@ class IncantExtensionScript(scripts.Script):
 
                                 devices.torch_gc()
                                 res = caption
-                                clip_image = interrogator.clip_preprocess(pil_image).unsqueeze(0).type(interrogator.dtype).to(devices.device_interrogate)
-                                with torch.no_grad(), devices.autocast():
-                                        # calculate image embeddings
-                                        image_features = interrogator.clip_model.encode_image(clip_image).type(interrogator.dtype)
-                                        # image_features /= image_features.norm(dim=-1, keepdim=True)
-                                        clip_img_embed_list.append(image_features)
+                                if not incant_params.deepbooru:
+                                        clip_image = interrogator.clip_preprocess(pil_image).unsqueeze(0).type(interrogator.dtype).to(devices.device_interrogate)
+                                        with torch.no_grad(), devices.autocast():
+                                                # calculate image embeddings
+                                                image_features = interrogator.clip_model.encode_image(clip_image).type(interrogator.dtype)
+                                                # image_features /= image_features.norm(dim=-1, keepdim=True)
+                                                clip_img_embed_list.append(image_features)
 
                                         # calculate text embeddings
+                                        # CLIP
                                         prompt_list = [caption]
                                         #prompt_list = [caption] * p.batch_size
                                         prompts = prompt_parser.SdConditioning(prompt_list, width=p.width, height=p.height)
                                         c = incant_params.get_conds_with_caching(prompt_parser.get_multicond_learned_conditioning, prompts, p.steps, self.cached_c, p.extra_network_data)
                                         cond_list.append(c)
 
-                                        # calculate image similarity
+                                # calculate image similarity
                                         matches = interrogator.rank(image_features, text_array, top_count=len(text_array))
                                         print(f"{i}-caption:{caption}\n{i}-coarse: {matches}")
                                         matches_list.append(matches)
+                                else:
+                                        # calculate image embeddings
+
+                                        # calculate text embeddings
+
+                                        # use deepbooru
+                                        matches = prompt_parser.parse_prompt_attention(caption)
+                                        matches = [(tag, strength*100.0) for (tag, strength) in matches]
+                                        print(f"{i}-caption:{caption}\n{i}-coarse: {matches}")
+                                        matches_list.append(matches)
+
 
                 # fine features
                 for i, pil_image in enumerate(incant_params.img_fine):
@@ -589,26 +669,38 @@ class IncantExtensionScript(scripts.Script):
 
                         devices.torch_gc()
                         res = caption
-                        clip_image = interrogator.clip_preprocess(pil_image).unsqueeze(0).type(interrogator.dtype).to(devices.device_interrogate)
+                        if not incant_params.deepbooru:
+                                clip_image = interrogator.clip_preprocess(pil_image).unsqueeze(0).type(interrogator.dtype).to(devices.device_interrogate)
 
-                        with torch.no_grad(), devices.autocast():
+                                with torch.no_grad(), devices.autocast():
+                                        # calculate image embeddings
+                                        image_features = interrogator.clip_model.encode_image(clip_image).type(interrogator.dtype)
+                                        image_features /= image_features.norm(dim=-1, keepdim=True)
+                                        incant_params.emb_img_fine.append(image_features)
+
+                                        # calculate text embeddings
+                                        if compute_conds:
+                                                prompt_list = [caption]
+                                                #prompt_list = [caption] * p.batch_size
+                                                prompts = prompt_parser.SdConditioning(prompt_list, width=p.width, height=p.height)
+                                                c = incant_params.get_conds_with_caching(prompt_parser.get_multicond_learned_conditioning, prompts, p.steps, self.cached_c, p.extra_network_data)
+                                                incant_params.emb_txt_fine.append(c)
+
+                                        # calculate image similarity
+                                        matches = interrogator.rank(image_features, text_array, top_count=len(text_array))
+                                        print(f"{i}-caption:{caption}\n{i}-fine:{matches}")
+                                        incant_params.matches_fine.append(matches)
+                        else:
                                 # calculate image embeddings
-                                image_features = interrogator.clip_model.encode_image(clip_image).type(interrogator.dtype)
-                                image_features /= image_features.norm(dim=-1, keepdim=True)
-                                incant_params.emb_img_fine.append(image_features)
 
                                 # calculate text embeddings
-                                if compute_conds:
-                                        prompt_list = [caption]
-                                        #prompt_list = [caption] * p.batch_size
-                                        prompts = prompt_parser.SdConditioning(prompt_list, width=p.width, height=p.height)
-                                        c = incant_params.get_conds_with_caching(prompt_parser.get_multicond_learned_conditioning, prompts, p.steps, self.cached_c, p.extra_network_data)
-                                        incant_params.emb_txt_fine.append(c)
 
-                                # calculate image similarity
-                                matches = interrogator.rank(image_features, text_array, top_count=len(text_array))
+                                # use deepbooru
+                                matches = prompt_parser.parse_prompt_attention(caption)
+                                matches = [(tag, strength*100.0) for (tag, strength) in matches]
+                                print(f"{i}-caption:{caption}\n{i}-coarse: {matches}")
                                 incant_params.matches_fine.append(matches)
-                                print(f"{i}-caption:{caption}\n{i}-fine:{matches}")
+
                 devices.torch_gc()
 
         def decode_images(self, x):
