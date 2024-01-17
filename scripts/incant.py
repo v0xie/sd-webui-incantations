@@ -135,7 +135,7 @@ class IncantExtensionScript(scripts.Script):
                         with gr.Row():
                                 coarse_step = gr.Slider(value = 10, minimum = 0, maximum = 100, step = 1, label="Coarse Step", elem_id = 'incant_coarse')
                                 fine_step = gr.Slider(value = 30, minimum = 0, maximum = 100, step = 1, label="Fine Step", elem_id = 'incant_fine')
-                                gamma = gr.Slider(value = 10, minimum = -100.0, maximum = 100.0, step = 0.001, label="Gamma", elem_id = 'incant_gamma')
+                                gamma = gr.Slider(value = -10, minimum = -100.0, maximum = 100.0, step = 0.001, label="Gamma", elem_id = 'incant_gamma', info="If gamma > 0, mask words with similarity less than gamma percent. If gamma < 0, mask more similar words.")
                         with gr.Row():
                                 qual_scale = gr.Slider(value = 0.0, minimum = 0, maximum = 100.0, step = 0.01, label="Quality Guidance Scale", elem_id = 'incant_qual_scale', info="Scale for quality guidance. Incorrect and does not work for SDXL", interactive=False)
                                 sem_scale = gr.Slider(value = 0.0, minimum = 0, maximum = 100.0, step = 0.01, label="Semantic Guidance Scale", elem_id = 'incant_sem_scale', info="Scale for semantic guidance. Not implemented.", interactive=False)
@@ -427,6 +427,7 @@ class IncantExtensionScript(scripts.Script):
 
 
         def mask_prompt(self, gamma, word_list, prompt, word_repl = '-'):
+                # TODO: refactor out removing <>
                 regex = r"\b{0}\b"
                 masked_prompt = prompt
                 for word, pct in word_list: 
@@ -436,6 +437,9 @@ class IncantExtensionScript(scripts.Script):
                                 repl_regex = regex.format(word)
                                         # replace word with -
                                 masked_prompt = re.sub(repl_regex, word_repl, masked_prompt)
+                        is_lora = word.startswith('<') and word.endswith('>')
+                        if is_lora:
+                                masked_prompt = masked_prompt.replace(word, '')
                 return masked_prompt
 
 
