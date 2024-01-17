@@ -170,7 +170,8 @@ class IncantExtensionScript(scripts.Script):
                                 for n in range(1, p.n_iter, 2):
                                         start_idx = n * p.batch_size
                                         end_idx = (n + 1) * p.batch_size
-                                        p.all_prompts[start_idx:end_idx] = [prompt + ' BREAK <<REPLACEME>>' for prompt in p.all_prompts[start_idx:end_idx]]
+                                        p.all_prompts[start_idx:end_idx] = [prompt + ' <<REPLACEME>>' for prompt in p.all_prompts[start_idx:end_idx]]
+                                        #p.all_prompts[start_idx:end_idx] = [prompt + ' BREAK <<REPLACEME>>' for prompt in p.all_prompts[start_idx:end_idx]]
                 # elif p.iteration % 2 == 1:
                 #         n = p.iteration
                 #         start_idx = n * p.batch_size
