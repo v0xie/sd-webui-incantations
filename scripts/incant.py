@@ -27,6 +27,7 @@ logger.setLevel(environ.get("SD_WEBUI_LOG_LEVEL", logging.INFO))
 !!!
 
 !!! Might conflict with other extensions that modify the prompt !!!
+Known conflicts: Dynamic Prompts
 
 Appends a "learned" prompt to the end of your prompt that is optimized to maximize the similarity between the text and image embeddings at the end of the diffusion process.
 
@@ -318,8 +319,8 @@ class IncantExtensionScript(scripts.Script):
                 #y3 = lambda params: self.cfg_after_cfg_callback(params, incant_params)
 
                 logger.debug('Hooked callbacks')
-                script_callbacks.on_cfg_denoiser(y)
                 #script_callbacks.on_cfg_denoised(y2)
+                script_callbacks.on_cfg_denoiser(y)
                 script_callbacks.on_cfg_after_cfg(y2)
                 script_callbacks.on_script_unloaded(self.unhook_callbacks)
         
@@ -379,6 +380,7 @@ class IncantExtensionScript(scripts.Script):
                 text_uncond = params.text_uncond
                 gamma = incant_params.gamma * 100.0
 
+                # temp bypass
                 if incant_params.qual_scale != 0:
                         # quality guidance
                         grad_img_batch = []
@@ -449,6 +451,8 @@ class IncantExtensionScript(scripts.Script):
                 #         raise NotImplementedError("Only SD1.5 are supported for now")
 
         def cfg_after_cfg_callback(self, params: AfterCFGCallbackParams, incant_params: IncantStateParams):
+                debug_compute_coarse = False
+
                 import clip
                 p = incant_params.p
                 coarse = incant_params.coarse
@@ -458,19 +462,21 @@ class IncantExtensionScript(scripts.Script):
                 step = params.sampling_step
                 max_step = params.total_sampling_steps
 
-                # save the coarse images
-                # this isn't quite the same thing
-                # bc the paper says that the coarse image is the image where
-                # the total steps is equal to coarse step
-                if step == coarse and not second_stage:
-                        print(f"\nCoarse step: {step}\n")
-                        # decode the coarse latents
-                        coarse_images = self.decode_images(x)
-                        incant_params.img_coarse = coarse_images
-                        devices.torch_gc()
+                # temp bypass
+                if debug_compute_coarse:
+                        # save the coarse images
+                        # this isn't quite the same thing
+                        # bc the paper says that the coarse image is the image where
+                        # the total steps is equal to coarse step
+                        if step == coarse and not second_stage:
+                                print(f"\nCoarse step: {step}\n")
+                                # decode the coarse latents
+                                coarse_images = self.decode_images(x)
+                                incant_params.img_coarse = coarse_images
+                                devices.torch_gc()
 
                 # FIXME: why is the max value of step 2 less than the total steps???
-                elif step == fine - 2 and not second_stage:
+                if step == fine - 2 and not second_stage:
                         print(f"\nFine step: {step}\n")
 
                         # decode fine images
@@ -530,6 +536,9 @@ class IncantExtensionScript(scripts.Script):
                 # incant_params.grad_img = self.compute_gradients(img_emb_fine, img_emb_coarse)
 
         def interrogate_images(self, incant_params, p):
+                debug_compute_coarse = False
+                compute_conds = False
+
                 interrogator = shared.interrogator
                 interrogator.load()
 
@@ -537,38 +546,41 @@ class IncantExtensionScript(scripts.Script):
                 text_array = incant_params.prompt.split()
 
                 #shared.state.begin(job="interrogate")
-                # coarse features
-                # for refactoring later
+
                 img_list = incant_params.img_coarse
                 caption_list = incant_params.caption_coarse
                 clip_img_embed_list = incant_params.emb_img_coarse
                 cond_list = incant_params.emb_txt_coarse
                 matches_list = incant_params.matches_coarse
 
-                for i, pil_image in enumerate(img_list):
-                        caption = interrogator.generate_caption(pil_image)
-                        caption_list.append(caption)
+                # temp bypass
+                if debug_compute_coarse:
+                        # coarse features
+                        # for refactoring later
+                        for i, pil_image in enumerate(img_list):
+                                caption = interrogator.generate_caption(pil_image)
+                                caption_list.append(caption)
 
-                        devices.torch_gc()
-                        res = caption
-                        clip_image = interrogator.clip_preprocess(pil_image).unsqueeze(0).type(interrogator.dtype).to(devices.device_interrogate)
-                        with torch.no_grad(), devices.autocast():
-                                # calculate image embeddings
-                                image_features = interrogator.clip_model.encode_image(clip_image).type(interrogator.dtype)
-                                # image_features /= image_features.norm(dim=-1, keepdim=True)
-                                clip_img_embed_list.append(image_features)
+                                devices.torch_gc()
+                                res = caption
+                                clip_image = interrogator.clip_preprocess(pil_image).unsqueeze(0).type(interrogator.dtype).to(devices.device_interrogate)
+                                with torch.no_grad(), devices.autocast():
+                                        # calculate image embeddings
+                                        image_features = interrogator.clip_model.encode_image(clip_image).type(interrogator.dtype)
+                                        # image_features /= image_features.norm(dim=-1, keepdim=True)
+                                        clip_img_embed_list.append(image_features)
 
-                                # calculate text embeddings
-                                prompt_list = [caption]
-                                #prompt_list = [caption] * p.batch_size
-                                prompts = prompt_parser.SdConditioning(prompt_list, width=p.width, height=p.height)
-                                c = incant_params.get_conds_with_caching(prompt_parser.get_multicond_learned_conditioning, prompts, p.steps, self.cached_c, p.extra_network_data)
-                                cond_list.append(c)
+                                        # calculate text embeddings
+                                        prompt_list = [caption]
+                                        #prompt_list = [caption] * p.batch_size
+                                        prompts = prompt_parser.SdConditioning(prompt_list, width=p.width, height=p.height)
+                                        c = incant_params.get_conds_with_caching(prompt_parser.get_multicond_learned_conditioning, prompts, p.steps, self.cached_c, p.extra_network_data)
+                                        cond_list.append(c)
 
-                                # calculate image similarity
-                                matches = interrogator.rank(image_features, text_array, top_count=len(text_array))
-                                print(f"{i}-caption:{caption}\n{i}-coarse: {matches}")
-                                matches_list.append(matches)
+                                        # calculate image similarity
+                                        matches = interrogator.rank(image_features, text_array, top_count=len(text_array))
+                                        print(f"{i}-caption:{caption}\n{i}-coarse: {matches}")
+                                        matches_list.append(matches)
 
                 # fine features
                 for i, pil_image in enumerate(incant_params.img_fine):
@@ -586,11 +598,12 @@ class IncantExtensionScript(scripts.Script):
                                 incant_params.emb_img_fine.append(image_features)
 
                                 # calculate text embeddings
-                                prompt_list = [caption]
-                                #prompt_list = [caption] * p.batch_size
-                                prompts = prompt_parser.SdConditioning(prompt_list, width=p.width, height=p.height)
-                                c = incant_params.get_conds_with_caching(prompt_parser.get_multicond_learned_conditioning, prompts, p.steps, self.cached_c, p.extra_network_data)
-                                incant_params.emb_txt_fine.append(c)
+                                if compute_conds:
+                                        prompt_list = [caption]
+                                        #prompt_list = [caption] * p.batch_size
+                                        prompts = prompt_parser.SdConditioning(prompt_list, width=p.width, height=p.height)
+                                        c = incant_params.get_conds_with_caching(prompt_parser.get_multicond_learned_conditioning, prompts, p.steps, self.cached_c, p.extra_network_data)
+                                        incant_params.emb_txt_fine.append(c)
 
                                 # calculate image similarity
                                 matches = interrogator.rank(image_features, text_array, top_count=len(text_array))
