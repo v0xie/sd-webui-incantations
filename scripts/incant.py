@@ -43,6 +43,7 @@ GitHub URL: https://github.com/v0xie/sd-webui-incantations
 class IncantStateParams:
         def __init__(self):
                 self.delim = ''
+                self.word = '-'
                 self.coarse = 10
                 self.fine = 30
                 self.gamma = 0.25
@@ -107,7 +108,9 @@ class IncantExtensionScript(scripts.Script):
                 with gr.Accordion('Incantations', open=False):
                         active = gr.Checkbox(value=False, default=False, label="Active", elem_id='incant_active')
                         quality = gr.Checkbox(value=True, default=True, label="Append Prompt", elem_id='incant_quality')
-                        delim = gr.Textbox(value='AND', label="Delimiter", elem_id='incant_delim')
+                        with gr.Row():
+                                delim = gr.Textbox(value='AND', label="Delimiter", elem_id='incant_delim')
+                                word = gr.Textbox(value='-', label="Word Replacement", elem_id='incant_word', info="What to replace the word with")
                         with gr.Row():
                                 coarse_step = gr.Slider(value = 10, minimum = 0, maximum = 100, step = 1, label="Coarse Step", elem_id = 'incant_coarse')
                                 fine_step = gr.Slider(value = 30, minimum = 0, maximum = 100, step = 1, label="Fine Step", elem_id = 'incant_fine')
@@ -121,6 +124,7 @@ class IncantExtensionScript(scripts.Script):
                 active.do_not_save_to_config = True
                 quality.do_not_save_to_config = True
                 delim.do_not_save_to_config = True
+                word.do_not_save_to_config = True
                 coarse_step.do_not_save_to_config = True
                 fine_step.do_not_save_to_config = True
                 gamma.do_not_save_to_config = True
@@ -137,20 +141,21 @@ class IncantExtensionScript(scripts.Script):
                 #         'incant_coarse',
                 #         'incant_fine',
                 # ]
-                return [active, quality, delim, coarse_step, fine_step, gamma, qual_scale, sem_scale]
+                return [active, quality, delim, word, coarse_step, fine_step, gamma, qual_scale, sem_scale]
 
-        def before_process(self, p: StableDiffusionProcessing, active, quality, delim, coarse, fine, gamma, qual_scale, sem_scale, *args, **kwargs):
+        def before_process(self, p: StableDiffusionProcessing, active, quality, delim, word, coarse, fine, gamma, qual_scale, sem_scale, *args, **kwargs):
                 active = getattr(p, "incant_active", active)
                 if active is False:
                         return
                 p.n_iter = p.n_iter * 2
         
-        def process(self, p: StableDiffusionProcessing, active, quality, delim, coarse, fine, gamma, qual_scale, sem_scale, *args, **kwargs):
+        def process(self, p: StableDiffusionProcessing, active, quality, delim, word, coarse, fine, gamma, qual_scale, sem_scale, *args, **kwargs):
                 active = getattr(p, "incant_active", active)
                 if active is False:
                         return
                 quality = getattr(p, "incant_quality", quality)
                 delim = getattr(p, "incant_delim", delim)
+                word = getattr(p, "incant_word", word)
                 
                 # modifying the all_prompts* may conflict with extensions that do so
                 if p.iteration == 0:
@@ -186,7 +191,7 @@ class IncantExtensionScript(scripts.Script):
                 #         kwargs['prompts'] = [x.replace('<<REPLACEME>>', self.stage_1.masked_prompt) for x in kwargs['prompts']]
         
 
-        # def before_process_batch(self, p: StableDiffusionProcessing, active, quality, delim, coarse, fine, gamma, *args, **kwargs):
+        # def before_process_batch(self, p: StableDiffusionProcessing, active, quality, delim, word, coarse, fine, gamma, *args, **kwargs):
         #         active = getattr(p, "incant_active", active)
         #         if active is False:
         #                 return
@@ -213,12 +218,13 @@ class IncantExtensionScript(scripts.Script):
                 # for param_name in param_list:
                 #         run_fn_on_attr(p, param_name, duplicate_list)
 
-        def before_process_batch(self, p: StableDiffusionProcessing, active, quality, delim, coarse_step, fine_step, gamma, qual_scale, sem_scale, *args, **kwargs):
+        def before_process_batch(self, p: StableDiffusionProcessing, active, quality, delim, word, coarse_step, fine_step, gamma, qual_scale, sem_scale, *args, **kwargs):
                 active = getattr(p, "incant_active", active)
                 if active is False:
                         return
                 quality = getattr(p, "incant_quality", quality)
                 delim = getattr(p, "incant_delim", delim)
+                word = getattr(p, "incant_word", word)
                 coarse_step = getattr(p, "incant_coarse", coarse_step)
                 fine_step = getattr(p, "incant_fine", fine_step)
                 gamma = getattr(p, "incant_gamma", gamma)
@@ -277,15 +283,16 @@ class IncantExtensionScript(scripts.Script):
                         "INCANT Active": active,
                         "INCANT Quality": quality,
                         "INCANT Delim": delim,
+                        "INCANT Word": word,
                         "INCANT Coarse": coarse_step,
                         "INCANT Fine": fine_step,
                         "INCANT Gamma": gamma,
                         "INCANT Qual Scale": qual_scale,
                         "INCANT Sem Scale": sem_scale,
                 }
-                self.create_hook(p, active, quality, delim, coarse_step, fine_step, gamma, qual_scale, sem_scale, *args, **kwargs)
+                self.create_hook(p, active, quality, delim, word, coarse_step, fine_step, gamma, qual_scale, sem_scale, *args, **kwargs)
         
-        def process_batch(self, p: StableDiffusionProcessing, active, quality, delim, coarse_step, fine_step, gamma, qual_scale, sem_scale, *args, **kwargs):
+        def process_batch(self, p: StableDiffusionProcessing, active, quality, delim, word, coarse_step, fine_step, gamma, qual_scale, sem_scale, *args, **kwargs):
 
                 batch_number = kwargs.get('batch_number', None)
                 prompts = kwargs.get('prompts', None)
@@ -315,7 +322,7 @@ class IncantExtensionScript(scripts.Script):
                         return []
                 return [x.strip() for x in prompt.split(",")]
 
-        def create_hook(self, p, active, quality, delim, coarse, fine, gamma, qual_scale, sem_scale, *args, **kwargs):
+        def create_hook(self, p, active, quality, delim, word, coarse, fine, gamma, qual_scale, sem_scale, *args, **kwargs):
 
                 import clip
                 # Create a list of parameters for each concept
@@ -326,6 +333,7 @@ class IncantExtensionScript(scripts.Script):
                 #incant_params.prompt_tokens = clip.tokenize(list(p.prompt), truncate=True).to(devices.device_interrogate)
                 incant_params.coarse = coarse
                 incant_params.delim = delim
+                incant_params.word = word 
                 incant_params.fine = fine 
                 if fine > p.steps:
                         print(f"Fine step {fine} is greater than total steps {p.steps}, setting to {p.steps}")
@@ -373,7 +381,7 @@ class IncantExtensionScript(scripts.Script):
                 prompt = incant_params.p.prompt
                 repl_threshold = incant_params.gamma * 100.0
                 word_list = fs.matches_fine[0]
-                masked_prompt = self.mask_prompt(repl_threshold, word_list, incant_params.p.prompt)
+                masked_prompt = self.mask_prompt(repl_threshold, word_list, incant_params.p.prompt, incant_params.word)
                 return masked_prompt
 
         def calc_quality_guidance(self, incant_params: IncantStateParams):
@@ -392,7 +400,7 @@ class IncantExtensionScript(scripts.Script):
                 for i, (emb_fine, emb_coarse) in enumerate(zip(incant_params.emb_txt_fine, incant_params.emb_txt_coarse)):
                         incant_params.loss_sem.append(emb_fine - emb_coarse)
         
-        def postprocess_batch(self, p, active, quality, delim, coarse_step, fine_step, gamma, qual_scale, sem_scale, *args, **kwargs):
+        def postprocess_batch(self, p, active, quality, delim, word, coarse_step, fine_step, gamma, qual_scale, sem_scale, *args, **kwargs):
 
                 active = getattr(p, "incant_active", active)
                 if active is False:
@@ -470,7 +478,7 @@ class IncantExtensionScript(scripts.Script):
 
 
 
-        def mask_prompt(self, gamma, word_list, prompt):
+        def mask_prompt(self, gamma, word_list, prompt, word_repl = '-'):
                 regex = r"\b{0}\b"
                 masked_prompt = prompt
                 for word, pct in word_list: 
@@ -479,7 +487,7 @@ class IncantExtensionScript(scripts.Script):
                         if condition:
                                 repl_regex = regex.format(word)
                                         # replace word with -
-                                masked_prompt = re.sub(repl_regex, "-", masked_prompt)
+                                masked_prompt = re.sub(repl_regex, word_repl, masked_prompt)
                 return masked_prompt
 
 
@@ -525,7 +533,7 @@ class IncantExtensionScript(scripts.Script):
                         for i, matches in enumerate(incant_params.matches_fine):
                                 #incant_params.masked_prompt.append(self.mask_prompt(incant_params.gamma, matches, incant_params.caption_fine[0]))
                                 #incant_params.masked_prompt.append(self.mask_prompt(incant_params.gamma*100.0, matches, incant_params.caption_fine[0]))
-                                incant_params.masked_prompt.append(self.mask_prompt(incant_params.gamma, matches, p.prompt))
+                                incant_params.masked_prompt.append(self.mask_prompt(incant_params.gamma, matches, p.prompt, incant_params.word))
 
                         # calculate gradients
                         # self.calculate_embedding_gradients(incant_params, p, step)
