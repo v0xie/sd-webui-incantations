@@ -220,7 +220,8 @@ class IncantExtensionScript(scripts.Script):
                 if deepbooru:
                         return InterrogatorDeepbooru()
                 else:
-                        return InterrogatorCLIP()
+                        return shared.interrogator
+                        #return InterrogatorCLIP()
         
         def before_process(self, p: StableDiffusionProcessing, active, quality, deepbooru, delim, word, coarse, fine, gamma, qual_scale, sem_scale, *args, **kwargs):
                 active = getattr(p, "incant_active", active)
