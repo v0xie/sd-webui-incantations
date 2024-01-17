@@ -465,7 +465,7 @@ class IncantExtensionScript(scripts.Script):
                 regex = r"\b{0}\b"
                 masked_prompt = prompt
                 for word, pct in word_list: 
-                        condition = pct < gamma if gamma >= 0 else pct > gamma
+                        condition = (pct < gamma) if gamma >= 0 else (pct > -gamma)
                         if condition:
                                 repl_regex = regex.format(word)
                                         # replace word with -
