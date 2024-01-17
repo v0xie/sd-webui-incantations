@@ -657,9 +657,14 @@ class IncantExtensionScript(scripts.Script):
 
                                         # use deepbooru
                                         matches = prompt_parser.parse_prompt_attention(caption)
+                                        match_list = []
                                         matches = [(tag, strength*100.0) for (tag, strength) in matches]
-                                        print(f"{i}-caption:{caption}\n{i}-coarse: {matches}")
-                                        matches_list.append(matches)
+                                        for tags, strength in matches:
+                                                for tag in tags.split(', '):
+                                                        match_list.append((tag, strength))
+
+                                        print(f"{i}-caption:{caption}\n{i}-coarse: {match_list}")
+                                        matches_list.append(match_list)
 
 
                 # fine features
@@ -697,9 +702,16 @@ class IncantExtensionScript(scripts.Script):
 
                                 # use deepbooru
                                 matches = prompt_parser.parse_prompt_attention(caption)
+                                match_list = []
                                 matches = [(tag, strength*100.0) for (tag, strength) in matches]
-                                print(f"{i}-caption:{caption}\n{i}-coarse: {matches}")
-                                incant_params.matches_fine.append(matches)
+                                for tags, strength in matches:
+                                        for tag in tags.split(', '):
+                                                if len(tag) == 0:
+                                                        continue
+                                                match_list.append((tag, strength))
+
+                                print(f"{i}-caption:{caption}\n{i}-coarse: {match_list}")
+                                incant_params.matches_fine.append(match_list)
 
                 devices.torch_gc()
 
