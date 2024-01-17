@@ -12,7 +12,7 @@ from modules.prompt_parser import reconstruct_multicond_batch, stack_conds, reco
 from modules.processing import StableDiffusionProcessing, decode_latent_batch, txt2img_image_conditioning
 #from modules.shared import sd_model, opts
 from modules.sd_samplers_cfg_denoiser import pad_cond
-from modules import shared, devices, errors
+from modules import shared, devices, errors, deepbooru
 from modules.interrogate import InterrogateModels
 
 import torch
@@ -60,6 +60,50 @@ GitHub URL: https://github.com/v0xie/sd-webui-incantations
 
 
 """
+
+class Interrogator:
+        def __init__(self):
+                pass
+        def load(self):
+                pass
+        def generate_caption(self):
+                pass
+        def unload(self):
+                pass
+
+class InterrogatorCLIP(Interrogator):
+        def __init__(self):
+                self.interrogator = shared.interrogator
+
+        def load(self):
+                self.interrogator = shared.interrogator
+                self.interrogator.load()
+
+        def generate_caption(self, pil_image):
+                self.load()
+                return self.interrogator.generate_caption(pil_image)
+
+        def unload(self):
+                self.interrogator.unload()
+
+
+class InterrogatorDeepbooru(Interrogator):
+        def __init__(self):
+                self.interrogator = deepbooru.model
+
+        def load(self):
+                self.interrogator = deepbooru.model
+                self.interrogator.load()
+
+        def generate_caption(self, pil_image):
+                self.load()
+                tags = self.interrogator.tag(pil_image, force_disable_ranks=False)
+                prompts = prompt_parser.parse_prompt_attention(tags)
+                return prompts
+
+        def unload(self):
+                self.interrogator.unload()
+
 
 class IncantStateParams:
         def __init__(self):
@@ -129,6 +173,7 @@ class IncantExtensionScript(scripts.Script):
                 with gr.Accordion('Incantations', open=False):
                         active = gr.Checkbox(value=False, default=False, label="Active", elem_id='incant_active')
                         quality = gr.Checkbox(value=True, default=True, label="Append Prompt", elem_id='incant_quality')
+                        deepbooru = gr.Checkbox(value=False, default=False, label="Use Deepbooru", elem_id='incant_deepbooru')
                         with gr.Row():
                                 delim = gr.Textbox(value='AND', label="Delimiter", elem_id='incant_delim', info="Prompt DELIM Optimized Prompt. Try BREAK, AND, NOT, etc.")
                                 word = gr.Textbox(value='-', label="Word Replacement", elem_id='incant_word', info="Replace masked words with this")
@@ -146,6 +191,7 @@ class IncantExtensionScript(scripts.Script):
                 quality.do_not_save_to_config = True
                 delim.do_not_save_to_config = True
                 word.do_not_save_to_config = True
+                deepbooru.do_not_save_to_config = True
                 coarse_step.do_not_save_to_config = True
                 fine_step.do_not_save_to_config = True
                 gamma.do_not_save_to_config = True
@@ -162,15 +208,15 @@ class IncantExtensionScript(scripts.Script):
                 #         'incant_coarse',
                 #         'incant_fine',
                 # ]
-                return [active, quality, delim, word, coarse_step, fine_step, gamma, qual_scale, sem_scale]
+                return [active, quality, deepbooru, delim, word, coarse_step, fine_step, gamma, qual_scale, sem_scale]
 
-        def before_process(self, p: StableDiffusionProcessing, active, quality, delim, word, coarse, fine, gamma, qual_scale, sem_scale, *args, **kwargs):
+        def before_process(self, p: StableDiffusionProcessing, active, quality, deepbooru, delim, word, coarse, fine, gamma, qual_scale, sem_scale, *args, **kwargs):
                 active = getattr(p, "incant_active", active)
                 if active is False:
                         return
                 p.n_iter = p.n_iter * 2
         
-        def process(self, p: StableDiffusionProcessing, active, quality, delim, word, coarse, fine, gamma, qual_scale, sem_scale, *args, **kwargs):
+        def process(self, p: StableDiffusionProcessing, active, quality, deepbooru, delim, word, coarse, fine, gamma, qual_scale, sem_scale, *args, **kwargs):
                 active = getattr(p, "incant_active", active)
                 if active is False:
                         return
@@ -201,13 +247,14 @@ class IncantExtensionScript(scripts.Script):
                                         end_idx = (n + 1) * p.batch_size
                                         p.all_prompts[start_idx:end_idx] = [prompt + delim_str + '<<REPLACEME>>' for prompt in p.all_prompts[start_idx:end_idx]]
 
-        def before_process_batch(self, p: StableDiffusionProcessing, active, quality, delim, word, coarse_step, fine_step, gamma, qual_scale, sem_scale, *args, **kwargs):
+        def before_process_batch(self, p: StableDiffusionProcessing, active, quality, deepbooru, delim, word, coarse_step, fine_step, gamma, qual_scale, sem_scale, *args, **kwargs):
                 active = getattr(p, "incant_active", active)
                 if active is False:
                         return
                 quality = getattr(p, "incant_quality", quality)
                 delim = getattr(p, "incant_delim", delim)
                 word = getattr(p, "incant_word", word)
+                deepbooru = getattr(p, "incant_deepbooru", deepbooru)
                 coarse_step = getattr(p, "incant_coarse", coarse_step)
                 fine_step = getattr(p, "incant_fine", fine_step)
                 gamma = getattr(p, "incant_gamma", gamma)
@@ -240,15 +287,16 @@ class IncantExtensionScript(scripts.Script):
                         "INCANT Quality": quality,
                         "INCANT Delim": delim,
                         "INCANT Word": word,
+                        "INCANT Deepbooru": deepbooru,
                         "INCANT Coarse": coarse_step,
                         "INCANT Fine": fine_step,
                         "INCANT Gamma": gamma,
                         "INCANT Qual Scale": qual_scale,
                         "INCANT Sem Scale": sem_scale,
                 }
-                self.create_hook(p, active, quality, delim, word, coarse_step, fine_step, gamma, qual_scale, sem_scale, *args, **kwargs)
+                self.create_hook(p, active, quality, deepbooru, delim, word, coarse_step, fine_step, gamma, qual_scale, sem_scale, *args, **kwargs)
         
-        def process_batch(self, p: StableDiffusionProcessing, active, quality, delim, word, coarse_step, fine_step, gamma, qual_scale, sem_scale, *args, **kwargs):
+        def process_batch(self, p: StableDiffusionProcessing, active, quality, deepbooru, delim, word, coarse_step, fine_step, gamma, qual_scale, sem_scale, *args, **kwargs):
 
                 batch_number = kwargs.get('batch_number', None)
                 prompts = kwargs.get('prompts', None)
@@ -278,7 +326,7 @@ class IncantExtensionScript(scripts.Script):
                         return []
                 return [x.strip() for x in prompt.split(",")]
 
-        def create_hook(self, p, active, quality, delim, word, coarse, fine, gamma, qual_scale, sem_scale, *args, **kwargs):
+        def create_hook(self, p, active, quality, deepbooru, delim, word, coarse, fine, gamma, qual_scale, sem_scale, *args, **kwargs):
 
                 import clip
                 # Create a list of parameters for each concept
@@ -348,7 +396,7 @@ class IncantExtensionScript(scripts.Script):
                 for i, (emb_fine, emb_coarse) in enumerate(zip(incant_params.emb_txt_fine, incant_params.emb_txt_coarse)):
                         incant_params.loss_sem.append(emb_fine - emb_coarse)
         
-        def postprocess_batch(self, p, active, quality, delim, word, coarse_step, fine_step, gamma, qual_scale, sem_scale, *args, **kwargs):
+        def postprocess_batch(self, p, active, quality, deepbooru, delim, word, coarse_step, fine_step, gamma, qual_scale, sem_scale, *args, **kwargs):
 
                 active = getattr(p, "incant_active", active)
                 if active is False:
@@ -559,16 +607,18 @@ class IncantExtensionScript(scripts.Script):
                                 clip_img_embed_list.append(image_features)
 
                                 # calculate text embeddings
-                                prompt_list = [caption]
-                                #prompt_list = [caption] * p.batch_size
-                                prompts = prompt_parser.SdConditioning(prompt_list, width=p.width, height=p.height)
-                                c = incant_params.get_conds_with_caching(prompt_parser.get_multicond_learned_conditioning, prompts, p.steps, self.cached_c, p.extra_network_data)
-                                cond_list.append(c)
+                                # CLIP
+                                if not incant_params.deepbooru:
+                                        prompt_list = [caption]
+                                        #prompt_list = [caption] * p.batch_size
+                                        prompts = prompt_parser.SdConditioning(prompt_list, width=p.width, height=p.height)
+                                        c = incant_params.get_conds_with_caching(prompt_parser.get_multicond_learned_conditioning, prompts, p.steps, self.cached_c, p.extra_network_data)
+                                        cond_list.append(c)
 
                                 # calculate image similarity
-                                matches = interrogator.rank(image_features, text_array, top_count=len(text_array))
-                                print(f"{i}-caption:{caption}\n{i}-coarse: {matches}")
-                                matches_list.append(matches)
+                                        matches = interrogator.rank(image_features, text_array, top_count=len(text_array))
+                                        print(f"{i}-caption:{caption}\n{i}-coarse: {matches}")
+                                        matches_list.append(matches)
 
                 # fine features
                 for i, pil_image in enumerate(incant_params.img_fine):
