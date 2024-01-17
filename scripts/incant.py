@@ -20,10 +20,26 @@ import torch
 logger = logging.getLogger(__name__)
 logger.setLevel(environ.get("SD_WEBUI_LOG_LEVEL", logging.INFO))
 
-"""
-!!!Currently non-functional!!!
 
-An unofficial implementation of Seek for Incantations: Towards Accurate Text-to-Image Diffusion Synthesis
+"""
+!!! Only semi-functional !!!
+
+Appends a "learned" prompt to the end of your prompt that is optimized to maximize the similarity between the text and image embeddings at the end of the diffusion process.
+
+This is done by masking out words in the prompt that are below a threshold given by CLIP e.g. semantic guidance from the paper.
+
+This is useful as is because it allows you to generate images that are (maybe) more similar to the prompt.
+
+The other methods in the paper are not implemented yet. 
+
+I'm not sure how to implement the other methods in the paper because the details of how exactly the "prompt is learned" aren't clear to me. Any insights would be appreciated.
+
+"""
+
+
+"""
+
+An unofficial and incomplete implementation of Seek for Incantations: Towards Accurate Text-to-Image Diffusion Synthesis
 through Prompt Engineering for Automatic1111 WebUI
 
 @misc{yu2024seek,
@@ -37,6 +53,7 @@ through Prompt Engineering for Automatic1111 WebUI
 
 Author: v0xie
 GitHub URL: https://github.com/v0xie/sd-webui-incantations
+
 
 """
 
@@ -109,15 +126,15 @@ class IncantExtensionScript(scripts.Script):
                         active = gr.Checkbox(value=False, default=False, label="Active", elem_id='incant_active')
                         quality = gr.Checkbox(value=True, default=True, label="Append Prompt", elem_id='incant_quality')
                         with gr.Row():
-                                delim = gr.Textbox(value='AND', label="Delimiter", elem_id='incant_delim')
-                                word = gr.Textbox(value='-', label="Word Replacement", elem_id='incant_word', info="What to replace the word with")
+                                delim = gr.Textbox(value='AND', label="Delimiter", elem_id='incant_delim', info="Prompt DELIM Optimized Prompt. Try BREAK, AND, NOT, etc.")
+                                word = gr.Textbox(value='-', label="Word Replacement", elem_id='incant_word', info="Replace masked words with this")
                         with gr.Row():
                                 coarse_step = gr.Slider(value = 10, minimum = 0, maximum = 100, step = 1, label="Coarse Step", elem_id = 'incant_coarse')
                                 fine_step = gr.Slider(value = 30, minimum = 0, maximum = 100, step = 1, label="Fine Step", elem_id = 'incant_fine')
                                 gamma = gr.Slider(value = 10, minimum = -100.0, maximum = 100.0, step = 0.001, label="Gamma", elem_id = 'incant_gamma')
                         with gr.Row():
-                                qual_scale = gr.Slider(value = 0.0, minimum = 0, maximum = 100.0, step = 0.01, label="Quality Guidance Scale", elem_id = 'incant_qual_scale')
-                                sem_scale = gr.Slider(value = 0.0, minimum = 0, maximum = 100.0, step = 0.01, label="Semantic Guidance Scale", elem_id = 'incant_sem_scale')
+                                qual_scale = gr.Slider(value = 0.0, minimum = 0, maximum = 100.0, step = 0.01, label="Quality Guidance Scale", elem_id = 'incant_qual_scale', info="Scale for quality guidance. Incorrect and does not work for SDXL", interactive=False)
+                                sem_scale = gr.Slider(value = 0.0, minimum = 0, maximum = 100.0, step = 0.01, label="Semantic Guidance Scale", elem_id = 'incant_sem_scale', info="Scale for semantic guidance. Not implemented.", interactive=False)
                                 # txt_txt_scale = 1.0
                                 # txt_img_scale = 1.0
                                 # spar_scale = 1.0
@@ -158,12 +175,9 @@ class IncantExtensionScript(scripts.Script):
                 word = getattr(p, "incant_word", word)
                 
                 # modifying the all_prompts* may conflict with extensions that do so
+                # hr fix untested
                 if p.iteration == 0:
                         param_list = [
-                        # "prompts",
-                        # "negative_prompts",
-                        # "seeds",
-                        # "subseeds",
                         "all_hr_negative_prompts",
                         "all_hr_prompts",
                         "all_negative_prompts",
@@ -182,41 +196,6 @@ class IncantExtensionScript(scripts.Script):
                                         start_idx = n * p.batch_size
                                         end_idx = (n + 1) * p.batch_size
                                         p.all_prompts[start_idx:end_idx] = [prompt + delim_str + '<<REPLACEME>>' for prompt in p.all_prompts[start_idx:end_idx]]
-                                        #p.all_prompts[start_idx:end_idx] = [prompt + ' BREAK <<REPLACEME>>' for prompt in p.all_prompts[start_idx:end_idx]]
-                # elif p.iteration % 2 == 1:
-                #         n = p.iteration
-                #         start_idx = n * p.batch_size
-                #         end_idx = (n + 1) * p.batch_size
-                #         p.all_prompts[start_idx:end_idx] = [prompt.replace('<<REPLACEME>>', self.stage_1.masked_prompt) for prompt in p.all_prompts[start_idx:end_idx]]
-                #         kwargs['prompts'] = [x.replace('<<REPLACEME>>', self.stage_1.masked_prompt) for x in kwargs['prompts']]
-        
-
-        # def before_process_batch(self, p: StableDiffusionProcessing, active, quality, delim, word, coarse, fine, gamma, *args, **kwargs):
-        #         active = getattr(p, "incant_active", active)
-        #         if active is False:
-        #                 return
-
-                # TODO: Find more robust way to do this
-
-                # Every even step will be when we use the previously calculated results
-                # p.n_iter = p.n_iter * 2
-                # print(f"n_iter: {p.n_iter}")
-
-                # # Duplicate every element in each list if it exists
-                # param_list = [
-                #        "prompts",
-                #        "negative_prompts",
-                #        "seeds",
-                #        "subseeds",
-                #        "all_hr_negative_prompts",
-                #        "all_hr_prompts",
-                #        "all_negative_prompts",
-                #        "all_prompts",
-                #        "all_seeds",
-                #        "all_subseeds",
-                # ]
-                # for param_name in param_list:
-                #         run_fn_on_attr(p, param_name, duplicate_list)
 
         def before_process_batch(self, p: StableDiffusionProcessing, active, quality, delim, word, coarse_step, fine_step, gamma, qual_scale, sem_scale, *args, **kwargs):
                 active = getattr(p, "incant_active", active)
@@ -230,43 +209,16 @@ class IncantExtensionScript(scripts.Script):
                 gamma = getattr(p, "incant_gamma", gamma)
                 qual_scale = getattr(p, "incant_qual_scale", qual_scale)
                 sem_scale = getattr(p, "incant_sem_scale", sem_scale)
-                # if fine_step > p.steps:
-                #         print(f"Fine step {fine_step} is greater than total steps {p.steps}, setting to {p.steps}")
-                #         fine_step = p.steps
+                if fine_step >= p.steps:
+                        print(f"Fine step {fine_step} is greater than total steps {p.steps}, setting to {p.steps-2}")
+                        fine_step = p.steps - 2
 
                 interrogator = shared.interrogator
                 interrogator.load()
                 # Every even step will be when we use the previously calculated results
                 # p.n_iter = p.n_iter * 2
-
                 # modify prompts
                 n = p.n_iter
-                # print(f"n_iter: {p.n_iter}")
-
-                # modify prompts such that every other prompt 
-                # Duplicate every element in each list if it exists
-                # if p.iteration == 0:
-                #         param_list = [
-                #         # "prompts",
-                #         # "negative_prompts",
-                #         # "seeds",
-                #         # "subseeds",
-                #         "all_hr_negative_prompts",
-                #         "all_hr_prompts",
-                #         "all_negative_prompts",
-                #         "all_prompts",
-                #         "all_seeds",
-                #         "all_subseeds",
-                #         ]
-
-                #         for param_name in param_list:
-                #                 run_fn_on_attr(p, param_name, duplicate_alternate_elements)
-
-                # # assign
-                #         for n in range(1, p.n_iter, 2):
-                #                 start_idx = n * p.batch_size
-                #                 end_idx = (n + 1) * p.batch_size
-                #                 p.all_prompts[start_idx:end_idx] = [prompt + ' BREAK <<REPLACEME>>' for prompt in p.all_prompts[start_idx:end_idx]]
                 if quality:
                         if p.iteration % 2 == 1:
                                 n = p.iteration
@@ -355,14 +307,6 @@ class IncantExtensionScript(scripts.Script):
                 else:
                         # assign old cache to next iteration
                         incant_params.first_stage_cache = self.stage_1
-                        # init interrogator
-                        # self.interrogate_images(incant_params, p)
-                        #try:
-                        #        self.calc_quality_guidance(incant_params)
-                        #except Exception as e:
-                        #        print('\nexception when calculating quality guidance:\n')
-                        #        print(e)
-
 
                 # Use lambda to call the callback function with the parameters to avoid global variables
                 y = lambda params: self.on_cfg_denoiser_callback(params, incant_params)
@@ -697,6 +641,7 @@ def duplicate_list(input_list: list) -> list:
 
 
 # XYZ Plot
+# untested
 # Based on @mcmonkey4eva's XYZ Plot implementation here: https://github.com/mcmonkeyprojects/sd-dynamic-thresholding/blob/master/scripts/dynamic_thresholding.py
 def incant_apply_override(field, boolean: bool = False):
     def fun(p, x, xs):
