@@ -108,7 +108,7 @@ class IncantExtensionScript(scripts.Script):
                         with gr.Row():
                                 coarse_step = gr.Slider(value = 10, minimum = 0, maximum = 100, step = 1, label="Coarse Step", elem_id = 'incant_coarse')
                                 fine_step = gr.Slider(value = 30, minimum = 0, maximum = 100, step = 1, label="Fine Step", elem_id = 'incant_fine')
-                                gamma = gr.Slider(value = 0.25, minimum = 0, maximum = 1.0, step = 0.01, label="Gamma", elem_id = 'incant_gamma')
+                                gamma = gr.Slider(value = 0.25, minimum = -1.0, maximum = 1.0, step = 0.01, label="Gamma", elem_id = 'incant_gamma')
                         with gr.Row():
                                 qual_scale = gr.Slider(value = 0.0, minimum = 0, maximum = 100.0, step = 0.01, label="Quality Guidance Scale", elem_id = 'incant_qual_scale')
                                 sem_scale = gr.Slider(value = 0.0, minimum = 0, maximum = 100.0, step = 0.01, label="Semantic Guidance Scale", elem_id = 'incant_sem_scale')
@@ -464,7 +464,8 @@ class IncantExtensionScript(scripts.Script):
                 regex = r"\b{0}\b"
                 masked_prompt = prompt
                 for word, pct in word_list: 
-                        if pct < gamma:
+                        condition = pct < gamma if gamma >= 0 else pct > gamma
+                        if condition:
                                 repl_regex = regex.format(word)
                                         # replace word with -
                                 masked_prompt = re.sub(repl_regex, "-", masked_prompt)
