@@ -118,6 +118,7 @@ class IncantStateParams:
                 self.coarse = 10
                 self.fine = 30
                 self.gamma = 0.25
+                self.quality = False
                 self.deepbooru = False
                 self.prompt = ''
                 self.prompts = []
@@ -182,12 +183,12 @@ class IncantExtensionScript(scripts.Script):
                         quality = gr.Checkbox(value=False, default=False, label="Append Generated Caption", elem_id='incant_quality', info="Append interrogated caption to prompt")
                         deepbooru = gr.Checkbox(value=False, default=False, label="Deepbooru Interrogate", elem_id='incant_deepbooru')
                         with gr.Row():
-                                delim = gr.Textbox(value='AND', label="Delimiter", elem_id='incant_delim', info="Prompt DELIM Optimized Prompt. Try BREAK, AND, NOT, etc.")
+                                delim = gr.Textbox(value='BREAK', label="Delimiter", elem_id='incant_delim', info="Prompt DELIM Optimized Prompt. Try BREAK, AND, NOT, etc.")
                                 word = gr.Textbox(value='-', label="Word Replacement", elem_id='incant_word', info="Replace masked words with this")
                         with gr.Row():
                                 coarse_step = gr.Slider(value = 10, minimum = 0, maximum = 100, step = 1, label="Coarse Step", elem_id = 'incant_coarse')
                                 fine_step = gr.Slider(value = 100, minimum = 0, maximum = 100, step = 1, label="Fine Step", elem_id = 'incant_fine')
-                                gamma = gr.Slider(value = -10, minimum = -100.0, maximum = 100.0, step = 0.001, label="Gamma", elem_id = 'incant_gamma', info="If gamma > 0, mask words with similarity less than gamma percent. If gamma < 0, mask more similar words.")
+                                gamma = gr.Slider(value = 0.1, minimum = -1.0, maximum = 1.0, step = 0.0001, label="Gamma", elem_id = 'incant_gamma', info="If gamma > 0, mask words with similarity less than gamma percent. If gamma < 0, mask more similar words.")
                         with gr.Row():
                                 qual_scale = gr.Slider(value = 0.0, minimum = 0, maximum = 100.0, step = 0.01, label="Quality Guidance Scale", elem_id = 'incant_qual_scale', info="Scale for quality guidance. Incorrect and does not work for SDXL", interactive=False)
                                 sem_scale = gr.Slider(value = 0.0, minimum = 0, maximum = 100.0, step = 0.01, label="Semantic Guidance Scale", elem_id = 'incant_sem_scale', info="Scale for semantic guidance. Not implemented.", interactive=False)
@@ -292,12 +293,12 @@ class IncantExtensionScript(scripts.Script):
                         n = p.iteration
                         start_idx = n * p.batch_size
                         end_idx = (n + 1) * p.batch_size
+                        delim_str = f' {delim} ' if len(delim) > 0 else ' '
                         for idx in range(start_idx, end_idx):
                                 mask_idx = idx - start_idx
                                 add_mask_prompt = self.stage_1.masked_prompt[mask_idx]
                                 # append prompt
                                 if quality:
-                                        delim_str = f' {delim} ' if len(delim) > 0 else ' '
                                         for caption in self.stage_1.caption_fine:
                                                 add_mask_prompt += delim_str + caption
                                 p.all_prompts[idx] = p.all_prompts[idx].replace('<<REPLACEME>>', add_mask_prompt)
@@ -358,6 +359,7 @@ class IncantExtensionScript(scripts.Script):
                 incant_params.prompt = p.prompt
                 incant_params.prompts = [pr for pr in p.prompts]
                 #incant_params.prompt_tokens = clip.tokenize(list(p.prompt), truncate=True).to(devices.device_interrogate)
+                incant_params.quality = quality 
                 incant_params.coarse = coarse
                 incant_params.delim = delim
                 incant_params.word = word 
@@ -660,6 +662,7 @@ class IncantExtensionScript(scripts.Script):
 
                                 # calculate image similarity
                                         matches = interrogator.rank(image_features, text_array, top_count=len(text_array))
+                                        matches = [(tag, strength/100.0) for (tag, strength) in matches]
                                         print(f"{i}-caption:{caption}\n{i}-coarse: {matches}")
                                         matches_list.append(matches)
                                 else:
@@ -669,24 +672,26 @@ class IncantExtensionScript(scripts.Script):
 
                                         # use deepbooru
                                         matches = prompt_parser.parse_prompt_attention(caption)
-                                        match_list = []
-                                        matches = [(tag, strength*100.0) for (tag, strength) in matches]
+                                        matches_list = []
+                                        matches = [(tag, strength) for (tag, strength) in matches]
                                         for tags, strength in matches:
                                                 for tag in tags.split(', '):
-                                                        match_list.append((tag, strength))
+                                                        matches_list.append((tag, strength))
 
-                                        print(f"{i}-caption:{caption}\n{i}-coarse: {match_list}")
-                                        matches_list.append(match_list)
+                                        print(f"{i}-caption:{caption}\n{i}-coarse: {matches_list}")
+                                        matches_list.append(matches_list)
 
 
                 # fine features
                 for i, pil_image in enumerate(incant_params.img_fine):
                         caption = interrogator.generate_caption(pil_image)
-                        incant_params.caption_fine.append(caption)
-
+                        #incant_params.caption_fine.append(caption)
                         devices.torch_gc()
+
                         res = caption
                         if not incant_params.deepbooru:
+                                # append caption
+
                                 clip_image = interrogator.clip_preprocess(pil_image).unsqueeze(0).type(interrogator.dtype).to(devices.device_interrogate)
 
                                 with torch.no_grad(), devices.autocast():
@@ -704,26 +709,62 @@ class IncantExtensionScript(scripts.Script):
                                                 incant_params.emb_txt_fine.append(c)
 
                                         # calculate image similarity
+                                        matches_list = []
                                         matches = interrogator.rank(image_features, text_array, top_count=len(text_array))
-                                        print(f"{i}-caption:{caption}\n{i}-fine:{matches}")
-                                        incant_params.matches_fine.append(matches)
+                                        # normalize to 1.0
+                                        matches = [(tag, strength/100.0) for (tag, strength) in matches]
+                                        print(f"\n{i}-prompt:{caption}\n{i}-fine:{matches}\n")
+                                        matches_list.extend(matches)
+
+                                        # don't mask caption
+                                        incant_params.caption_fine.append(caption)
+                                        # mask caption
+                                        if incant_params.quality:
+                                                text_array = caption.split()
+                                                matches = interrogator.rank(image_features, text_array, top_count=len(text_array))
+                                                print(f"\n{i}-fine:{matches}\n")
+                                                matches_list.extend(matches)
+                                        incant_params.matches_fine.append(matches_list)
                         else:
                                 # calculate image embeddings
 
                                 # calculate text embeddings
 
                                 # use deepbooru
+                                # TODO: filter somewhere else
+                                gamma = incant_params.gamma
+                                mask_less_similar = gamma > 0
+                                gamma = abs(gamma)
+
+                                matches_list = []
                                 matches = prompt_parser.parse_prompt_attention(caption)
-                                match_list = []
-                                matches = [(tag, strength*100.0) for (tag, strength) in matches]
+                                if mask_less_similar:
+                                        matches = [(tag, strength) for (tag, strength) in matches if strength >= gamma]
+                                else:
+                                        matches = [(tag, strength) for (tag, strength) in matches if strength < gamma]
+
+                                # filtered caption
+
+
+
+                                # already normalized
+                                # matches = [(tag, strength) for (tag, strength) in matches]
+                                # split by tags
                                 for tags, strength in matches:
                                         for tag in tags.split(', '):
                                                 if len(tag) == 0:
                                                         continue
-                                                match_list.append((tag, strength))
+                                                # filter tags
+                                                matches_list.append((tag, strength))
 
-                                print(f"{i}-caption:{caption}\n{i}-coarse: {match_list}")
-                                incant_params.matches_fine.append(match_list)
+                                new_caption = ''
+                                for tag, strength in matches_list:
+                                        new_caption += f'({tag}:{strength}), '
+                                new_caption.removesuffix(', ')
+                                incant_params.caption_fine.append(new_caption)
+
+                                print(f"{i}-caption:{new_caption}\n")
+                                incant_params.matches_fine.append(matches_list)
 
                 devices.torch_gc()
 
