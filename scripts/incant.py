@@ -101,7 +101,7 @@ class InterrogatorDeepbooru(Interrogator):
                 if not shared.opts.interrogate_return_ranks: 
                         print('\nincantations - warning: interrogate_return_ranks should be enabled for Deepbooru Interrogate to work')
                 threshold = shared.opts.interrogate_deepbooru_score_threshold
-                if threshold > 0.1:
+                if threshold < 0.4:
                         print('\nincantations - warning: deepbooru score threshold should be lowered for Deepbooru Interrogate to work')
                 tags = self.interrogator.tag(pil_image)
                 #prompts = prompt_parser.parse_prompt_attention(tags)
