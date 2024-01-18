@@ -179,14 +179,14 @@ class IncantExtensionScript(scripts.Script):
         def ui(self, is_img2img):
                 with gr.Accordion('Incantations', open=False):
                         active = gr.Checkbox(value=False, default=False, label="Active", elem_id='incant_active')
-                        quality = gr.Checkbox(value=True, default=True, label="Append Prompt", elem_id='incant_quality')
+                        quality = gr.Checkbox(value=False, default=False, label="Append Generated Caption", elem_id='incant_quality', info="Append interrogated caption to prompt")
                         deepbooru = gr.Checkbox(value=False, default=False, label="Deepbooru Interrogate", elem_id='incant_deepbooru')
                         with gr.Row():
                                 delim = gr.Textbox(value='AND', label="Delimiter", elem_id='incant_delim', info="Prompt DELIM Optimized Prompt. Try BREAK, AND, NOT, etc.")
                                 word = gr.Textbox(value='-', label="Word Replacement", elem_id='incant_word', info="Replace masked words with this")
                         with gr.Row():
                                 coarse_step = gr.Slider(value = 10, minimum = 0, maximum = 100, step = 1, label="Coarse Step", elem_id = 'incant_coarse')
-                                fine_step = gr.Slider(value = 30, minimum = 0, maximum = 100, step = 1, label="Fine Step", elem_id = 'incant_fine')
+                                fine_step = gr.Slider(value = 100, minimum = 0, maximum = 100, step = 1, label="Fine Step", elem_id = 'incant_fine')
                                 gamma = gr.Slider(value = -10, minimum = -100.0, maximum = 100.0, step = 0.001, label="Gamma", elem_id = 'incant_gamma', info="If gamma > 0, mask words with similarity less than gamma percent. If gamma < 0, mask more similar words.")
                         with gr.Row():
                                 qual_scale = gr.Slider(value = 0.0, minimum = 0, maximum = 100.0, step = 0.01, label="Quality Guidance Scale", elem_id = 'incant_qual_scale', info="Scale for quality guidance. Incorrect and does not work for SDXL", interactive=False)
@@ -254,12 +254,13 @@ class IncantExtensionScript(scripts.Script):
                                 run_fn_on_attr(p, param_name, duplicate_alternate_elements, p.batch_size)
 
                 # assign
-                        if quality:
-                                delim_str = f' {delim} ' if len(delim) > 0 else ' '
-                                for n in range(1, p.n_iter, 2):
-                                        start_idx = n * p.batch_size
-                                        end_idx = (n + 1) * p.batch_size
-                                        p.all_prompts[start_idx:end_idx] = [prompt + delim_str + '<<REPLACEME>>' for prompt in p.all_prompts[start_idx:end_idx]]
+                        # always do this
+                        #if quality:
+                        delim_str = f' {delim} ' if len(delim) > 0 else ' '
+                        for n in range(1, p.n_iter, 2):
+                                start_idx = n * p.batch_size
+                                end_idx = (n + 1) * p.batch_size
+                                p.all_prompts[start_idx:end_idx] = [prompt + delim_str + '<<REPLACEME>>' for prompt in p.all_prompts[start_idx:end_idx]]
 
         def before_process_batch(self, p: StableDiffusionProcessing, active, quality, deepbooru, delim, word, coarse_step, fine_step, gamma, qual_scale, sem_scale, *args, **kwargs):
                 active = getattr(p, "incant_active", active)
@@ -284,15 +285,23 @@ class IncantExtensionScript(scripts.Script):
                 # p.n_iter = p.n_iter * 2
                 # modify prompts
                 n = p.n_iter
-                if quality:
-                        if p.iteration % 2 == 1:
-                                n = p.iteration
-                                start_idx = n * p.batch_size
-                                end_idx = (n + 1) * p.batch_size
-                                for idx in range(start_idx, end_idx):
-                                        mask_idx = idx - start_idx
-                                        p.all_prompts[idx] = p.all_prompts[idx].replace('<<REPLACEME>>', self.stage_1.masked_prompt[mask_idx])
-                                        kwargs['prompts'][mask_idx] = kwargs['prompts'][mask_idx].replace('<<REPLACEME>>', self.stage_1.masked_prompt[mask_idx])
+                # always do this
+
+                #if quality:
+                if p.iteration % 2 == 1:
+                        n = p.iteration
+                        start_idx = n * p.batch_size
+                        end_idx = (n + 1) * p.batch_size
+                        for idx in range(start_idx, end_idx):
+                                mask_idx = idx - start_idx
+                                add_mask_prompt = self.stage_1.masked_prompt[mask_idx]
+                                # append prompt
+                                if quality:
+                                        delim_str = f' {delim} ' if len(delim) > 0 else ' '
+                                        for caption in self.stage_1.caption_fine:
+                                                add_mask_prompt += delim_str + caption
+                                p.all_prompts[idx] = p.all_prompts[idx].replace('<<REPLACEME>>', add_mask_prompt)
+                                kwargs['prompts'][mask_idx] = kwargs['prompts'][mask_idx].replace('<<REPLACEME>>', add_mask_prompt)
 
                 # p.steps += fine_step
                 # TODO: nicely put this into a dict
