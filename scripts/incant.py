@@ -297,10 +297,14 @@ class IncantExtensionScript(scripts.Script):
                         for idx in range(start_idx, end_idx):
                                 mask_idx = idx - start_idx
                                 add_mask_prompt = self.stage_1.masked_prompt[mask_idx]
+                                caption = self.stage_1.caption_fine[mask_idx]
                                 # append prompt
                                 if quality:
-                                        for caption in self.stage_1.caption_fine:
-                                                add_mask_prompt += delim_str + caption
+                                        if isinstance(caption, str):
+                                                        add_mask_prompt += delim_str + caption
+                                        elif isinstance(caption, list):
+                                                for caption_item in caption:
+                                                        add_mask_prompt += delim_str + caption_item
                                 p.all_prompts[idx] = p.all_prompts[idx].replace('<<REPLACEME>>', add_mask_prompt)
                                 kwargs['prompts'][mask_idx] = kwargs['prompts'][mask_idx].replace('<<REPLACEME>>', add_mask_prompt)
 
