@@ -291,20 +291,25 @@ class IncantExtensionScript(scripts.Script):
                 #if quality:
                 if p.iteration % 2 == 1:
                         n = p.iteration
-                        start_idx = n * p.batch_size
-                        end_idx = (n + 1) * p.batch_size
+                        # batch of images
+                        batch_start_idx = n * p.batch_size
+                        batch_end_idx = (n + 1) * p.batch_size
+                        # mask 
+                        mask_start_idx = (n - 1) * p.batch_size
                         delim_str = f' {delim} ' if len(delim) > 0 else ' '
-                        for idx in range(start_idx, end_idx):
-                                mask_idx = idx - start_idx
-                                add_mask_prompt = self.stage_1.masked_prompt[mask_idx]
-                                caption = self.stage_1.caption_fine[mask_idx]
-                                # append prompt
-                                if quality:
-                                        if isinstance(caption, str):
-                                                        add_mask_prompt += delim_str + caption
-                                        elif isinstance(caption, list):
-                                                for caption_item in caption:
-                                                        add_mask_prompt += delim_str + caption_item
+                        #add_mask_prompt = self.stage_1.masked_prompt[mask_start_idx]
+                        for idx in range(batch_start_idx, batch_end_idx):
+                                add_mask_prompt = ''
+                                mask_idx = mask_start_idx + (idx - batch_start_idx)
+                                masked_prompts = self.stage_1.masked_prompt[mask_idx]
+                                # if we don't want to append other masked captions, only use the first one
+                                if not quality:
+                                        masked_prompts = [masked_prompts[0]]
+                                for masked_prompt_idx, prompt in enumerate(masked_prompts):
+                                        if masked_prompt_idx > 0:
+                                                add_mask_prompt += delim_str + prompt 
+                                        else:
+                                                add_mask_prompt += prompt
                                 p.all_prompts[idx] = p.all_prompts[idx].replace('<<REPLACEME>>', add_mask_prompt)
                                 kwargs['prompts'][mask_idx] = kwargs['prompts'][mask_idx].replace('<<REPLACEME>>', add_mask_prompt)
 
@@ -572,13 +577,11 @@ class IncantExtensionScript(scripts.Script):
                         devices.torch_gc()
 
                         # compute masked_prompts
-                        for i, caption_matches_item in enumerate(incant_params.matches_fine):
+                        for batch_idx, caption_matches_item in enumerate(incant_params.matches_fine):
+                                batch_mask_prompts = []
                                 for caption, matches in caption_matches_item:
-                                        #caption, matches_list = caption_matches_item
-                                        #for matches in matches_list:
-                                #incant_params.masked_prompt.append(self.mask_prompt(incant_params.gamma, matches, incant_params.caption_fine[0]))
-                                #incant_params.masked_prompt.append(self.mask_prompt(incant_params.gamma*100.0, matches, incant_params.caption_fine[0]))
-                                        incant_params.masked_prompt.append(self.mask_prompt(incant_params.gamma, matches, caption, incant_params.word))
+                                        batch_mask_prompts.append(self.mask_prompt(incant_params.gamma, matches, caption, incant_params.word))
+                                incant_params.masked_prompt.append(batch_mask_prompts)
 
                         # calculate gradients
                         # self.calculate_embedding_gradients(incant_params, p, step)
@@ -623,28 +626,12 @@ class IncantExtensionScript(scripts.Script):
                 # incant_params.grad_img = self.compute_gradients(img_emb_fine, img_emb_coarse)
 
         def interrogate_images(self, incant_params, p):
-                debug_compute_coarse = False
-                compute_conds = False
-
-                #interrogator = shared.interrogator
                 interrogator = self.interrogator(incant_params.deepbooru)
                 interrogator.load()
 
-                # calculate text/image embeddings
-                text_array = incant_params.prompt.split()
-
-                #shared.state.begin(job="interrogate")
-
-                img_list = incant_params.img_coarse
-                caption_list = incant_params.caption_coarse
-                clip_img_embed_list = incant_params.emb_img_coarse
-                cond_list = incant_params.emb_txt_coarse
-                #matches_list = incant_params.matches_coarse
-                matches_list = []
-
                 # fine features
                 for batch_idx, pil_image in enumerate(incant_params.img_fine):
-
+                        # generate caption
                         caption = interrogator.generate_caption(pil_image)
                         devices.torch_gc()
 
@@ -703,7 +690,7 @@ class IncantExtensionScript(scripts.Script):
                                 incant_params.caption_fine.append(new_caption)
 
                                 print(f"{batch_idx}-caption:{new_caption}\n")
-                                incant_params.matches_fine.append((new_caption, matches_list))
+                                incant_params.matches_fine.append([(new_caption, matches_list)])
 
                 devices.torch_gc()
 
