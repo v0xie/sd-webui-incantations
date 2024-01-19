@@ -572,10 +572,13 @@ class IncantExtensionScript(scripts.Script):
                         devices.torch_gc()
 
                         # compute masked_prompts
-                        for i, matches in enumerate(incant_params.matches_fine):
+                        for i, caption_matches_item in enumerate(incant_params.matches_fine):
+                                for caption, matches in caption_matches_item:
+                                        #caption, matches_list = caption_matches_item
+                                        #for matches in matches_list:
                                 #incant_params.masked_prompt.append(self.mask_prompt(incant_params.gamma, matches, incant_params.caption_fine[0]))
                                 #incant_params.masked_prompt.append(self.mask_prompt(incant_params.gamma*100.0, matches, incant_params.caption_fine[0]))
-                                incant_params.masked_prompt.append(self.mask_prompt(incant_params.gamma, matches, p.prompt, incant_params.word))
+                                        incant_params.masked_prompt.append(self.mask_prompt(incant_params.gamma, matches, caption, incant_params.word))
 
                         # calculate gradients
                         # self.calculate_embedding_gradients(incant_params, p, step)
@@ -636,105 +639,43 @@ class IncantExtensionScript(scripts.Script):
                 caption_list = incant_params.caption_coarse
                 clip_img_embed_list = incant_params.emb_img_coarse
                 cond_list = incant_params.emb_txt_coarse
-                matches_list = incant_params.matches_coarse
-
-                # temp bypass
-                if debug_compute_coarse:
-                        # coarse features
-                        # for refactoring later
-                        for i, pil_image in enumerate(img_list):
-                                caption = interrogator.generate_caption(pil_image)
-                                caption_list.append(caption)
-
-                                devices.torch_gc()
-                                res = caption
-                                if not incant_params.deepbooru:
-                                        clip_image = interrogator.clip_preprocess(pil_image).unsqueeze(0).type(interrogator.dtype).to(devices.device_interrogate)
-                                        with torch.no_grad(), devices.autocast():
-                                                # calculate image embeddings
-                                                image_features = interrogator.clip_model.encode_image(clip_image).type(interrogator.dtype)
-                                                # image_features /= image_features.norm(dim=-1, keepdim=True)
-                                                clip_img_embed_list.append(image_features)
-
-                                        # calculate text embeddings
-                                        # CLIP
-                                        prompt_list = [caption]
-                                        #prompt_list = [caption] * p.batch_size
-                                        prompts = prompt_parser.SdConditioning(prompt_list, width=p.width, height=p.height)
-                                        c = incant_params.get_conds_with_caching(prompt_parser.get_multicond_learned_conditioning, prompts, p.steps, self.cached_c, p.extra_network_data)
-                                        cond_list.append(c)
-
-                                # calculate image similarity
-                                        matches = interrogator.rank(image_features, text_array, top_count=len(text_array))
-                                        matches = [(tag, strength/100.0) for (tag, strength) in matches]
-                                        print(f"{i}-caption:{caption}\n{i}-coarse: {matches}")
-                                        matches_list.append(matches)
-                                else:
-                                        # calculate image embeddings
-
-                                        # calculate text embeddings
-
-                                        # use deepbooru
-                                        matches = prompt_parser.parse_prompt_attention(caption)
-                                        matches_list = []
-                                        matches = [(tag, strength) for (tag, strength) in matches]
-                                        for tags, strength in matches:
-                                                for tag in tags.split(', '):
-                                                        matches_list.append((tag, strength))
-
-                                        print(f"{i}-caption:{caption}\n{i}-coarse: {matches_list}")
-                                        matches_list.append(matches_list)
-
+                #matches_list = incant_params.matches_coarse
+                matches_list = []
 
                 # fine features
-                for i, pil_image in enumerate(incant_params.img_fine):
+                for batch_idx, pil_image in enumerate(incant_params.img_fine):
+
                         caption = interrogator.generate_caption(pil_image)
-                        #incant_params.caption_fine.append(caption)
                         devices.torch_gc()
 
-                        res = caption
+                        # CLIP
                         if not incant_params.deepbooru:
+                                matches_list = []
                                 # append caption
+                                caption = interrogator.generate_caption(pil_image)
+                                incant_params.caption_fine.append(caption)
 
-                                clip_image = interrogator.clip_preprocess(pil_image).unsqueeze(0).type(interrogator.dtype).to(devices.device_interrogate)
-
-                                with torch.no_grad(), devices.autocast():
-                                        # calculate image embeddings
-                                        image_features = interrogator.clip_model.encode_image(clip_image).type(interrogator.dtype)
-                                        image_features /= image_features.norm(dim=-1, keepdim=True)
-                                        incant_params.emb_img_fine.append(image_features)
-
-                                        # calculate text embeddings
-                                        if compute_conds:
-                                                prompt_list = [caption]
-                                                #prompt_list = [caption] * p.batch_size
-                                                prompts = prompt_parser.SdConditioning(prompt_list, width=p.width, height=p.height)
-                                                c = incant_params.get_conds_with_caching(prompt_parser.get_multicond_learned_conditioning, prompts, p.steps, self.cached_c, p.extra_network_data)
-                                                incant_params.emb_txt_fine.append(c)
-
-                                        # calculate image similarity
-                                        matches_list = []
-                                        matches = interrogator.rank(image_features, text_array, top_count=len(text_array))
-                                        # normalize to 1.0
-                                        matches = [(tag, strength/100.0) for (tag, strength) in matches]
-                                        print(f"\n{i}-prompt:{caption}\n{i}-fine:{matches}\n")
-                                        matches_list.extend(matches)
-
-                                        # don't mask caption
-                                        incant_params.caption_fine.append(caption)
-                                        # mask caption
-                                        if incant_params.quality:
-                                                text_array = caption.split()
-                                                matches = interrogator.rank(image_features, text_array, top_count=len(text_array))
-                                                print(f"\n{i}-fine:{matches}\n")
-                                                matches_list.extend(matches)
-                                        incant_params.matches_fine.append(matches_list)
-                        else:
                                 # calculate image embeddings
+                                image_features = self.calc_img_embedding(interrogator, pil_image)
+                                incant_params.emb_img_fine.append(image_features)
 
-                                # calculate text embeddings
+                                # calculate image similarity to prompt
+                                prompt_text_array = incant_params.prompt.split()
+                                matches = self.clip_text_image_similarity(interrogator, prompt_text_array, image_features, top_count=len(prompt_text_array))
+                                matches_list.append((incant_params.prompt, matches))
+                                #print(f"\n{batch_idx}-prompt:{caption}\n{batch_idx}-fine:{matches}\n")
 
-                                # use deepbooru
+                                # calculate image similarity to generated caption
+                                if incant_params.quality:
+                                        caption_text_array = caption.split()
+                                        matches = interrogator.rank(image_features, caption_text_array, top_count=len(caption_text_array))
+                                        matches_list.append((caption, matches))
+                                        print(f"\n{batch_idx}-fine:{matches}\n")
+
+                                incant_params.matches_fine.append(matches_list)
+
+                        # deepbooru interrogate
+                        else:
                                 # TODO: filter somewhere else
                                 gamma = incant_params.gamma
                                 mask_less_similar = gamma > 0
@@ -746,12 +687,6 @@ class IncantExtensionScript(scripts.Script):
                                         matches = [(tag, strength) for (tag, strength) in matches if strength >= gamma]
                                 else:
                                         matches = [(tag, strength) for (tag, strength) in matches if strength < gamma]
-
-                                # filtered caption
-
-
-
-                                # already normalized
                                 # matches = [(tag, strength) for (tag, strength) in matches]
                                 # split by tags
                                 for tags, strength in matches:
@@ -767,10 +702,35 @@ class IncantExtensionScript(scripts.Script):
                                 new_caption.removesuffix(', ')
                                 incant_params.caption_fine.append(new_caption)
 
-                                print(f"{i}-caption:{new_caption}\n")
-                                incant_params.matches_fine.append(matches_list)
+                                print(f"{batch_idx}-caption:{new_caption}\n")
+                                incant_params.matches_fine.append((new_caption, matches_list))
 
                 devices.torch_gc()
+
+        def clip_text_image_similarity(self, interrogator, text_array, image_features, top_count=1) -> list[tuple[str, float]]:
+                """ Calculate similarity between text and image features using CLIP
+
+                Args:
+                    interrogator (): shared.interrogator
+                    text_array (str): text to match similarity
+                    image_features (tensor): image encoded with calc_img_embedding
+                    top_count (int, optional): number of top matches to return
+
+                Returns:
+                    list[tuple[str, float]]: _description_
+                """
+                with torch.no_grad(), devices.autocast():
+                        matches = interrogator.rank(image_features, text_array, top_count=top_count)
+                        matches = [(tag, strength/100.0) for (tag, strength) in matches] # rescale to 0-1
+                return matches
+
+        def calc_img_embedding(self, interrogator, pil_image):
+                clip_image = interrogator.clip_preprocess(pil_image).unsqueeze(0).type(interrogator.dtype).to(devices.device_interrogate)
+                with torch.no_grad(), devices.autocast():
+                                                # calculate image embeddings
+                        image_features = interrogator.clip_model.encode_image(clip_image).type(interrogator.dtype)
+                        image_features /= image_features.norm(dim=-1, keepdim=True)
+                return image_features
 
         def decode_images(self, x):
                 batch_images = []
