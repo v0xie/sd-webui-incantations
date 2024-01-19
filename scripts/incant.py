@@ -315,7 +315,7 @@ class IncantExtensionScript(scripts.Script):
 
                 # p.steps += fine_step
                 # TODO: nicely put this into a dict
-                p.extra_generation_params = {
+                p.extra_generation_params.update({
                         "INCANT Active": active,
                         "INCANT Quality": quality,
                         "INCANT Delim": delim,
@@ -326,7 +326,7 @@ class IncantExtensionScript(scripts.Script):
                         "INCANT Gamma": gamma,
                         "INCANT Qual Scale": qual_scale,
                         "INCANT Sem Scale": sem_scale,
-                }
+                })
                 self.create_hook(p, active, quality, deepbooru, delim, word, coarse_step, fine_step, gamma, qual_scale, sem_scale, *args, **kwargs)
         
         def process_batch(self, p: StableDiffusionProcessing, active, quality, deepbooru, delim, word, coarse_step, fine_step, gamma, qual_scale, sem_scale, *args, **kwargs):
