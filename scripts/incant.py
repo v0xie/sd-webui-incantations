@@ -238,7 +238,7 @@ class IncantExtensionScript(UIWrapper):
                 self.incant_process(p, *args, **kwargs)
 
         def incant_process(self, p: StableDiffusionProcessing, inc_active, inc_quality, inc_deepbooru, inc_delim, inc_word, inc_gamma, *args, **kwargs):
-                inc_active = arg(p, "incant_active", "inc_active", **kwargs)
+                inc_active = getattr(p, "incant_active", inc_active)
                 if inc_active is False:
                         return
                 inc_quality = getattr(p, "incant_append_prompt", inc_quality)
@@ -261,8 +261,6 @@ class IncantExtensionScript(UIWrapper):
                                 run_fn_on_attr(p, param_name, duplicate_alternate_elements, p.batch_size)
 
                         # assign
-                                # always do this
-                                #if quality:
                         delim_str = f' {inc_delim} ' if len(inc_delim) > 0 else ' '
                         for n in range(1, p.n_iter, 2):
                                 start_idx = n * p.batch_size

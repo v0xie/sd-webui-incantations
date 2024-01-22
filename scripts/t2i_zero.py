@@ -74,7 +74,7 @@ class T2I0ExtensionScript(UIWrapper):
 
         # Setup menu ui detail
         def setup_ui(self, is_img2img) -> list:
-                with gr.Accordion('Multi T2I-Zero', open=False):
+                with gr.Accordion('Multi-Concept T2I-Zero [arXiv:2310.07419v1]', open=True):
                         active = gr.Checkbox(value=False, default=False, label="Active", elem_id='t2i0_active')
                         with gr.Row():
                                 window_size = gr.Slider(value = 15, minimum = 0, maximum = 100, step = 1, label="Correction by Similarities Window Size", elem_id = 't2i0_window_size', info="Exclude contribution of tokens further than this from the current token")
