@@ -5,7 +5,7 @@ import gradio as gr
 import scipy.stats as stats
 
 from scripts.ui_wrapper import UIWrapper, arg
-from modules import script_callbacks, prompt_parser, sd_hijack, sd_hijack_optimizations
+from modules import script_callbacks
 from modules.hypernetworks import hypernetwork
 #import modules.sd_hijack_optimizations
 from modules.script_callbacks import CFGDenoiserParams
@@ -48,20 +48,18 @@ GitHub URL: https://github.com/v0xie/sd-webui-semantic-guidance
 
 handles = []
 
-class SegaStateParams:
+class T2I0StateParams:
         def __init__(self):
-                self.concept_name = ''
-                self.v = {} # velocity
-                self.warmup_period: int = 10 # [0, 20]
-                self.tail_percentage_threshold: float = 0.05 # [0., 1.] if abs value of difference between uncodition and concept-conditioned is less than this, then zero out the concept-conditioned values less than this
-                self.momentum_scale: float = 0.3 # [0., 1.]
-                self.momentum_beta: float = 0.6 # [0., 1.) # larger bm is less volatile changes in momentum
+                self.window_size_period: int = 10 # [0, 20]
+                self.ctnms_alpha: float = 0.05 # [0., 1.] if abs value of difference between uncodition and concept-conditioned is less than this, then zero out the concept-conditioned values less than this
+                self.correction_threshold: float = 0.5 # [0., 1.]
+                self.correction_strength: float = 0.25 # [0., 1.) # larger bm is less volatile changes in momentum
                 self.strength = 1.0
                 self.width = None
                 self.height = None
                 self.dims = []
 
-class SegaExtensionScript(UIWrapper):
+class T2I0ExtensionScript(UIWrapper):
         def __init__(self):
                 self.cached_c = [None, None]
                 self.handles = []
@@ -79,54 +77,52 @@ class SegaExtensionScript(UIWrapper):
                 with gr.Accordion('Multi T2I-Zero', open=False):
                         active = gr.Checkbox(value=False, default=False, label="Active", elem_id='t2i0_active')
                         with gr.Row():
-                                warmup = gr.Slider(value = 10, minimum = 0, maximum = 30, step = 1, label="Window Size", elem_id = 't2i0_warmup', info="How many steps to wait before applying semantic guidance, default 10")
-                                momentum_scale = gr.Slider(value = 0.3, minimum = 0.0, maximum = 1.0, step = 0.01, label="Correction Threshold", elem_id = 't2i0_momentum_scale', info="Scale of momentum, default 0.3")
-                                momentum_beta = gr.Slider(value = 0.6, minimum = 0.0, maximum = 0.999, step = 0.01, label="Correction Strength", elem_id = 't2i0_momentum_beta', info="Beta for momentum, default 0.6")
+                                window_size = gr.Slider(value = 15, minimum = 0, maximum = 100, step = 1, label="Correction by Similarities Window Size", elem_id = 't2i0_window_size', info="Exclude contribution of tokens further than this from the current token")
+                                correction_threshold = gr.Slider(value = 0.5, minimum = 0.0, maximum = 1.0, step = 0.01, label="CbS Score Threshold", elem_id = 't2i0_correction_threshold', info="Filter dimensions with similarity below this threshold")
+                                correction_strength = gr.Slider(value = 0.25, minimum = 0.0, maximum = 0.999, step = 0.01, label="CbS Correction Strength", elem_id = 't2i0_correction_strength', info="The strength of the correction, default 0.25")
                         with gr.Row():
-                                tail_percentage_threshold = gr.Slider(value = 0.05, minimum = 0.0, maximum = 1.0, step = 0.01, label="Alpha for CTNMS", elem_id = 't2i0_tail_percentage_threshold', info="The percentage of latents to modify, default 0.05")
+                                ctnms_alpha = gr.Slider(value = 0.1, minimum = 0.0, maximum = 1.0, step = 0.01, label="Alpha for Cross-Token Non-Maximum Suppression", elem_id = 't2i0_ctnms_alpha', info="Contribution of the suppressed attention map, default 0.1")
                 active.do_not_save_to_config = True
-                warmup.do_not_save_to_config = True
-                tail_percentage_threshold.do_not_save_to_config = True
-                momentum_scale.do_not_save_to_config = True
-                momentum_beta.do_not_save_to_config = True
+                window_size.do_not_save_to_config = True
+                ctnms_alpha.do_not_save_to_config = True
+                correction_threshold.do_not_save_to_config = True
+                correction_strength.do_not_save_to_config = True
                 self.infotext_fields = [
                         (active, lambda d: gr.Checkbox.update(value='T2I-0 Active' in d)),
-                        (warmup, 'T2I-0 Warmup Period'),
-                        (tail_percentage_threshold, 'T2I-0 Tail Percentage Threshold'),
-                        (momentum_scale, 'T2I-0 Momentum Scale'),
-                        (momentum_beta, 'T2I-0 Momentum Beta'),
+                        (window_size, 'T2I-0 Window Size'),
+                        (ctnms_alpha, 'T2I-0 CTNMS Alpha'),
+                        (correction_threshold, 'T2I-0 CbS Score Threshold'),
+                        (correction_strength, 'T2I-0 CbS Correction Strength'),
                 ]
                 self.paste_field_names = [
                         't2i0_active',
-                        't2i0_prompt',
-                        't2i0_neg_prompt',
-                        't2i0_warmup',
-                        't2i0_tail_percentage_threshold',
-                        't2i0_momentum_scale',
-                        't2i0_momentum_beta'
+                        't2i0_window_size',
+                        't2i0_ctnms_alpha',
+                        't2i0_correction_threshold',
+                        't2i0_correction_strength'
                 ]
-                return [active, warmup, tail_percentage_threshold, momentum_scale, momentum_beta]
+                return [active, window_size, ctnms_alpha, correction_threshold, correction_strength]
 
         def process_batch(self, p: StableDiffusionProcessing, *args, **kwargs):
-               self.sega_process_batch(p, *args, **kwargs)
+               self.t2i0_process_batch(p, *args, **kwargs)
 
-        def sega_process_batch(self, p: StableDiffusionProcessing, active, warmup, tail_percentage_threshold, momentum_scale, momentum_beta, *args, **kwargs):
+        def t2i0_process_batch(self, p: StableDiffusionProcessing, active, window_size, ctnms_alpha, correction_threshold, correction_strength, *args, **kwargs):
                 active = getattr(p, "t2i0_active", active)
                 if active is False:
                         return
-                warmup = getattr(p, "t2i0_warmup", warmup)
-                tail_percentage_threshold = getattr(p, "t2i0_tail_percentage_threshold", tail_percentage_threshold)
-                momentum_scale = getattr(p, "t2i0_momentum_scale", momentum_scale)
-                momentum_beta = getattr(p, "t2i0_momentum_beta", momentum_beta)
+                window_size = getattr(p, "t2i0_window_size", window_size)
+                ctnms_alpha = getattr(p, "t2i0_ctnms_alpha", ctnms_alpha)
+                correction_threshold = getattr(p, "t2i0_correction_threshold", correction_threshold)
+                correction_strength = getattr(p, "t2i0_correction_strength", correction_strength)
                 p.extra_generation_params.update({
                         "T2I-0 Active": active,
-                        "T2I-0 Warmup Period": warmup,
-                        "T2I-0 Tail Percentage Threshold": tail_percentage_threshold,
-                        "T2I-0 Momentum Scale": momentum_scale,
-                        "T2I-0 Momentum Beta": momentum_beta,
+                        "T2I-0 window_size Period": window_size,
+                        "T2I-0 CTNMS Alpha": ctnms_alpha,
+                        "T2I-0 CbS Score Threshold": correction_threshold,
+                        "T2I-0 CbS Correction Strength": correction_strength,
                 })
 
-                self.create_hook(p, active, warmup, tail_percentage_threshold, momentum_scale, momentum_beta, p.width, p.height)
+                self.create_hook(p, active, window_size, ctnms_alpha, correction_threshold, correction_strength, p.width, p.height)
 
         def parse_concept_prompt(self, prompt:str) -> list[str]:
                 """
@@ -144,40 +140,40 @@ class SegaExtensionScript(UIWrapper):
                         return []
                 return [x.strip() for x in prompt.split(",")]
 
-        def create_hook(self, p, active, warmup, tail_percentage_threshold, momentum_scale, momentum_beta, width, height, *args, **kwargs):
+        def create_hook(self, p, active, window_size, ctnms_alpha, correction_threshold, correction_strength, width, height, *args, **kwargs):
                 # Create a list of parameters for each concept
-                concepts_sega_params = []
+                t2i0_params = []
 
                 #for _, strength in concept_conds:
-                sega_params = SegaStateParams()
-                sega_params.warmup_period = warmup
-                sega_params.tail_percentage_threshold = tail_percentage_threshold
-                sega_params.momentum_scale = momentum_scale
-                sega_params.momentum_beta = momentum_beta
-                sega_params.strength = 1.0
-                sega_params.width = width
-                sega_params.height = height 
-                sega_params.dims = [width, height]
-                concepts_sega_params.append(sega_params)
+                params = T2I0StateParams()
+                params.window_size_period = window_size
+                params.ctnms_alpha = ctnms_alpha
+                params.correction_threshold = correction_threshold
+                params.correction_strength = correction_strength
+                params.strength = 1.0
+                params.width = width
+                params.height = height 
+                params.dims = [width, height]
+                t2i0_params.append(params)
 
                 # Use lambda to call the callback function with the parameters to avoid global variables
-                y = lambda params: self.on_cfg_denoiser_callback(params, concepts_sega_params)
+                y = lambda params: self.on_cfg_denoiser_callback(params, t2i0_params)
                 un = lambda params: self.unhook_callbacks()
 
                 # Hook callbacks
-                if tail_percentage_threshold > 0:
-                        self.ready_hijack_forward(sega_params, tail_percentage_threshold, width, height)
+                if ctnms_alpha > 0:
+                        self.ready_hijack_forward(ctnms_alpha, width, height)
 
                 logger.debug('Hooked callbacks')
                 script_callbacks.on_cfg_denoiser(y)
                 script_callbacks.on_script_unloaded(self.unhook_callbacks)
 
         def postprocess_batch(self, p, *args, **kwargs):
-                self.sega_postprocess_batch(p, *args, **kwargs)
+                self.t2i0_postprocess_batch(p, *args, **kwargs)
 
-        def sega_postprocess_batch(self, p, active, neg_text, *args, **kwargs):
+        def t2i0_postprocess_batch(self, p, active, *args, **kwargs):
                 self.unhook_callbacks()
-                active = getattr(p, "sega_active", active)
+                active = getattr(p, "t2i0_active", active)
                 if active is False:
                         return
 
@@ -219,24 +215,28 @@ class SegaExtensionScript(UIWrapper):
 
                 for token_idx, c in enumerate(C):
                         Sc = f[c] * f  # Element-wise multiplication
-                        # product = greater positive value indicates more similarity
-                        # filter out values under score threshold from 0 to max
-                        Sc_flat_positive = Sc[Sc > 0]
+                        Sc_flat_positive = Sc[Sc > 0] # product = greater positive value indicates more similarity, filter out values under score threshold from 0 to max
+
+                        # calculate score threshold to filter out values under score threshold
+                        # often there is a huge difference between the max and min values, so we use a log-like function instead
                         k = 10
                         e= 2.718281
-                        # 0.000001 < pct < 0.999999999
-                        pct = min(0.999999999, max(0.000001, 1 - e**(-k * percentile))) 
+                        pct = min(0.999999999, max(0.000001, 1 - e**(-k * percentile)))
                         tau = torch.quantile(Sc_flat_positive, pct)
+
                         Sc_tilde = Sc * (Sc > tau)  # Apply threshold and filter
                         Sc_tilde /= Sc_tilde.max()  # Normalize
+
                         window = psi(c, gamma, n, Sc_tilde.dtype, Sc_tilde.device).unsqueeze(1)  # Apply windowing function
                         Sc_tilde *= window
                         f_c_tilde = torch.sum(Sc_tilde * f, dim=0)  # Combine embeddings
                         f_tilde[c] = (1 - alpha) * f[c] + alpha * f_c_tilde  # Blend embeddings
-
                 return f_tilde
 
-        def ready_hijack_forward(self, sega_params, alpha, width, height):
+        def ready_hijack_forward(self, alpha, width, height):
+                """ Create a hook to modify the output of the forward pass of the cross attention module 
+                Only modifies the output of the cross attention modules that get context (i.e. text embedding)
+                """
                 cross_attn_modules = self.get_cross_attn_modules()
 
                 def cross_token_non_maximum_suppression(module, input, kwargs, output):
@@ -244,7 +244,6 @@ class SegaExtensionScript(UIWrapper):
                         if context is None:
                                 return
                         batch_size, sequence_length, inner_dim = output.shape
-                        #print(f"\nBatch size: {batch_size}, sequence length: {sequence_length}, inner dim: {inner_dim}\n")
 
                         max_dims = width*height
                         factor = math.isqrt(max_dims // sequence_length) # should be a square of 2
@@ -262,9 +261,8 @@ class SegaExtensionScript(UIWrapper):
                         # Reshape the attention map to batch_size, height, width
                         # FIXME: need to assert the height/width divides into the sequence length
                         attention_map = output.view(batch_size, downscale_height, downscale_width, inner_dim)
-                        # attention_map = output.view(batch_size, downscale_height, downscale_width, h, head_dim)
 
-                        # Select token indices (Assuming this is provided as sega_params or similar)
+                        # Select token indices (Assuming this is provided as t2i0_params or similar)
                         selected_tokens = torch.tensor(list(range(inner_dim)))  # Example: Replace with actual indices
 
                         # Extract and process the selected attention maps
@@ -292,41 +290,34 @@ class SegaExtensionScript(UIWrapper):
                         out_tensor = (1-alpha) * output + alpha * suppressed_attention_map
 
                         return out_tensor
-
+                # Hook
                 for module in cross_attn_modules:
                         handle = module.register_forward_hook(cross_token_non_maximum_suppression, with_kwargs=True)
 
         def get_cross_attn_modules(self):
-            m = shared.sd_model
-            nlm = m.network_layer_mapping
-            cross_attn_modules = [m for m in nlm.values() if 'CrossAttention' in m.__class__.__name__]
-            return cross_attn_modules
+                """ Get all cross attention modules """
+                m = shared.sd_model
+                nlm = m.network_layer_mapping
+                cross_attn_modules = [m for m in nlm.values() if 'CrossAttention' in m.__class__.__name__]
+                return cross_attn_modules
 
-        def on_cfg_denoiser_callback(self, params: CFGDenoiserParams, sega_params: list[SegaStateParams]):
-                # TODO: add option to opt out of batching for performance
-                sampling_step = params.sampling_step
-
-                # SDXL
+        def on_cfg_denoiser_callback(self, params: CFGDenoiserParams, t2i0_params: list[T2I0StateParams]):
                 if isinstance(params.text_cond, dict):
-                        text_cond = params.text_cond['crossattn']
-                # SD 1.5
+                        text_cond = params.text_cond['crossattn'] # SD XL
                 else:
-                        text_cond = params.text_cond
+                        text_cond = params.text_cond # SD 1.5
 
-
-                sp = sega_params[0]
-                window_size = sp.warmup_period
-                correction_strength = sp.momentum_beta
-                score_threshold = sp.momentum_scale
+                sp = t2i0_params[0]
+                window_size = sp.window_size_period
+                correction_strength = sp.correction_strength
+                score_threshold = sp.correction_threshold
                 width = sp.width
                 height = sp.height
-                tail_percentage_threshold = sp.tail_percentage_threshold
+                ctnms_alpha = sp.ctnms_alpha
 
                 for batch_idx, batch in enumerate(text_cond):
                         window = list(range(0, len(batch)))
-
                         f_bar = self.correction_by_similarities(batch, window, score_threshold, window_size, correction_strength)
-
                         if isinstance(params.text_cond, dict):
                                 params.text_cond['crossattn'][batch_idx] = f_bar
                         else:
@@ -336,24 +327,24 @@ class SegaExtensionScript(UIWrapper):
         def get_xyz_axis_options(self) -> dict:
                 xyz_grid = [x for x in scripts.scripts_data if x.script_class.__module__ == "xyz_grid.py"][0].module
                 extra_axis_options = {
-                        xyz_grid.AxisOption("[T2I-0] Active", str, sega_apply_override('t2i0_active', boolean=True), choices=xyz_grid.boolean_choice(reverse=True)),
-                        xyz_grid.AxisOption("[T2I-0] Tail Percentage Threshold", float, sega_apply_field("t2i0_tail_percentage_threshold")),
-                        xyz_grid.AxisOption("[T2I-0] Window Size", int, sega_apply_field("t2i0_warmup")),
-                        xyz_grid.AxisOption("[T2I-0] Correction Threshold", float, sega_apply_field("t2i0_momentum_scale")),
-                        xyz_grid.AxisOption("[T2I-0] Correction Strength", float, sega_apply_field("t2i0_momentum_beta")),
+                        xyz_grid.AxisOption("[T2I-0] Active", str, t2i0_apply_override('t2i0_active', boolean=True), choices=xyz_grid.boolean_choice(reverse=True)),
+                        xyz_grid.AxisOption("[T2I-0] ctnms_alpha", float, t2i0_apply_field("t2i0_ctnms_alpha")),
+                        xyz_grid.AxisOption("[T2I-0] Window Size", int, t2i0_apply_field("t2i0_window_size")),
+                        xyz_grid.AxisOption("[T2I-0] Correction Threshold", float, t2i0_apply_field("t2i0_correction_threshold")),
+                        xyz_grid.AxisOption("[T2I-0] Correction Strength", float, t2i0_apply_field("t2i0_correction_strength")),
                 }
                 return extra_axis_options
 
 # XYZ Plot
 # Based on @mcmonkey4eva's XYZ Plot implementation here: https://github.com/mcmonkeyprojects/sd-dynamic-thresholding/blob/master/scripts/dynamic_thresholding.py
-def sega_apply_override(field, boolean: bool = False):
+def t2i0_apply_override(field, boolean: bool = False):
     def fun(p, x, xs):
         if boolean:
             x = True if x.lower() == "true" else False
         setattr(p, field, x)
     return fun
 
-def sega_apply_field(field):
+def t2i0_apply_field(field):
     def fun(p, x, xs):
         if not hasattr(p, "t2i0_active"):
                 setattr(p, "t2i0_active", True)
@@ -361,8 +352,8 @@ def sega_apply_field(field):
     return fun
 
 
-# removing hooks DOESN'T WORK
-# https://github.com/pytorch/pytorch/issues/70455
+# thanks torch; removing hooks DOESN'T WORK
+# thank you to @ProGamerGov for this https://github.com/pytorch/pytorch/issues/70455
 def _remove_all_forward_hooks(
     module: torch.nn.Module, hook_fn_name: Optional[str] = None
 ) -> None:
