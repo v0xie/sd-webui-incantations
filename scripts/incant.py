@@ -14,6 +14,8 @@ from modules.processing import StableDiffusionProcessing, decode_latent_batch, t
 from modules.sd_samplers_cfg_denoiser import pad_cond
 from modules import shared, devices, errors, deepbooru
 from modules.interrogate import InterrogateModels
+from scripts.ui_wrapper import UIWrapper
+from scripts.t2i_zero import SegaExtensionScript
 
 import torch
 
@@ -111,6 +113,8 @@ class InterrogatorDeepbooru(Interrogator):
                 pass
 
 
+
+
 class IncantStateParams:
         def __init__(self):
                 self.delim = ''
@@ -162,6 +166,8 @@ class IncantStateParams:
                 self.txt_txt_scale = 1.0
                 self.txt_img_scale = 1.0
                 self.spar_scale = 1.0
+        
+submodules: list[UIWrapper] = [SegaExtensionScript()]
                 
 class IncantExtensionScript(scripts.Script):
         def __init__(self):
@@ -178,33 +184,43 @@ class IncantExtensionScript(scripts.Script):
 
         # Setup menu ui detail
         def ui(self, is_img2img):
+                out = []
                 with gr.Accordion('Incantations', open=False):
-                        active = gr.Checkbox(value=False, default=False, label="Active", elem_id='incant_active')
-                        quality = gr.Checkbox(value=False, default=False, label="Append Generated Caption", elem_id='incant_quality', info="Append interrogated caption to prompt. (Deepbooru is reversed, if disabled, will not append the masked original prompt)")
-                        deepbooru = gr.Checkbox(value=False, default=False, label="Deepbooru Interrogate", elem_id='incant_deepbooru')
-                        with gr.Row():
-                                delim = gr.Textbox(value='BREAK', label="Delimiter", elem_id='incant_delim', info="Prompt DELIM Optimized Prompt. Try BREAK, AND, NOT, etc.")
-                                word = gr.Textbox(value='-', label="Word Replacement", elem_id='incant_word', info="Replace masked words with this")
-                        with gr.Row():
-                                coarse_step = gr.Slider(value = 10, minimum = 0, maximum = 100, step = 1, label="Coarse Step", elem_id = 'incant_coarse')
-                                fine_step = gr.Slider(value = 100, minimum = 0, maximum = 100, step = 1, label="Fine Step", elem_id = 'incant_fine')
-                                gamma = gr.Slider(value = 0.2, minimum = -1.0, maximum = 1.0, step = 0.0001, label="Gamma", elem_id = 'incant_gamma', info="If gamma > 0, mask words with similarity less than gamma percent. If gamma < 0, mask more similar words. For Deepbooru, try higher values > 0.7")
-                        with gr.Row():
-                                qual_scale = gr.Slider(value = 0.0, minimum = 0, maximum = 100.0, step = 0.01, label="Quality Guidance Scale", elem_id = 'incant_qual_scale', info="Scale for quality guidance. Incorrect and does not work for SDXL", interactive=False)
-                                sem_scale = gr.Slider(value = 0.0, minimum = 0, maximum = 100.0, step = 0.01, label="Semantic Guidance Scale", elem_id = 'incant_sem_scale', info="Scale for semantic guidance. Not implemented.", interactive=False)
+                        incant = self.setup_seek_incantations()
+                        out.extend(incant)
+                        for module in submodules:
+                                out.extend(module.setup_ui(is_img2img))
+                return out
+
+        def setup_seek_incantations(self):
+            with gr.Accordion('Seek for Incantations', open=False):
+                    active = gr.Checkbox(value=False, default=False, label="Active", elem_id='incant_active')
+                    quality = gr.Checkbox(value=False, default=False, label="Append Generated Caption", elem_id='incant_quality', info="Append interrogated caption to prompt. (Deepbooru is reversed, if disabled, will not append the masked original prompt)")
+                    deepbooru = gr.Checkbox(value=False, default=False, label="Deepbooru Interrogate", elem_id='incant_deepbooru')
+                    with gr.Row():
+                            delim = gr.Textbox(value='BREAK', label="Delimiter", elem_id='incant_delim', info="Prompt DELIM Optimized Prompt. Try BREAK, AND, NOT, etc.")
+                            word = gr.Textbox(value='-', label="Word Replacement", elem_id='incant_word', info="Replace masked words with this")
+                    with gr.Row():
+                            coarse_step = gr.Slider(value = 10, minimum = 0, maximum = 100, step = 1, label="Coarse Step", elem_id = 'incant_coarse')
+                            fine_step = gr.Slider(value = 100, minimum = 0, maximum = 100, step = 1, label="Fine Step", elem_id = 'incant_fine')
+                            gamma = gr.Slider(value = 0.2, minimum = -1.0, maximum = 1.0, step = 0.0001, label="Gamma", elem_id = 'incant_gamma', info="If gamma > 0, mask words with similarity less than gamma percent. If gamma < 0, mask more similar words. For Deepbooru, try higher values > 0.7")
+                    with gr.Row():
+                            qual_scale = gr.Slider(value = 0.0, minimum = 0, maximum = 100.0, step = 0.01, label="Quality Guidance Scale", elem_id = 'incant_qual_scale', info="Scale for quality guidance. Incorrect and does not work for SDXL", interactive=False)
+                            sem_scale = gr.Slider(value = 0.0, minimum = 0, maximum = 100.0, step = 0.01, label="Semantic Guidance Scale", elem_id = 'incant_sem_scale', info="Scale for semantic guidance. Not implemented.", interactive=False)
                                 # txt_txt_scale = 1.0
                                 # txt_img_scale = 1.0
                                 # spar_scale = 1.0
-                active.do_not_save_to_config = True
-                quality.do_not_save_to_config = True
-                delim.do_not_save_to_config = True
-                word.do_not_save_to_config = True
-                deepbooru.do_not_save_to_config = True
-                coarse_step.do_not_save_to_config = True
-                fine_step.do_not_save_to_config = True
-                gamma.do_not_save_to_config = True
-                qual_scale.do_not_save_to_config = True
-                sem_scale.do_not_save_to_config = True
+            params = [active, quality, deepbooru, delim, word, coarse_step, fine_step, gamma, qual_scale, sem_scale]
+            active.do_not_save_to_config = True
+            quality.do_not_save_to_config = True
+            delim.do_not_save_to_config = True
+            word.do_not_save_to_config = True
+            deepbooru.do_not_save_to_config = True
+            coarse_step.do_not_save_to_config = True
+            fine_step.do_not_save_to_config = True
+            gamma.do_not_save_to_config = True
+            qual_scale.do_not_save_to_config = True
+            sem_scale.do_not_save_to_config = True
                 # self.infotext_fields = [
                 #         (active, lambda d: gr.Checkbox.update(value='INCANT Active' in d)),
                 #         (coarse_step, 'INCANT Prompt'),
@@ -216,7 +232,7 @@ class IncantExtensionScript(scripts.Script):
                 #         'incant_coarse',
                 #         'incant_fine',
                 # ]
-                return [active, quality, deepbooru, delim, word, coarse_step, fine_step, gamma, qual_scale, sem_scale]
+            return [active, quality, deepbooru, delim, word, coarse_step, fine_step, gamma, qual_scale, sem_scale]
 
         def interrogator(self, deepbooru=False): 
                 if deepbooru:
