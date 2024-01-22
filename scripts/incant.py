@@ -15,7 +15,7 @@ from modules.sd_samplers_cfg_denoiser import pad_cond
 from modules import shared, devices, errors, deepbooru
 from modules.interrogate import InterrogateModels
 from scripts.ui_wrapper import UIWrapper
-from scripts.t2i_zero import SegaExtensionScript
+# from scripts.t2i_zero import SegaExtensionScript
 
 import torch
 
@@ -167,30 +167,20 @@ class IncantStateParams:
                 self.txt_img_scale = 1.0
                 self.spar_scale = 1.0
         
-submodules: list[UIWrapper] = [SegaExtensionScript()]
+# submodules: list[UIWrapper] = [SegaExtensionScript()]
                 
-class IncantExtensionScript(scripts.Script):
+class IncantExtensionScript(UIWrapper):
         def __init__(self):
                 self.stage_1 = [[]]
                 self.cached_c = [[None, None],[None, None]]
 
         # Extension title in menu UI
         def title(self):
-                return "Incantations"
-
-        # Decide to show menu in txt2img or img2img
-        def show(self, is_img2img):
-                return scripts.AlwaysVisible
+                return "Seek Incantations"
 
         # Setup menu ui detail
-        def ui(self, is_img2img):
-                out = []
-                with gr.Accordion('Incantations', open=False):
-                        incant = self.setup_seek_incantations()
-                        out.extend(incant)
-                        for module in submodules:
-                                out.extend(module.setup_ui(is_img2img))
-                return out
+        def setup_ui(self, is_img2img):
+                return self.setup_seek_incantations()
 
         def setup_seek_incantations(self):
             with gr.Accordion('Seek for Incantations', open=False):
@@ -242,23 +232,29 @@ class IncantExtensionScript(scripts.Script):
                         #return InterrogatorCLIP()
         
         def before_process(self, p: StableDiffusionProcessing, active, quality, deepbooru, delim, word, coarse, fine, gamma, qual_scale, sem_scale, *args, **kwargs):
-                active = getattr(p, "incant_active", active)
-                if active is False:
-                        return
-                p.n_iter = p.n_iter * 2
+                return self.incant_before_process(p, active)
+
+        def incant_before_process(self, p, active):
+            active = getattr(p, "incant_active", active)
+            if active is False:
+                    return
+            p.n_iter = p.n_iter * 2
         
         def process(self, p: StableDiffusionProcessing, active, quality, deepbooru, delim, word, coarse, fine, gamma, qual_scale, sem_scale, *args, **kwargs):
-                active = getattr(p, "incant_active", active)
-                if active is False:
-                        return
-                quality = getattr(p, "incant_quality", quality)
-                delim = getattr(p, "incant_delim", delim)
-                word = getattr(p, "incant_word", word)
+                return self.incant_process(p, active, quality, delim, word)
+
+        def incant_process(self, p, active, quality, delim, word):
+            active = getattr(p, "incant_active", active)
+            if active is False:
+                    return
+            quality = getattr(p, "incant_quality", quality)
+            delim = getattr(p, "incant_delim", delim)
+            word = getattr(p, "incant_word", word)
                 
                 # modifying the all_prompts* may conflict with extensions that do so
                 # hr fix untested
-                if p.iteration == 0:
-                        param_list = [
+            if p.iteration == 0:
+                    param_list = [
                         "all_hr_negative_prompts",
                         "all_hr_prompts",
                         "all_negative_prompts",
@@ -267,71 +263,74 @@ class IncantExtensionScript(scripts.Script):
                         "all_subseeds",
                         ]
 
-                        for param_name in param_list:
-                                run_fn_on_attr(p, param_name, duplicate_alternate_elements, p.batch_size)
+                    for param_name in param_list:
+                            run_fn_on_attr(p, param_name, duplicate_alternate_elements, p.batch_size)
 
                 # assign
                         # always do this
                         #if quality:
-                        delim_str = f' {delim} ' if len(delim) > 0 else ' '
-                        for n in range(1, p.n_iter, 2):
-                                start_idx = n * p.batch_size
-                                end_idx = (n + 1) * p.batch_size
-                                p.all_prompts[start_idx:end_idx] = [prompt + delim_str + '<<REPLACEME>>' for prompt in p.all_prompts[start_idx:end_idx]]
+                    delim_str = f' {delim} ' if len(delim) > 0 else ' '
+                    for n in range(1, p.n_iter, 2):
+                            start_idx = n * p.batch_size
+                            end_idx = (n + 1) * p.batch_size
+                            p.all_prompts[start_idx:end_idx] = [prompt + delim_str + '<<REPLACEME>>' for prompt in p.all_prompts[start_idx:end_idx]]
 
         def before_process_batch(self, p: StableDiffusionProcessing, active, quality, deepbooru, delim, word, coarse_step, fine_step, gamma, qual_scale, sem_scale, *args, **kwargs):
-                active = getattr(p, "incant_active", active)
-                if active is False:
-                        return
-                quality = getattr(p, "incant_quality", quality)
-                delim = getattr(p, "incant_delim", delim)
-                word = getattr(p, "incant_word", word)
-                deepbooru = getattr(p, "incant_deepbooru", deepbooru)
-                coarse_step = getattr(p, "incant_coarse", coarse_step)
-                fine_step = getattr(p, "incant_fine", fine_step)
-                gamma = getattr(p, "incant_gamma", gamma)
-                qual_scale = getattr(p, "incant_qual_scale", qual_scale)
-                sem_scale = getattr(p, "incant_sem_scale", sem_scale)
-                if fine_step >= p.steps:
-                        print(f"Fine step {fine_step} is greater than total steps {p.steps}, setting to {p.steps-2}")
-                        fine_step = p.steps - 2
+                return self.incant_before_process_batch(p, active, quality, deepbooru, delim, word, coarse_step, fine_step, gamma, qual_scale, sem_scale, args, kwargs)
 
-                interrogator = self.interrogator(deepbooru)
-                interrogator.load()
+        def incant_before_process_batch(self, p, active, quality, deepbooru, delim, word, coarse_step, fine_step, gamma, qual_scale, sem_scale, args, kwargs):
+            active = getattr(p, "incant_active", active)
+            if active is False:
+                    return
+            quality = getattr(p, "incant_quality", quality)
+            delim = getattr(p, "incant_delim", delim)
+            word = getattr(p, "incant_word", word)
+            deepbooru = getattr(p, "incant_deepbooru", deepbooru)
+            coarse_step = getattr(p, "incant_coarse", coarse_step)
+            fine_step = getattr(p, "incant_fine", fine_step)
+            gamma = getattr(p, "incant_gamma", gamma)
+            qual_scale = getattr(p, "incant_qual_scale", qual_scale)
+            sem_scale = getattr(p, "incant_sem_scale", sem_scale)
+            if fine_step >= p.steps:
+                    print(f"Fine step {fine_step} is greater than total steps {p.steps}, setting to {p.steps-2}")
+                    fine_step = p.steps - 2
+
+            interrogator = self.interrogator(deepbooru)
+            interrogator.load()
                 # Every even step will be when we use the previously calculated results
                 # p.n_iter = p.n_iter * 2
                 # modify prompts
-                n = p.n_iter
+            n = p.n_iter
                 # always do this
 
                 #if quality:
-                if p.iteration % 2 == 1:
-                        n = p.iteration
+            if p.iteration % 2 == 1:
+                    n = p.iteration
                         # batch of images
-                        batch_start_idx = n * p.batch_size
-                        batch_end_idx = (n + 1) * p.batch_size
+                    batch_start_idx = n * p.batch_size
+                    batch_end_idx = (n + 1) * p.batch_size
                         # mask 
-                        mask_start_idx = (n - 1) * p.batch_size
-                        delim_str = f' {delim} ' if len(delim) > 0 else ' '
+                    mask_start_idx = (n - 1) * p.batch_size
+                    delim_str = f' {delim} ' if len(delim) > 0 else ' '
                         #add_mask_prompt = self.stage_1.masked_prompt[mask_start_idx]
-                        for idx in range(batch_start_idx, batch_end_idx):
-                                add_mask_prompt = ''
-                                mask_idx = mask_start_idx + (idx - batch_start_idx)
-                                masked_prompts = self.stage_1.masked_prompt[mask_idx]
+                    for idx in range(batch_start_idx, batch_end_idx):
+                            add_mask_prompt = ''
+                            mask_idx = mask_start_idx + (idx - batch_start_idx)
+                            masked_prompts = self.stage_1.masked_prompt[mask_idx]
                                 # if we don't want to append other masked captions, only use the first one
-                                if not quality:
-                                        masked_prompts = [masked_prompts[0]]
-                                for masked_prompt_idx, prompt in enumerate(masked_prompts):
-                                        if masked_prompt_idx > 0:
-                                                add_mask_prompt += delim_str + prompt 
-                                        else:
-                                                add_mask_prompt += prompt
-                                p.all_prompts[idx] = p.all_prompts[idx].replace('<<REPLACEME>>', add_mask_prompt)
-                                kwargs['prompts'][mask_idx] = kwargs['prompts'][mask_idx].replace('<<REPLACEME>>', add_mask_prompt)
+                            if not quality:
+                                    masked_prompts = [masked_prompts[0]]
+                            for masked_prompt_idx, prompt in enumerate(masked_prompts):
+                                    if masked_prompt_idx > 0:
+                                            add_mask_prompt += delim_str + prompt 
+                                    else:
+                                            add_mask_prompt += prompt
+                            p.all_prompts[idx] = p.all_prompts[idx].replace('<<REPLACEME>>', add_mask_prompt)
+                            kwargs['prompts'][mask_idx] = kwargs['prompts'][mask_idx].replace('<<REPLACEME>>', add_mask_prompt)
 
                 # p.steps += fine_step
                 # TODO: nicely put this into a dict
-                p.extra_generation_params.update({
+            p.extra_generation_params.update({
                         "INCANT Active": active,
                         "INCANT Quality": quality,
                         "INCANT Delim": delim,
@@ -343,15 +342,17 @@ class IncantExtensionScript(scripts.Script):
                         "INCANT Qual Scale": qual_scale,
                         "INCANT Sem Scale": sem_scale,
                 })
-                self.create_hook(p, active, quality, deepbooru, delim, word, coarse_step, fine_step, gamma, qual_scale, sem_scale, *args, **kwargs)
+            self.create_hook(p, active, quality, deepbooru, delim, word, coarse_step, fine_step, gamma, qual_scale, sem_scale, *args, **kwargs)
         
         def process_batch(self, p: StableDiffusionProcessing, active, quality, deepbooru, delim, word, coarse_step, fine_step, gamma, qual_scale, sem_scale, *args, **kwargs):
+                self.incant_process_batch(p, kwargs)
 
-                batch_number = kwargs.get('batch_number', None)
-                prompts = kwargs.get('prompts', None)
-                seeds = kwargs.get('seeds', None)
-                subseeds = kwargs.get('subseeds', None)
-                gamma = getattr(p, 'incant_gamma', None)
+        def incant_process_batch(self, p, kwargs):
+            batch_number = kwargs.get('batch_number', None)
+            prompts = kwargs.get('prompts', None)
+            seeds = kwargs.get('seeds', None)
+            subseeds = kwargs.get('subseeds', None)
+            gamma = getattr(p, 'incant_gamma', None)
 
                 # if is second stage
                 # if p.iteration % 2 == 1:
@@ -448,19 +449,18 @@ class IncantExtensionScript(scripts.Script):
                         incant_params.loss_sem.append(emb_fine - emb_coarse)
         
         def postprocess_batch(self, p, active, quality, deepbooru, delim, word, coarse_step, fine_step, gamma, qual_scale, sem_scale, *args, **kwargs):
+                return self.incant_postprocess_batch(p, active)
 
-                active = getattr(p, "incant_active", active)
-                if active is False:
-                        return
-                self.unhook_callbacks()
+        def incant_postprocess_batch(self, p, active):
+            active = getattr(p, "incant_active", active)
+            if active is False:
+                    return
+            self.unhook_callbacks()
 
         def unhook_callbacks(self):
                 logger.debug('Unhooked callbacks')
                 interrogator = self.interrogator(False)
                 interrogator.unload()
-                # if self.stage_1 is not None:
-                #         del self.stage_1
-                #         self.stage_1 = None
                 script_callbacks.remove_current_script_callbacks()
 
         def on_cfg_denoiser_callback(self, params: CFGDenoiserParams, incant_params: IncantStateParams):
@@ -524,8 +524,6 @@ class IncantExtensionScript(scripts.Script):
                                                 t = pad_cond(t, num_repeats, empty)
                                 text_cond[i] += t.squeeze(0)
 
-
-
         def mask_prompt(self, gamma, word_list, prompt, word_repl = '-'):
                 # TODO: refactor out removing <>
                 regex = r"\b{0}\b"
@@ -548,12 +546,6 @@ class IncantExtensionScript(scripts.Script):
                 masked_prompt = re.sub(r'<[^>]*>', '', masked_prompt)
 
                 return masked_prompt
-
-
-                # if isinstance(text_cond, torch.Tensor) and isinstance(text_uncond, torch.Tensor):
-                #         pass
-                # else:
-                #         raise NotImplementedError("Only SD1.5 are supported for now")
 
         def cfg_after_cfg_callback(self, params: AfterCFGCallbackParams, incant_params: IncantStateParams):
                 debug_compute_coarse = False
