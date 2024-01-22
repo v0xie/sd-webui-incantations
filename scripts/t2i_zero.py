@@ -122,7 +122,10 @@ class SegaExtensionScript(UIWrapper):
                 ]
                 return [active, prompt, neg_prompt, warmup, edit_guidance_scale, tail_percentage_threshold, momentum_scale, momentum_beta]
 
-        def process_batch(self, p: StableDiffusionProcessing, active, prompt, neg_prompt, warmup, edit_guidance_scale, tail_percentage_threshold, momentum_scale, momentum_beta, *args, **kwargs):
+        def process_batch(self, p: StableDiffusionProcessing, *args, **kwargs):
+               self.sega_process_batch(p, *args, **kwargs)
+
+        def sega_process_batch(self, p: StableDiffusionProcessing, active, prompt, neg_prompt, warmup, edit_guidance_scale, tail_percentage_threshold, momentum_scale, momentum_beta, *args, **kwargs):
                 active = getattr(p, "sega_active", active)
                 if active is False:
                         return
@@ -196,7 +199,10 @@ class SegaExtensionScript(UIWrapper):
                 script_callbacks.on_cfg_denoiser(y)
                 script_callbacks.on_script_unloaded(self.unhook_callbacks)
 
-        def postprocess_batch(self, p, active, neg_text, *args, **kwargs):
+        def postprocess_batch(self, p, *args, **kwargs):
+                self.sega_postprocess_batch(p, *args, **kwargs)
+
+        def sega_postprocess_batch(self, p, active, neg_text, *args, **kwargs):
                 self.unhook_callbacks()
                 active = getattr(p, "sega_active", active)
                 if active is False:

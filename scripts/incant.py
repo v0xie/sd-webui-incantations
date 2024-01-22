@@ -225,13 +225,19 @@ class IncantExtensionScript(UIWrapper):
                 else:
                         return shared.interrogator
         
-        def before_process(self, p: StableDiffusionProcessing, inc_active, inc_quality, inc_deepbooru, inc_delim, inc_word, inc_gamma, *args, **kwargs):
+        def before_process(self, p: StableDiffusionProcessing, *args, **kwargs):
+                self.incant_before_process(p, *args, **kwargs)
+
+        def incant_before_process(self, p: StableDiffusionProcessing, inc_active, inc_quality, inc_deepbooru, inc_delim, inc_word, inc_gamma, *args, **kwargs):
                 inc_active = getattr(p, "incant_active", inc_active)
                 if inc_active is False:
                         return
                 p.n_iter = p.n_iter * 2
         
-        def process(self, p: StableDiffusionProcessing, inc_active, inc_quality, inc_deepbooru, inc_delim, inc_word, inc_gamma, *args, **kwargs):
+        def process(self, p: StableDiffusionProcessing, *args, **kwargs):
+                self.incant_process(p, *args, **kwargs)
+
+        def incant_process(self, p: StableDiffusionProcessing, inc_active, inc_quality, inc_deepbooru, inc_delim, inc_word, inc_gamma, *args, **kwargs):
                 inc_active = arg(p, "incant_active", "inc_active", **kwargs)
                 if inc_active is False:
                         return
@@ -263,7 +269,10 @@ class IncantExtensionScript(UIWrapper):
                                 end_idx = (n + 1) * p.batch_size
                                 p.all_prompts[start_idx:end_idx] = [prompt + delim_str + '<<REPLACEME>>' for prompt in p.all_prompts[start_idx:end_idx]]
 
-        def before_process_batch(self, p: StableDiffusionProcessing, inc_active, inc_quality, inc_deepbooru, inc_delim, inc_word, inc_gamma, *args, **kwargs):
+        def before_process_batch(self, p: StableDiffusionProcessing, *args, **kwargs):
+                self.incant_before_process_batch(p, *args, **kwargs)
+
+        def incant_before_process_batch(self, p: StableDiffusionProcessing, inc_active, inc_quality, inc_deepbooru, inc_delim, inc_word, inc_gamma, *args, **kwargs):
                 inc_active = getattr(p, "incant_active", inc_active)
                 if inc_active is False:
                         return
@@ -347,13 +356,14 @@ class IncantExtensionScript(UIWrapper):
                 incant_params.delim = delim
                 incant_params.word = word 
                 incant_params.deepbooru = deepbooru
-                incant_params.fine = fine 
-                if fine > p.steps:
+                fine = p.steps
+                incant_params.fine = p.steps
+                if incant_params.fine > p.steps:
                         print(f"Fine step {fine} is greater than total steps {p.steps}, setting to {p.steps}")
                         fine = p.steps
                 incant_params.gamma = gamma
-                #incant_params.qual_scale = qual_scale 
-                #incant_params.sem_scale = sem_scale 
+                incant_params.qual_scale = 0
+                incant_params.sem_scale = 0
                 incant_params.iteration = p.iteration
                 incant_params.get_conds_with_caching = p.get_conds_with_caching
                 incant_params.steps = p.steps
@@ -405,8 +415,8 @@ class IncantExtensionScript(UIWrapper):
                 for i, (emb_fine, emb_coarse) in enumerate(zip(incant_params.emb_txt_fine, incant_params.emb_txt_coarse)):
                         incant_params.loss_sem.append(emb_fine - emb_coarse)
         
-        def postprocess_batch(self, p, inc_active, *args, **kwargs):
-                return self.incant_postprocess_batch(p, inc_active, *args, **kwargs)
+        def postprocess_batch(self, p, *args, **kwargs):
+                return self.incant_postprocess_batch(p, *args, **kwargs)
 
         def incant_postprocess_batch(self, p, inc_active, *args, **kwargs):
             inc_active = getattr(p, "incant_active", inc_active)
