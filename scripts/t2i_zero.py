@@ -8,7 +8,6 @@ from scripts.ui_wrapper import UIWrapper, arg
 from modules import script_callbacks, prompt_parser, sd_hijack, sd_hijack_optimizations
 from modules.hypernetworks import hypernetwork
 #import modules.sd_hijack_optimizations
-from ldm.util import default
 from modules.script_callbacks import CFGDenoiserParams
 from modules.prompt_parser import reconstruct_multicond_batch
 from modules.processing import StableDiffusionProcessing
@@ -17,9 +16,7 @@ from modules.sd_samplers_cfg_denoiser import pad_cond
 from modules import shared
 
 import math
-from einops import rearrange
 import torch
-from torch import nn
 from torch.nn import functional as F
 from torchvision.transforms import GaussianBlur
 
@@ -56,7 +53,6 @@ class SegaStateParams:
                 self.concept_name = ''
                 self.v = {} # velocity
                 self.warmup_period: int = 10 # [0, 20]
-                self.edit_guidance_scale: float = 1 # [0., 1.]
                 self.tail_percentage_threshold: float = 0.05 # [0., 1.] if abs value of difference between uncodition and concept-conditioned is less than this, then zero out the concept-conditioned values less than this
                 self.momentum_scale: float = 0.3 # [0., 1.]
                 self.momentum_beta: float = 0.6 # [0., 1.) # larger bm is less volatile changes in momentum
@@ -81,78 +77,56 @@ class SegaExtensionScript(UIWrapper):
         # Setup menu ui detail
         def setup_ui(self, is_img2img) -> list:
                 with gr.Accordion('Multi T2I-Zero', open=False):
-                        active = gr.Checkbox(value=False, default=False, label="Active", elem_id='sega_active')
+                        active = gr.Checkbox(value=False, default=False, label="Active", elem_id='t2i0_active')
                         with gr.Row():
-                                prompt = gr.Textbox(lines=2, label="Prompt", elem_id = 'sega_prompt', elem_classes=["prompt"])
+                                warmup = gr.Slider(value = 10, minimum = 0, maximum = 30, step = 1, label="Window Size", elem_id = 't2i0_warmup', info="How many steps to wait before applying semantic guidance, default 10")
+                                momentum_scale = gr.Slider(value = 0.3, minimum = 0.0, maximum = 1.0, step = 0.01, label="Correction Threshold", elem_id = 't2i0_momentum_scale', info="Scale of momentum, default 0.3")
+                                momentum_beta = gr.Slider(value = 0.6, minimum = 0.0, maximum = 0.999, step = 0.01, label="Correction Strength", elem_id = 't2i0_momentum_beta', info="Beta for momentum, default 0.6")
                         with gr.Row():
-                                neg_prompt = gr.Textbox(lines=2, label="Negative Prompt", elem_id = 'sega_neg_prompt', elem_classes=["prompt"])
-                        with gr.Row():
-                                warmup = gr.Slider(value = 10, minimum = 0, maximum = 30, step = 1, label="Window Size", elem_id = 'sega_warmup', info="How many steps to wait before applying semantic guidance, default 10")
-                                edit_guidance_scale = gr.Slider(value = 1.0, minimum = 0.0, maximum = 20.0, step = 0.01, label="Correction Strength", elem_id = 'sega_edit_guidance_scale', info="Scale of edit guidance, default 1.0")
-                                tail_percentage_threshold = gr.Slider(value = 0.05, minimum = 0.0, maximum = 1.0, step = 0.01, label="Alpha for CTNMS", elem_id = 'sega_tail_percentage_threshold', info="The percentage of latents to modify, default 0.05")
-                                momentum_scale = gr.Slider(value = 0.3, minimum = 0.0, maximum = 1.0, step = 0.01, label="Correction Threshold", elem_id = 'sega_momentum_scale', info="Scale of momentum, default 0.3")
-                                momentum_beta = gr.Slider(value = 0.6, minimum = 0.0, maximum = 0.999, step = 0.01, label="Correction Strength", elem_id = 'sega_momentum_beta', info="Beta for momentum, default 0.6")
+                                tail_percentage_threshold = gr.Slider(value = 0.05, minimum = 0.0, maximum = 1.0, step = 0.01, label="Alpha for CTNMS", elem_id = 't2i0_tail_percentage_threshold', info="The percentage of latents to modify, default 0.05")
                 active.do_not_save_to_config = True
-                prompt.do_not_save_to_config = True
-                neg_prompt.do_not_save_to_config = True
                 warmup.do_not_save_to_config = True
-                edit_guidance_scale.do_not_save_to_config = True
                 tail_percentage_threshold.do_not_save_to_config = True
                 momentum_scale.do_not_save_to_config = True
                 momentum_beta.do_not_save_to_config = True
                 self.infotext_fields = [
-                        (active, lambda d: gr.Checkbox.update(value='SEGA Active' in d)),
-                        (prompt, 'SEGA Prompt'),
-                        (neg_prompt, 'SEGA Negative Prompt'),
-                        (warmup, 'SEGA Warmup Period'),
-                        (edit_guidance_scale, 'SEGA Edit Guidance Scale'),
-                        (tail_percentage_threshold, 'SEGA Tail Percentage Threshold'),
-                        (momentum_scale, 'SEGA Momentum Scale'),
-                        (momentum_beta, 'SEGA Momentum Beta'),
+                        (active, lambda d: gr.Checkbox.update(value='T2I-0 Active' in d)),
+                        (warmup, 'T2I-0 Warmup Period'),
+                        (tail_percentage_threshold, 'T2I-0 Tail Percentage Threshold'),
+                        (momentum_scale, 'T2I-0 Momentum Scale'),
+                        (momentum_beta, 'T2I-0 Momentum Beta'),
                 ]
                 self.paste_field_names = [
-                        'sega_active',
-                        'sega_prompt',
-                        'sega_neg_prompt',
-                        'sega_warmup',
-                        'sega_edit_guidance_scale',
-                        'sega_tail_percentage_threshold',
-                        'sega_momentum_scale',
-                        'sega_momentum_beta'
+                        't2i0_active',
+                        't2i0_prompt',
+                        't2i0_neg_prompt',
+                        't2i0_warmup',
+                        't2i0_tail_percentage_threshold',
+                        't2i0_momentum_scale',
+                        't2i0_momentum_beta'
                 ]
-                return [active, prompt, neg_prompt, warmup, edit_guidance_scale, tail_percentage_threshold, momentum_scale, momentum_beta]
+                return [active, warmup, tail_percentage_threshold, momentum_scale, momentum_beta]
 
         def process_batch(self, p: StableDiffusionProcessing, *args, **kwargs):
                self.sega_process_batch(p, *args, **kwargs)
 
-        def sega_process_batch(self, p: StableDiffusionProcessing, active, prompt, neg_prompt, warmup, edit_guidance_scale, tail_percentage_threshold, momentum_scale, momentum_beta, *args, **kwargs):
-                active = getattr(p, "sega_active", active)
+        def sega_process_batch(self, p: StableDiffusionProcessing, active, warmup, tail_percentage_threshold, momentum_scale, momentum_beta, *args, **kwargs):
+                active = getattr(p, "t2i0_active", active)
                 if active is False:
                         return
-                prompt = getattr(p, "sega_prompt", prompt)
-                neg_prompt = getattr(p, "sega_neg_prompt", neg_prompt)
-                warmup = getattr(p, "sega_warmup", warmup)
-                edit_guidance_scale = getattr(p, "sega_edit_guidance_scale", edit_guidance_scale)
-                tail_percentage_threshold = getattr(p, "sega_tail_percentage_threshold", tail_percentage_threshold)
-                momentum_scale = getattr(p, "sega_momentum_scale", momentum_scale)
-                momentum_beta = getattr(p, "sega_momentum_beta", momentum_beta)
-                # FIXME: must have some prompt
-                #if prompt is None:
-                #        return
-                #if len(prompt) == 0:
-                #        return
+                warmup = getattr(p, "t2i0_warmup", warmup)
+                tail_percentage_threshold = getattr(p, "t2i0_tail_percentage_threshold", tail_percentage_threshold)
+                momentum_scale = getattr(p, "t2i0_momentum_scale", momentum_scale)
+                momentum_beta = getattr(p, "t2i0_momentum_beta", momentum_beta)
                 p.extra_generation_params.update({
-                        "SEGA Active": active,
-                        "SEGA Prompt": prompt,
-                        "SEGA Negative Prompt": neg_prompt,
-                        "SEGA Warmup Period": warmup,
-                        "SEGA Edit Guidance Scale": edit_guidance_scale,
-                        "SEGA Tail Percentage Threshold": tail_percentage_threshold,
-                        "SEGA Momentum Scale": momentum_scale,
-                        "SEGA Momentum Beta": momentum_beta,
+                        "T2I-0 Active": active,
+                        "T2I-0 Warmup Period": warmup,
+                        "T2I-0 Tail Percentage Threshold": tail_percentage_threshold,
+                        "T2I-0 Momentum Scale": momentum_scale,
+                        "T2I-0 Momentum Beta": momentum_beta,
                 })
 
-                self.create_hook(p, active, warmup, edit_guidance_scale, tail_percentage_threshold, momentum_scale, momentum_beta, p.width, p.height)
+                self.create_hook(p, active, warmup, tail_percentage_threshold, momentum_scale, momentum_beta, p.width, p.height)
 
         def parse_concept_prompt(self, prompt:str) -> list[str]:
                 """
@@ -170,14 +144,13 @@ class SegaExtensionScript(UIWrapper):
                         return []
                 return [x.strip() for x in prompt.split(",")]
 
-        def create_hook(self, p, active, warmup, edit_guidance_scale, tail_percentage_threshold, momentum_scale, momentum_beta, width, height, *args, **kwargs):
+        def create_hook(self, p, active, warmup, tail_percentage_threshold, momentum_scale, momentum_beta, width, height, *args, **kwargs):
                 # Create a list of parameters for each concept
                 concepts_sega_params = []
 
                 #for _, strength in concept_conds:
                 sega_params = SegaStateParams()
                 sega_params.warmup_period = warmup
-                sega_params.edit_guidance_scale = edit_guidance_scale
                 sega_params.tail_percentage_threshold = tail_percentage_threshold
                 sega_params.momentum_scale = momentum_scale
                 sega_params.momentum_beta = momentum_beta
@@ -363,14 +336,11 @@ class SegaExtensionScript(UIWrapper):
         def get_xyz_axis_options(self) -> dict:
                 xyz_grid = [x for x in scripts.scripts_data if x.script_class.__module__ == "xyz_grid.py"][0].module
                 extra_axis_options = {
-                        xyz_grid.AxisOption("[AAA] Active", str, sega_apply_override('sega_active', boolean=True), choices=xyz_grid.boolean_choice(reverse=True)),
-                        xyz_grid.AxisOption("[AAA] Prompt", str, sega_apply_field("sega_prompt")),
-                        xyz_grid.AxisOption("[AAA] Negative Prompt", str, sega_apply_field("sega_neg_prompt")),
-                        xyz_grid.AxisOption("[AAA] Guidance Scale", float, sega_apply_field("sega_edit_guidance_scale")),
-                        xyz_grid.AxisOption("[AAA] Tail Percentage Threshold", float, sega_apply_field("sega_tail_percentage_threshold")),
-                        xyz_grid.AxisOption("[AAA] Window Size", int, sega_apply_field("sega_warmup")),
-                        xyz_grid.AxisOption("[AAA] Correction Threshold", float, sega_apply_field("sega_momentum_scale")),
-                        xyz_grid.AxisOption("[AAA] Correction Strength", float, sega_apply_field("sega_momentum_beta")),
+                        xyz_grid.AxisOption("[T2I-0] Active", str, sega_apply_override('t2i0_active', boolean=True), choices=xyz_grid.boolean_choice(reverse=True)),
+                        xyz_grid.AxisOption("[T2I-0] Tail Percentage Threshold", float, sega_apply_field("t2i0_tail_percentage_threshold")),
+                        xyz_grid.AxisOption("[T2I-0] Window Size", int, sega_apply_field("t2i0_warmup")),
+                        xyz_grid.AxisOption("[T2I-0] Correction Threshold", float, sega_apply_field("t2i0_momentum_scale")),
+                        xyz_grid.AxisOption("[T2I-0] Correction Strength", float, sega_apply_field("t2i0_momentum_beta")),
                 }
                 return extra_axis_options
 
@@ -385,20 +355,10 @@ def sega_apply_override(field, boolean: bool = False):
 
 def sega_apply_field(field):
     def fun(p, x, xs):
-        if not hasattr(p, "sega_active"):
-                setattr(p, "sega_active", True)
+        if not hasattr(p, "t2i0_active"):
+                setattr(p, "t2i0_active", True)
         setattr(p, field, x)
-
     return fun
-
-# 
-# def callback_before_ui():
-#         try:
-#                 make_axis_options()
-#         except:
-#                 logger.exception("Semantic Guidance: Error while making axis options")
-# 
-# script_callbacks.on_before_ui(callback_before_ui)
 
 
 # removing hooks DOESN'T WORK

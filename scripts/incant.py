@@ -186,7 +186,7 @@ class IncantExtensionScript(UIWrapper):
                 return self.paste_field_names
 
         def setup_seek_incantations(self):
-                with gr.Accordion('Seek for Incantations', open=False):
+                with gr.Accordion('Seek for Incantations', open=True):
                         inc_active = gr.Checkbox(value=False, default=False, label="Active", elem_id='incant_active')
                         inc_quality = gr.Checkbox(value=False, default=False, label="Append Generated Caption", elem_id='incant_append_prompt', info="Append interrogated caption to prompt. (Deepbooru is reversed, if disabled, will not append the masked original prompt)")
                         inc_deepbooru = gr.Checkbox(value=False, default=False, label="Deepbooru Interrogate", elem_id='incant_deepbooru')
