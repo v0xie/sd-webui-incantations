@@ -40,16 +40,17 @@ class P2HP(UIWrapper):
             batch_size = gr.Slider(value=1, default=1, maximum=16, minimum=1, step=1, label='p2hp_bs')
             loss_weight = gr.Slider(value=0.5, default=0.5, step=0.01, minimum=0, maximum=1, label='p2hp_loss_weight')
             loss_tt = gr.Slider(value=0.5, default=0.5, step=0.01, minimum=0, maximum=1, label='p2hp_loss_tt')
+            loss_spar = gr.Slider(value=0.5, default=0.5, step=0.01, minimum=0, maximum=1, label='p2hp_loss_sparsity')
             btn = gr.Button(value='Pez', type='button')
-            btn.click(self.call_optimize_prompt, inputs = [img, prompt_len, lr, iterations, steps, batch_size, input_prompt, loss_weight, loss_tt], outputs = [output])
+            btn.click(self.call_optimize_prompt, inputs = [img, prompt_len, lr, iterations, steps, batch_size, input_prompt, loss_weight, loss_tt, loss_spar], outputs = [output])
 
-            out = [img, prompt_len, lr, iterations, steps, batch_size, input_prompt, loss_weight, loss_tt, btn] 
+            out = [img, prompt_len, lr, iterations, steps, batch_size, input_prompt, loss_weight, loss_tt, loss_spar, btn] 
             for p in out:
                 p.do_not_save_to_config = True
 
             return out
         
-    def call_optimize_prompt(self, img, prompt_len, lr, iter, steps, batch_size, input_prompt, loss_weight, loss_tt):
+    def call_optimize_prompt(self, img, prompt_len, lr, iter, steps, batch_size, input_prompt, loss_weight, loss_tt, loss_spar):
         print('Calling p2hp')
 
         if img is None:
@@ -65,6 +66,7 @@ class P2HP(UIWrapper):
             'print_new_best': False, 
             'loss_weight': loss_weight,
             'loss_tt': loss_tt,
+            'loss_spar': loss_spar,
         }
         target_prompts = None if len(input_prompt) == 0 else [input_prompt]
 

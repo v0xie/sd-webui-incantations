@@ -131,6 +131,9 @@ def get_text_feature(model, tokenizer_funct, device, target_prompts=None):
     return text_target_features
 
 def get_padded_text_feature(model, tokenizer, token_embedding, tokenizer_funct, args, device, target_prompts=None):
+    # dummy_ids -> padded ids
+    # prompt_embeds = padded prompt
+
     bos_token = getattr(tokenizer, "bos_token", "<start_of_text>")
     bos_token_id = getattr(tokenizer, "bos_token_id", 49406)
     eos_token = getattr(tokenizer, "eos_token", "<end_of_text>")
@@ -144,6 +147,12 @@ def get_padded_text_feature(model, tokenizer, token_embedding, tokenizer_funct, 
     # randomly optimize prompt embeddings
     template_text = f"{target_prompts}"
     dummy_ids = tokenizer.encode(template_text)
+
+    unpadded_prompt_ids = torch.tensor([dummy_ids] * args["prompt_bs"]).to(device)
+    unpadded_prompt_embeds = unpadded_prompt_ids.to(device)
+    unpadded_prompt_embeds = token_embedding(unpadded_prompt_ids).detach()
+    unpadded_prompt_embeds.requires_grad = False
+
     #dummy_ids = [bos_token_id] + dummy_ids + [eos_token_id]
     dummy_ids += [pad_token_id] * (model_max_len - len(dummy_ids))
     dummy_ids = torch.tensor([dummy_ids] * args["prompt_bs"]).to(device)
@@ -152,7 +161,8 @@ def get_padded_text_feature(model, tokenizer, token_embedding, tokenizer_funct, 
     prompt_embeds = token_embedding(prompt_ids).detach()
     prompt_embeds.requires_grad = False
 
-    return dummy_ids, prompt_embeds
+
+    return dummy_ids, prompt_embeds, unpadded_prompt_embeds
 
 def get_target_feature(model, preprocess, tokenizer_funct, device, target_images=None, target_prompts=None):
     image_target_features = None
@@ -208,7 +218,7 @@ def initialize_prompt(tokenizer, token_embedding, args, device):
     return prompt_embeds, dummy_embeds, dummy_ids
 
 
-def optimize_prompt_loop_builtin(model, tokenizer, token_embedding, all_target_features, prompt_ids, text_target_features, args, device, tokenizer_funct):
+def optimize_prompt_loop_builtin(model, tokenizer, token_embedding, all_target_features, prompt_ids, text_target_features, unpadded_prompt_embeds, args, device, tokenizer_funct):
     m = shared.sd_model
     # tokenizer = m.cond_stage_model.tokenizer
     # tokenizer_funct = open_clip.tokenizer.tokenize
@@ -230,11 +240,12 @@ def optimize_prompt_loop_builtin(model, tokenizer, token_embedding, all_target_f
     best_sum = -1000 * args["loss_weight"]
     best_sim = -1000 * args["loss_weight"]
     best_tt = -1000 * args["loss_tt"]
+    best_spar = -1000 * args["loss_spar"]
     best_text = ""
     best_text_cs = ""
     best_text_tt = ""
 
-    regex = re.compile(r"<|endoftext|>")
+    regex = re.compile(r"<[|]?end[_]?of[_]?text[|]?>")
 
     trained_text_embedding = None
 
@@ -273,9 +284,16 @@ def optimize_prompt_loop_builtin(model, tokenizer, token_embedding, all_target_f
 
         # get text-text cosim if original text is provided
         tt_loss = 0
+        spar_loss = 0
         if text_target_features is not None:
+            combined_embeddings = combine_embeddings(projected_embeds, unpadded_prompt_embeds)
             orig_text_embeds = text_target_features
             tt_loss = text_text_loss(orig_text_embeds, padded_embeds)
+            spar_loss = sparsity_loss(combined_embeddings)
+        else:
+            spar_loss = sparsity_loss(projected_embeds)
+        
+
         
         logits_per_image, _ = model.forward_text_embedding(model, padded_embeds, dummy_ids, target_features)
         cosim_scores = logits_per_image
@@ -283,6 +301,7 @@ def optimize_prompt_loop_builtin(model, tokenizer, token_embedding, all_target_f
         # loss
         loss = 1 - (cosim_scores.mean() * args["loss_weight"])
         loss = loss - (tt_loss * args["loss_tt"])
+        loss = loss + (spar_loss * args["loss_spar"])
         
         prompt_embeds.grad, = torch.autograd.grad(loss, [tmp_embeds])
         
@@ -301,7 +320,7 @@ def optimize_prompt_loop_builtin(model, tokenizer, token_embedding, all_target_f
         if print_step is not None and (step % print_step == 0 or step == opt_iters-1):
             per_step_message = f"step: {step}, lr: {curr_lr}"
             if not print_new_best:
-                per_step_message = f"\n{per_step_message}, cosim: {universal_cosim_score:.3f}, tt_loss: {tt_loss}, text: {decoded_text}"
+                per_step_message = f"\n{per_step_message}, cosim: {universal_cosim_score:.3f}, tt_loss: {tt_loss}, spar_loss: {spar_loss}\n text: {decoded_text}"
             print(per_step_message)
 
         if best_sim * args["loss_weight"] < universal_cosim_score * args["loss_weight"]:
@@ -336,92 +355,92 @@ def optimize_prompt_loop_builtin(model, tokenizer, token_embedding, all_target_f
 
     return best_text
 
-def optimize_prompt_loop_pez(model, tokenizer, token_embedding, all_target_features, args, device):
-    opt_iters = args["iter"]
-    lr = args["lr"]
-    weight_decay = args["weight_decay"]
-    print_step = args["print_step"]
-    batch_size = args["batch_size"]
-    print_new_best = getattr(args, 'print_new_best', False)
+# def optimize_prompt_loop_pez(model, tokenizer, token_embedding, all_target_features, args, device):
+#     opt_iters = args["iter"]
+#     lr = args["lr"]
+#     weight_decay = args["weight_decay"]
+#     print_step = args["print_step"]
+#     batch_size = args["batch_size"]
+#     print_new_best = getattr(args, 'print_new_best', False)
 
-    # initialize prompt
-    prompt_embeds, dummy_embeds, dummy_ids = initialize_prompt(tokenizer, token_embedding, args, device)
-    p_bs, p_len, p_dim = prompt_embeds.shape
+#     # initialize prompt
+#     prompt_embeds, dummy_embeds, dummy_ids = initialize_prompt(tokenizer, token_embedding, args, device)
+#     p_bs, p_len, p_dim = prompt_embeds.shape
 
-    # get optimizer
-    input_optimizer = torch.optim.AdamW([prompt_embeds], lr=lr, weight_decay=weight_decay)
+#     # get optimizer
+#     input_optimizer = torch.optim.AdamW([prompt_embeds], lr=lr, weight_decay=weight_decay)
 
-    best_sim = -1000 * args["loss_weight"]
-    best_text = ""
+#     best_sim = -1000 * args["loss_weight"]
+#     best_text = ""
 
-    for step in range(opt_iters):
-        # randomly sample sample images and get features
-        if batch_size is None:
-            target_features = all_target_features
-        else:
-            curr_indx = torch.randperm(len(all_target_features))
-            target_features = all_target_features[curr_indx][0:batch_size]
+#     for step in range(opt_iters):
+#         # randomly sample sample images and get features
+#         if batch_size is None:
+#             target_features = all_target_features
+#         else:
+#             curr_indx = torch.randperm(len(all_target_features))
+#             target_features = all_target_features[curr_indx][0:batch_size]
             
-        universal_target_features = all_target_features
+#         universal_target_features = all_target_features
         
-        # forward projection
-        projected_embeds, nn_indices = nn_project(prompt_embeds, token_embedding, print_hits=False)
-        model
+#         # forward projection
+#         projected_embeds, nn_indices = nn_project(prompt_embeds, token_embedding, print_hits=False)
+#         model
 
-        # get cosine similarity score with all target features
-        with torch.no_grad():
-            # padded_embeds = copy.deepcopy(dummy_embeds)
-            padded_embeds = dummy_embeds.detach().clone()
-            padded_embeds[dummy_ids == -1] = projected_embeds.reshape(-1, p_dim)
-            logits_per_image, _ = model.forward_text_embedding(model, padded_embeds, dummy_ids, universal_target_features)
-            scores_per_prompt = logits_per_image.mean(dim=0)
-            universal_cosim_score = scores_per_prompt.max().item()
-            best_indx = scores_per_prompt.argmax().item()
+#         # get cosine similarity score with all target features
+#         with torch.no_grad():
+#             # padded_embeds = copy.deepcopy(dummy_embeds)
+#             padded_embeds = dummy_embeds.detach().clone()
+#             padded_embeds[dummy_ids == -1] = projected_embeds.reshape(-1, p_dim)
+#             logits_per_image, _ = model.forward_text_embedding(model, padded_embeds, dummy_ids, universal_target_features)
+#             scores_per_prompt = logits_per_image.mean(dim=0)
+#             universal_cosim_score = scores_per_prompt.max().item()
+#             best_indx = scores_per_prompt.argmax().item()
         
-        # tmp_embeds = copy.deepcopy(prompt_embeds)
-        tmp_embeds = prompt_embeds.detach().clone()
-        tmp_embeds.data = projected_embeds.data
-        tmp_embeds.requires_grad = True
+#         # tmp_embeds = copy.deepcopy(prompt_embeds)
+#         tmp_embeds = prompt_embeds.detach().clone()
+#         tmp_embeds.data = projected_embeds.data
+#         tmp_embeds.requires_grad = True
         
-        # padding
-        # padded_embeds = copy.deepcopy(dummy_embeds)
-        padded_embeds = dummy_embeds.detach().clone()
-        padded_embeds[dummy_ids == -1] = tmp_embeds.reshape(-1, p_dim)
+#         # padding
+#         # padded_embeds = copy.deepcopy(dummy_embeds)
+#         padded_embeds = dummy_embeds.detach().clone()
+#         padded_embeds[dummy_ids == -1] = tmp_embeds.reshape(-1, p_dim)
         
-        logits_per_image, _ = model.forward_text_embedding(model, padded_embeds, dummy_ids, target_features)
-        cosim_scores = logits_per_image
-        loss = 1 - cosim_scores.mean()
-        loss = loss * args["loss_weight"]
+#         logits_per_image, _ = model.forward_text_embedding(model, padded_embeds, dummy_ids, target_features)
+#         cosim_scores = logits_per_image
+#         loss = 1 - cosim_scores.mean()
+#         loss = loss * args["loss_weight"]
         
-        prompt_embeds.grad, = torch.autograd.grad(loss, [tmp_embeds])
+#         prompt_embeds.grad, = torch.autograd.grad(loss, [tmp_embeds])
         
-        input_optimizer.step()
-        input_optimizer.zero_grad()
+#         input_optimizer.step()
+#         input_optimizer.zero_grad()
 
-        curr_lr = input_optimizer.param_groups[0]["lr"]
-        cosim_scores = cosim_scores.mean().item()
+#         curr_lr = input_optimizer.param_groups[0]["lr"]
+#         cosim_scores = cosim_scores.mean().item()
 
-        decoded_text = decode_ids(nn_indices, tokenizer)[best_indx]
-        if print_step is not None and (step % print_step == 0 or step == opt_iters-1):
-            per_step_message = f"step: {step}, lr: {curr_lr}"
-            if not print_new_best:
-                per_step_message = f"\n{per_step_message}, cosim: {universal_cosim_score:.3f}, text: {decoded_text}"
-            print(per_step_message)
+#         decoded_text = decode_ids(nn_indices, tokenizer)[best_indx]
+#         if print_step is not None and (step % print_step == 0 or step == opt_iters-1):
+#             per_step_message = f"step: {step}, lr: {curr_lr}"
+#             if not print_new_best:
+#                 per_step_message = f"\n{per_step_message}, cosim: {universal_cosim_score:.3f}, text: {decoded_text}"
+#             print(per_step_message)
 
-        if best_sim * args["loss_weight"] < universal_cosim_score * args["loss_weight"]:
-            best_sim = universal_cosim_score
-            best_text = decoded_text
-            if print_new_best:
-                print(f"new best cosine sim: {best_sim}")
-                print(f"new best prompt: {best_text}")
+#         if best_sim * args["loss_weight"] < universal_cosim_score * args["loss_weight"]:
+#             best_sim = universal_cosim_score
+#             best_text = decoded_text
+#             if print_new_best:
+#                 print(f"new best cosine sim: {best_sim}")
+#                 print(f"new best prompt: {best_text}")
 
 
-    if print_step is not None:
-        print()
-        print(f"best cosine sim: {best_sim}")
-        print(f"best prompt: {best_text}")
+#     if print_step is not None:
+#         print()
+#         print(f"best cosine sim: {best_sim}")
+#         print(f"best prompt: {best_text}")
 
-    return best_text
+#     return best_text
 
 def text_text_loss(original_text_emb, modified_text_emb) -> float:
     # larger number means more similarity
@@ -430,6 +449,44 @@ def text_text_loss(original_text_emb, modified_text_emb) -> float:
     loss = (modified * original).sum(dim=-1).mean()
     return loss
 
+def combine_embeddings(tensor, optional_tensor=None) -> float:
+    if optional_tensor is not None:
+        orig_emb = optional_tensor
+        batch_size = tensor.shape[0]
+
+        if batch_size > optional_tensor.shape[0]:
+            orig_emb = torch.stack([optional_tensor] * batch_size)
+
+        text_embeddings = torch.cat((orig_emb, tensor), dim=1)
+    else:
+        text_embeddings = tensor
+    return text_embeddings
+
+def sparsity_loss(text_embeddings) -> float:
+    """
+    Calculate the Sparsity loss.
+
+    Parameters:
+    text_embeddings (Tensor): A tensor of shape (batch_size, token_count, d) where d is the embedding dimension.
+
+    Returns:
+    tensor[float]: The Sparsity loss value.
+    """
+    loss = 0.0
+
+    token_count = text_embeddings.shape[1]
+    # Iterate over all pairs of prompt embeddings
+    for batch_idx, embedding in enumerate(text_embeddings):
+        for i in range(token_count):
+            for j in range(token_count):
+                if i != j:
+                    # Normalize the embeddings
+                    norm_i = embedding[i] / embedding[i].norm(dim=-1, keepdim=True)
+                    norm_j = embedding[j] / embedding[j].norm(dim=-1, keepdim=True)
+
+                    # Add the dot product to the loss
+                    loss += torch.abs(torch.dot(norm_i, norm_j))
+    return loss
 
 def optimize_prompt(model=None, preprocess=None, args=None, device=None, target_images=None, target_prompts=None):
     global default_args
@@ -466,10 +523,10 @@ def optimize_prompt(model=None, preprocess=None, args=None, device=None, target_
     #tokenizer_funct = open_clip.get_tokenizer(clip_model)
     # get target features
     all_target_features = get_target_feature(model, preprocess, tokenizer_funct, device, target_images=target_images, target_prompts=target_prompts)
-    prompt_ids, text_target_features = get_padded_text_feature(model, tokenizer, token_embedding, tokenizer_funct, args, device, target_prompts=target_prompts)
+    prompt_ids, text_target_features, unpadded_prompt_embeds = get_padded_text_feature(model, tokenizer, token_embedding, tokenizer_funct, args, device, target_prompts=target_prompts)
 
     # optimize prompt
-    learned_prompt = optimize_prompt_loop_builtin(model, tokenizer, token_embedding, all_target_features, prompt_ids, text_target_features, run_args, device, tokenizer_funct)
+    learned_prompt = optimize_prompt_loop_builtin(model, tokenizer, token_embedding, all_target_features, prompt_ids, text_target_features, unpadded_prompt_embeds, run_args, device, tokenizer_funct)
 
     return learned_prompt
     
