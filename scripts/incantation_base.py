@@ -8,7 +8,6 @@ from typing import Any
 from modules import script_callbacks
 from modules.processing import StableDiffusionProcessing
 from scripts.ui_wrapper import UIWrapper
-from scripts.p2hp import P2HP
 from scripts.incant import IncantExtensionScript
 from scripts.t2i_zero import T2I0ExtensionScript
 
