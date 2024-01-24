@@ -246,7 +246,7 @@ def optimize_prompt_loop_builtin(model, tokenizer, token_embedding, all_target_f
     best_sim =  -1000 * args["loss_weight"]
     best_tt =   -1000 * args["loss_tt"]
     best_ti =   -1000 * args["loss_ti"]
-    best_spar = -1000 * args["loss_spar"] # sparsity loss 
+    best_spar =  1000 * args["loss_spar"] # sparsity loss 
 
     best_text = ""
     best_text_cs = ""
