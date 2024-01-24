@@ -272,7 +272,7 @@ def optimize_prompt(model=None, preprocess=None, args=None, device=None, target_
     all_target_features = get_target_feature(model, preprocess, tokenizer_funct, device, target_images=target_images, target_prompts=target_prompts)
 
     # optimize prompt
-    learned_prompt = optimize_prompt_loop_p2hp(model, tokenizer, token_embedding, all_target_features, args, device)
+    learned_prompt = optimize_prompt_loop_pez(model, tokenizer, token_embedding, all_target_features, args, device)
 
     return learned_prompt
     
