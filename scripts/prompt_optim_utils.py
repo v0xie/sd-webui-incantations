@@ -462,31 +462,60 @@ def combine_embeddings(tensor, optional_tensor=None) -> float:
         text_embeddings = tensor
     return text_embeddings
 
-def sparsity_loss(text_embeddings) -> float:
+# def sparsity_loss(text_embeddings) -> float:
+#     """
+#     Calculate the Sparsity loss.
+
+#     Parameters:
+#     text_embeddings (Tensor): A tensor of shape (batch_size, token_count, d) where d is the embedding dimension.
+
+#     Returns:
+#     tensor[float]: The Sparsity loss value.
+#     """
+#     loss = 0.0
+
+#     token_count = text_embeddings.shape[1]
+#     # Iterate over all pairs of prompt embeddings
+#     for batch_idx, embedding in enumerate(text_embeddings):
+#         for i in range(token_count):
+#             for j in range(token_count):
+#                 if i != j:
+#                     # Normalize the embeddings
+#                     norm_i = embedding[i] / embedding[i].norm(dim=-1, keepdim=True)
+#                     norm_j = embedding[j] / embedding[j].norm(dim=-1, keepdim=True)
+
+#                     # Add the dot product to the loss
+#                     loss += torch.abs(torch.dot(norm_i, norm_j))
+#     return loss
+
+
+def sparsity_loss(text_embeddings) -> torch.Tensor:
     """
-    Calculate the Sparsity loss.
+    Calculate the Sparsity loss more efficiently.
 
     Parameters:
     text_embeddings (Tensor): A tensor of shape (batch_size, token_count, d) where d is the embedding dimension.
 
     Returns:
-    tensor[float]: The Sparsity loss value.
+    Tensor: The Sparsity loss value.
     """
-    loss = 0.0
+    # Normalize the embeddings
+    norm_embeddings = text_embeddings / text_embeddings.norm(dim=-1, keepdim=True)
 
-    token_count = text_embeddings.shape[1]
-    # Iterate over all pairs of prompt embeddings
-    for batch_idx, embedding in enumerate(text_embeddings):
-        for i in range(token_count):
-            for j in range(token_count):
-                if i != j:
-                    # Normalize the embeddings
-                    norm_i = embedding[i] / embedding[i].norm(dim=-1, keepdim=True)
-                    norm_j = embedding[j] / embedding[j].norm(dim=-1, keepdim=True)
+    # Compute all pairwise dot products
+    # dot_product.shape = (batch_size, token_count, token_count)
+    dot_product = torch.matmul(norm_embeddings, norm_embeddings.transpose(-2, -1))
 
-                    # Add the dot product to the loss
-                    loss += torch.abs(torch.dot(norm_i, norm_j))
+    # Zero out diagonal elements (self dot products) and take absolute values
+    batch_size, token_count, _ = text_embeddings.shape
+    eye = torch.eye(token_count, device=text_embeddings.device).unsqueeze(0).expand(batch_size, -1, -1)
+    dot_product = torch.abs(dot_product) * (1 - eye)
+
+    # Sum over all pairs and average over the batch
+    loss = dot_product.sum() / batch_size
+
     return loss
+
 
 def optimize_prompt(model=None, preprocess=None, args=None, device=None, target_images=None, target_prompts=None):
     global default_args
