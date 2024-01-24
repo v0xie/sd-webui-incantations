@@ -85,7 +85,7 @@ class InterrogatorCLIP(Interrogator):
 
         def generate_caption(self, pil_image):
                 self.load()
-                return self.interrogator.generate_caption(pil_image)
+                return self.interrogator.generate_caption(pil_image.to(shared.device))
 
         def unload(self):
                 self.interrogator.unload()
@@ -431,8 +431,14 @@ class IncantExtensionScript(UIWrapper):
                 n = p.iteration
                 if n % 2 == 0:
                         #fine_images = self.decode_images(images)
-                        fine_images = [to_pil(img) for img in images]
-                        incant_params.img_fine.extend(fine_images)
+                        fine_images = []
+                        for img in images:
+                                img = to_pil(img)
+                                #img_array = np.asarray(img)
+                                #img_array = torch.from_numpy(img_array).to(shared.device)
+                                incant_params.img_fine.append(img)
+
+                        #fine_images = [to_pil(img) for img in images]
                         self.interrogate_images(incant_params, p)
                         devices.torch_gc()
                         # compute masked_prompts
@@ -629,8 +635,16 @@ class IncantExtensionScript(UIWrapper):
                                 # calculate image similarity to generated caption
                                 if incant_params.quality:
                                         caption_text_array = caption.split()
-                                        matches = interrogator.rank(image_features, caption_text_array, top_count=len(caption_text_array))
-                                        matches_list.append((caption, matches))
+                                        # upcast
+                                        try:
+                                                matches = self.clip_text_image_similarity(interrogator, caption_text_array, image_features, top_count=len(caption_text_array))
+                                                matches_list.append((caption, matches))
+                                        except RuntimeError:
+                                                print(f"\n{batch_idx}-fine:error computing matches to generated caption\n")
+                                                matches_list.append((caption, [(caption, 1.0)]))
+
+
+                                        
                                         print(f"\n{batch_idx}-fine:{matches}\n")
 
                                 incant_params.matches_fine.append(matches_list)

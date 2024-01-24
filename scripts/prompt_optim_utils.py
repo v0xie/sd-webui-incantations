@@ -33,7 +33,7 @@ from sentence_transformers.util import (semantic_search,
                                         dot_score, 
                                         normalize_embeddings)
 
-run_args = {
+default_args = {
     "prompt_len": 16,
     "iter": 1000,
     "lr": 0.1,
@@ -252,7 +252,7 @@ def optimize_prompt_loop_pez(model, tokenizer, token_embedding, all_target_featu
 
 
 def optimize_prompt(model=None, preprocess=None, args=None, device=None, target_images=None, target_prompts=None):
-    global run_args
+    global default_args
     clip_model = 'ViT-L/14'
     pretrained = 'openai'
     if model == None or preprocess == None:
@@ -261,18 +261,18 @@ def optimize_prompt(model=None, preprocess=None, args=None, device=None, target_
         setattr(model, 'forward_text_embedding', forward_text_embedding)
         setattr(model, 'encode_text_embedding', encode_text_embedding)
         #model, preprocess = clip.load(clip_model, 
-    if args is None:
-        args = run_args
+    run_args = default_args
+    if args is not None:
+        run_args.update(args)
     token_embedding = model.token_embedding
     tokenizer = open_clip.tokenizer._tokenizer
     tokenizer_funct = open_clip.tokenizer.tokenize
     #tokenizer_funct = open_clip.get_tokenizer(clip_model)
-
     # get target features
     all_target_features = get_target_feature(model, preprocess, tokenizer_funct, device, target_images=target_images, target_prompts=target_prompts)
 
     # optimize prompt
-    learned_prompt = optimize_prompt_loop_pez(model, tokenizer, token_embedding, all_target_features, args, device)
+    learned_prompt = optimize_prompt_loop_pez(model, tokenizer, token_embedding, all_target_features, run_args, device)
 
     return learned_prompt
     

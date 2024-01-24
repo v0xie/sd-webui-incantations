@@ -20,30 +20,46 @@ class P2HP(UIWrapper):
         interrogator.load()
     
     def title(self) -> str:
-        return "P2HP"
+        return "Prompt Optimization"
     
     def setup_ui(self, is_img2img) -> list:
         return self.ui(is_img2img)
     
     def ui(self, is_img2img) -> list:
-        with gr.Accordion('P2HP', open=True):
-            img_path = "F:\\temp\\meme.png"
+        with gr.Accordion('Prompt Optimization', open=True):
+            #img_path = "F:\\temp\\meme.png"
             with gr.Row():
-                img = gr.Image(value=img_path, label='p2hp_img', sources=['upload','clipboard'], type='pil', default=img_path)
+                img = gr.Image(value=None, label='p2hp_img', sources=['upload','clipboard'], type='pil')
             with gr.Row():
                 output = gr.Textbox(value="", label='p2hp_output')
-            lr = gr.Slider(value=1e-02, default=1e-02, step = 0.01, label='p2hp_lr')
+            lr = gr.Slider(value=1e-02, default=1e-02, maximum=0.2, minimum=1e-03, step = 0.001, label='p2hp_lr')
+            iterations = gr.Slider(value=3000, default=3000, maximum=10000, minimum=100, step = 100, label='p2hp_iter')
             steps = gr.Slider(value=100, default=100, step=1, label='p2hp_steps')
-            btn = gr.Button(label='P2HP', type='button')
-            btn.click(self.p2hp, inputs = [img, lr], outputs = [output])
-            out = [img, lr, btn] 
+            batch_size = gr.Slider(value=1, default=1, maximum=16, minimum=1, step=1, label='p2hp_bs')
+            btn = gr.Button(label='Pez', type='button')
+            btn.click(self.call_optimize_prompt, inputs = [img, lr, iterations, steps, batch_size], outputs = [output])
+
+            out = [img, lr, iterations, steps, batch_size, btn] 
             for p in out:
                 p.do_not_save_to_config = True
+
             return out
         
-    def p2hp(self, img, lr):
+    def call_optimize_prompt(self, img, lr, iter, steps, batch_size):
         print('Calling p2hp')
-        learned_prompt = optimize_prompt(device=shared.device, target_images=[img])
+
+        if img is None:
+            return
+
+        run_args = {
+            'lr': lr,
+            'iter': iter,
+            'steps': steps,
+            'batch_size': batch_size
+        }
+
+
+        learned_prompt = optimize_prompt(device=shared.device, args=run_args, target_images=[img])
         return learned_prompt
 
         # interrogator = shared.interrogator
@@ -84,36 +100,3 @@ class P2HP(UIWrapper):
 
     def get_xyz_axis_options(self) -> dict:
         return {}
-    
-# modified from modules/sd_samples_timesteps_impl.py
-@torch.no_grad()
-def ddim(model, x, timesteps, extra_args=None, callback=None, disable=None, eta=0.0):
-    alphas_cumprod = model.inner_model.inner_model.alphas_cumprod
-    alphas = alphas_cumprod[timesteps]
-    alphas_prev = alphas_cumprod[torch.nn.functional.pad(timesteps[:-1], pad=(1, 0))].to(torch.float64 if x.device.type != 'mps' and x.device.type != 'xpu' else torch.float32)
-    sqrt_one_minus_alphas = torch.sqrt(1 - alphas)
-    sigmas = eta * np.sqrt((1 - alphas_prev.cpu().numpy()) / (1 - alphas.cpu()) * (1 - alphas.cpu() / alphas_prev.cpu().numpy()))
-
-    extra_args = {} if extra_args is None else extra_args
-    s_in = x.new_ones((x.shape[0]))
-    s_x = x.new_ones((x.shape[0], 1, 1, 1))
-    for i in tqdm.trange(len(timesteps) - 1, disable=disable):
-        index = len(timesteps) - 1 - i
-
-        e_t = model(x, timesteps[index].item() * s_in, **extra_args)
-
-        a_t = alphas[index].item() * s_x
-        a_prev = alphas_prev[index].item() * s_x
-        sigma_t = sigmas[index].item() * s_x
-        sqrt_one_minus_at = sqrt_one_minus_alphas[index].item() * s_x
-
-        pred_x0 = (x - sqrt_one_minus_at * e_t) / a_t.sqrt()
-        dir_xt = (1. - a_prev - sigma_t ** 2).sqrt() * e_t
-        noise = sigma_t * k_diffusion.sampling.torch.randn_like(x)
-        x = a_prev.sqrt() * pred_x0 + dir_xt + noise
-
-        if callback is not None:
-            callback({'x': x, 'i': i, 'sigma': 0, 'sigma_hat': 0, 'denoised': pred_x0})
-
-    return x
-
