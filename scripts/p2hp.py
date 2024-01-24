@@ -31,21 +31,22 @@ class P2HP(UIWrapper):
             with gr.Row():
                 img = gr.Image(value=None, label='p2hp_img', sources=['upload','clipboard'], type='pil')
             with gr.Row():
+                input_prompt = gr.Textbox(value="", label='p2hp_input')
                 output = gr.Textbox(value="", label='p2hp_output')
             lr = gr.Slider(value=1e-02, default=1e-02, maximum=0.2, minimum=1e-03, step = 0.001, label='p2hp_lr')
-            iterations = gr.Slider(value=3000, default=3000, maximum=10000, minimum=100, step = 100, label='p2hp_iter')
+            iterations = gr.Slider(value=300, default=300, maximum=10000, minimum=100, step = 100, label='p2hp_iter')
             steps = gr.Slider(value=100, default=100, step=1, label='p2hp_steps')
             batch_size = gr.Slider(value=1, default=1, maximum=16, minimum=1, step=1, label='p2hp_bs')
             btn = gr.Button(value='Pez', type='button')
-            btn.click(self.call_optimize_prompt, inputs = [img, lr, iterations, steps, batch_size], outputs = [output])
+            btn.click(self.call_optimize_prompt, inputs = [img, lr, iterations, steps, batch_size, input_prompt], outputs = [output])
 
-            out = [img, lr, iterations, steps, batch_size, btn] 
+            out = [img, lr, iterations, steps, batch_size, input_prompt, btn] 
             for p in out:
                 p.do_not_save_to_config = True
 
             return out
         
-    def call_optimize_prompt(self, img, lr, iter, steps, batch_size):
+    def call_optimize_prompt(self, img, lr, iter, steps, batch_size, input_prompt):
         print('Calling p2hp')
 
         if img is None:
@@ -55,11 +56,12 @@ class P2HP(UIWrapper):
             'lr': lr,
             'iter': iter,
             'steps': steps,
-            'batch_size': batch_size
+            'batch_size': batch_size,
+            'prompt_bs': batch_size
         }
+        target_prompts = None if len(input_prompt) == 0 else [input_prompt]
 
-
-        learned_prompt = optimize_prompt(device=shared.device, args=run_args, target_images=[img])
+        learned_prompt = optimize_prompt(device=shared.device, args=run_args, target_images=[img], target_prompts=target_prompts)
         return learned_prompt
 
         # interrogator = shared.interrogator
