@@ -31,6 +31,7 @@ class SubmoduleInfo:
 submodules: list[SubmoduleInfo] = [
         SubmoduleInfo(module=IncantExtensionScript()),
         SubmoduleInfo(module=T2I0ExtensionScript()),
+        SubmoduleInfo(module=P2HP()),
 ]
                 
 class IncantBaseExtensionScript(scripts.Script):

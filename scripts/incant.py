@@ -18,6 +18,7 @@ from scripts.ui_wrapper import UIWrapper, arg
 # from scripts.t2i_zero import SegaExtensionScript
 
 import torch
+from torchvision.transforms import ToPILImage
 
 logger = logging.getLogger(__name__)
 logger.setLevel(environ.get("SD_WEBUI_LOG_LEVEL", logging.INFO))
@@ -84,7 +85,7 @@ class InterrogatorCLIP(Interrogator):
 
         def generate_caption(self, pil_image):
                 self.load()
-                return self.interrogator.generate_caption(pil_image)
+                return self.interrogator.generate_caption(pil_image.to(shared.device))
 
         def unload(self):
                 self.interrogator.unload()
@@ -356,9 +357,9 @@ class IncantExtensionScript(UIWrapper):
                 incant_params.deepbooru = deepbooru
                 fine = p.steps
                 incant_params.fine = p.steps
-                if incant_params.fine > p.steps:
+                if incant_params.fine >= p.steps:
                         print(f"Fine step {fine} is greater than total steps {p.steps}, setting to {p.steps}")
-                        fine = p.steps
+                        fine = max(p.steps - 2, 1)
                 incant_params.gamma = gamma
                 incant_params.qual_scale = 0
                 incant_params.sem_scale = 0
@@ -370,6 +371,8 @@ class IncantExtensionScript(UIWrapper):
                 #incant_params.first_stage_cache = self.stage_1[0]
                 incant_params.second_stage = (p.iteration % 2) == 1
                 tqdm = shared.total_tqdm
+                if not hasattr(p, 'incant_params'):
+                        setattr(p, 'incant_params', incant_params)
 
                 if p.iteration % 2 == 0:
                         self.stage_1 = incant_params
@@ -413,14 +416,41 @@ class IncantExtensionScript(UIWrapper):
                 for i, (emb_fine, emb_coarse) in enumerate(zip(incant_params.emb_txt_fine, incant_params.emb_txt_coarse)):
                         incant_params.loss_sem.append(emb_fine - emb_coarse)
         
-        def postprocess_batch(self, p, *args, **kwargs):
+        def postprocess_batch(self, p: StableDiffusionProcessing, *args, **kwargs):
                 return self.incant_postprocess_batch(p, *args, **kwargs)
 
-        def incant_postprocess_batch(self, p, inc_active, *args, **kwargs):
-            inc_active = getattr(p, "incant_active", inc_active)
-            if inc_active is False:
-                    return
-            self.unhook_callbacks()
+        def incant_postprocess_batch(self, p: StableDiffusionProcessing, inc_active, *args, **kwargs):
+                inc_active = getattr(p, "incant_active", inc_active)
+                if inc_active is False:
+                        return
+                batch_number = kwargs.get('batch_number', -1)
+                images = kwargs.get('images', None)
+                incant_params: IncantStateParams = getattr(p, "incant_params", None)
+                to_pil = ToPILImage()
+
+                n = p.iteration
+                if n % 2 == 0:
+                        #fine_images = self.decode_images(images)
+                        fine_images = []
+                        for img in images:
+                                img = to_pil(img)
+                                #img_array = np.asarray(img)
+                                #img_array = torch.from_numpy(img_array).to(shared.device)
+                                incant_params.img_fine.append(img)
+
+                        #fine_images = [to_pil(img) for img in images]
+                        self.interrogate_images(incant_params, p)
+                        devices.torch_gc()
+                        # compute masked_prompts
+                        batch_start_idx = n * p.batch_size
+                        batch_end_idx = (n + 1) * p.batch_size
+                        for batch_idx, caption_matches_item in enumerate(incant_params.matches_fine[batch_start_idx:batch_end_idx]):
+                                batch_mask_prompts = []
+                                for caption, matches in caption_matches_item:
+                                        batch_mask_prompts.append(self.mask_prompt(incant_params.gamma, matches, caption, incant_params.word))
+                                incant_params.masked_prompt.append(batch_mask_prompts)
+
+                self.unhook_callbacks()
 
         def unhook_callbacks(self):
                 logger.debug('Unhooked callbacks')
@@ -513,32 +543,38 @@ class IncantExtensionScript(UIWrapper):
                 return masked_prompt
 
         def cfg_after_cfg_callback(self, params: AfterCFGCallbackParams, incant_params: IncantStateParams):
-                p = incant_params.p
-                fine = incant_params.fine
-                second_stage = incant_params.second_stage
-                x = params.x
-                step = params.sampling_step
+                pass
+                #p = incant_params.p
+                #fine = incant_params.fine
+                #second_stage = incant_params.second_stage
+                #x = params.x
 
-                # FIXME: why is the max value of step 2 less than the total steps???
-                if step == fine - 2 and not second_stage:
-                        # print(f"\nFine step: {step}\n")
+                ## BUG: webui params passes shared.state.sampling_step instead of the internal self.step
+                #if shared.state is not None:
+                #        step = max(params.sampling_step, shared.state.sampling_step)
+                #else:
+                #        step = params.sampling_step
 
-                        # decode fine images
-                        fine_images = self.decode_images(x)
-                        incant_params.img_fine = fine_images 
+                ## FIXME: why is the max value of step 2 less than the total steps???
+                #if step == fine - 2 and not second_stage:
+                #        # print(f"\nFine step: {step}\n")
 
-                        # compute embedding stuff
-                        self.interrogate_images(incant_params, p)
-                        devices.torch_gc()
+                #        # decode fine images
+                #        fine_images = self.decode_images(x)
+                #        incant_params.img_fine = fine_images 
 
-                        # compute masked_prompts
-                        for batch_idx, caption_matches_item in enumerate(incant_params.matches_fine):
-                                batch_mask_prompts = []
-                                for caption, matches in caption_matches_item:
-                                        batch_mask_prompts.append(self.mask_prompt(incant_params.gamma, matches, caption, incant_params.word))
-                                incant_params.masked_prompt.append(batch_mask_prompts)
-                else:
-                        pass
+                #        # compute embedding stuff
+                #        self.interrogate_images(incant_params, p)
+                #        devices.torch_gc()
+
+                #        # compute masked_prompts
+                #        for batch_idx, caption_matches_item in enumerate(incant_params.matches_fine):
+                #                batch_mask_prompts = []
+                #                for caption, matches in caption_matches_item:
+                #                        batch_mask_prompts.append(self.mask_prompt(incant_params.gamma, matches, caption, incant_params.word))
+                #                incant_params.masked_prompt.append(batch_mask_prompts)
+                #else:
+                #        pass
 
         def compute_gradients(self, emb_fine, emb_coarse):
                 out_gradients = []
@@ -599,8 +635,16 @@ class IncantExtensionScript(UIWrapper):
                                 # calculate image similarity to generated caption
                                 if incant_params.quality:
                                         caption_text_array = caption.split()
-                                        matches = interrogator.rank(image_features, caption_text_array, top_count=len(caption_text_array))
-                                        matches_list.append((caption, matches))
+                                        # upcast
+                                        try:
+                                                matches = self.clip_text_image_similarity(interrogator, caption_text_array, image_features, top_count=len(caption_text_array))
+                                                matches_list.append((caption, matches))
+                                        except RuntimeError:
+                                                print(f"\n{batch_idx}-fine:error computing matches to generated caption\n")
+                                                matches_list.append((caption, [(caption, 1.0)]))
+
+
+                                        
                                         print(f"\n{batch_idx}-fine:{matches}\n")
 
                                 incant_params.matches_fine.append(matches_list)

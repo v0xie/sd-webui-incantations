@@ -8,7 +8,7 @@ class UIWrapper:
     def title(self) -> str:
         raise NotImplementedError
     
-    def setup_ui(self) -> list:
+    def setup_ui(self, is_img2img) -> list:
         raise NotImplementedError
 
     def get_infotext_fields(self) -> list:
