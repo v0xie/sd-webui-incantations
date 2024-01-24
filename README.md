@@ -46,8 +46,8 @@ todo...
 ---
 
 ### Credits
-- The authors of the papers for their methods:
-      ```
+- The authors of the papers for their methods:  
+
       @misc{yu2024seek,
        title={Seek for Incantations: Towards Accurate Text-to-Image Diffusion Synthesis through Prompt Engineering}, 
        author={Chang Yu and Junran Peng and Xiangyu Zhu and Zhaoxiang Zhang and Qi Tian and Zhen Lei},
@@ -83,7 +83,8 @@ todo...
        archivePrefix={arXiv},
        primaryClass={cs.CV}
       }
-      ```
+
 - Hard Prompts Made Easy (https://github.com/YuxinWenRick/hard-prompts-made-easy)
+
 - @udon-universe's extension templates (https://github.com/udon-universe/stable-diffusion-webui-extension-templates)
 ---
