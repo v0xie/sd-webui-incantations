@@ -36,7 +36,7 @@ class P2HP(UIWrapper):
             iterations = gr.Slider(value=3000, default=3000, maximum=10000, minimum=100, step = 100, label='p2hp_iter')
             steps = gr.Slider(value=100, default=100, step=1, label='p2hp_steps')
             batch_size = gr.Slider(value=1, default=1, maximum=16, minimum=1, step=1, label='p2hp_bs')
-            btn = gr.Button(label='Pez', type='button')
+            btn = gr.Button(value='Pez', type='button')
             btn.click(self.call_optimize_prompt, inputs = [img, lr, iterations, steps, batch_size], outputs = [output])
 
             out = [img, lr, iterations, steps, batch_size, btn] 
