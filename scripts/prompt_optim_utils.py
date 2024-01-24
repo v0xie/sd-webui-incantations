@@ -304,6 +304,7 @@ def optimize_prompt_loop_builtin(model, tokenizer, token_embedding, all_target_f
             spar_loss = sparsity_loss(projected_embeds)
         
 
+
         
         logits_per_image, _ = model.forward_text_embedding(model, padded_embeds, dummy_ids, target_features)
         cosim_scores = logits_per_image
@@ -311,7 +312,7 @@ def optimize_prompt_loop_builtin(model, tokenizer, token_embedding, all_target_f
         # loss
         loss = 1 - (cosim_scores.mean() * args["loss_weight"])
         loss = loss - (tt_loss * args["loss_tt"])
-        loss = loss - (ti_loss * args["loss_ti"])
+        loss = loss + (ti_loss * args["loss_ti"])
         loss = loss + (spar_loss * args["loss_spar"])
         
         prompt_embeds.grad, = torch.autograd.grad(loss, [tmp_embeds])
@@ -331,7 +332,7 @@ def optimize_prompt_loop_builtin(model, tokenizer, token_embedding, all_target_f
         total_loss = \
               universal_cosim_score * args["loss_weight"] \
             - tt_loss * args["loss_tt"] \
-            - ti_loss * args["loss_ti"] \
+            + ti_loss * args["loss_ti"] \
             + spar_loss * args["loss_spar"]
 
         if print_step is not None and (step % print_step == 0 or step == opt_iters-1):
@@ -354,21 +355,21 @@ def optimize_prompt_loop_builtin(model, tokenizer, token_embedding, all_target_f
                 print(f"new best tt loss: {best_tt}")
                 print(f"new best prompt: {best_text_tt}")
 
-        if best_spar * args["loss_spar"] < tt_loss * args["loss_spar"]:
-            best_spar = tt_loss * args["loss_spar"]
+        if best_spar * args["loss_spar"] < spar_loss * args["loss_spar"]:
+            best_spar = spar_loss * args["loss_spar"]
             best_text_spar = decoded_text
             if print_new_best:
                 print(f"new best tt loss: {best_spar}")
                 print(f"new best prompt: {best_text_spar}")
 
-        if best_ti * args["loss_ti"] < tt_loss * args["loss_ti"]:
-            best_ti = tt_loss * args["loss_ti"]
+        if best_ti * args["loss_ti"] > ti_loss * args["loss_ti"]:
+            best_ti = ti_loss * args["loss_ti"]
             best_text_ti = decoded_text
             if print_new_best:
                 print(f"new best tt loss: {best_ti}")
                 print(f"new best prompt: {best_text_ti}")
 
-        if best_sum < total_loss:
+        if best_sum > total_loss:
             best_sum = total_loss
             best_text = decoded_text
             if print_new_best:
@@ -478,14 +479,15 @@ def text_text_loss(original_text_emb, modified_text_emb) -> float:
     # larger number means more similarity
     original = original_text_emb / original_text_emb.norm(dim=-1, keepdim=True)
     modified = modified_text_emb / modified_text_emb.norm(dim=-1, keepdim=True)
-    loss = (modified * original).sum(dim=-1).mean()
+    loss = (modified * original).sum(dim=-1).mean() # actually cosine similarity
     return loss
 
 def text_image_loss(image_emb, modified_text_emb) -> float:
     # larger number means more similarity
     image_norm = image_emb / image_emb.norm(dim=-1, keepdim=True)
     text_norm = modified_text_emb / modified_text_emb.norm(dim=-1, keepdim=True)
-    loss = (text_norm * image_norm).sum(dim=-1).mean()
+    cosine_similarity = (text_norm * image_norm).sum(dim=-1)
+    loss = 1.0 - cosine_similarity.mean()
     return loss
 
 def combine_embeddings(tensor, optional_tensor=None) -> float:
