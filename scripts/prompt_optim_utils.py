@@ -22,6 +22,7 @@ from statistics import mean
 import copy
 import json
 from typing import Any, Mapping
+from modules import shared
 
 import open_clip
 import clip
@@ -136,23 +137,33 @@ def get_target_feature(model, preprocess, tokenizer_funct, device, target_images
 
 
 def initialize_prompt(tokenizer, token_embedding, args, device):
+    bos_token = getattr(tokenizer, "bos_token", "<start_of_text>")
+    bos_token_id = getattr(tokenizer, "bos_token_id", 49406)
+    eos_token = getattr(tokenizer, "eos_token", "<end_of_text>")
+    eos_token_id = getattr(tokenizer, "eos_token_id", 49407)
+    pad_token = getattr(tokenizer, "pad_token", "<end_of_text>")
+    pad_token_id = getattr(tokenizer, "pad_token_id", 49407)
+    model_max_len = getattr(tokenizer, "model_max_length", 77)
+    vocab_size = getattr(tokenizer, "vocab_size", 49408)
     prompt_len = args["prompt_len"]
 
     # randomly optimize prompt embeddings
-    prompt_ids = torch.randint(len(tokenizer.encoder), (args["prompt_bs"], prompt_len)).to(device)
+    prompt_ids = torch.randint(vocab_size, (args["prompt_bs"], prompt_len)).to(device)
     prompt_embeds = token_embedding(prompt_ids).detach()
     prompt_embeds.requires_grad = True
 
     # initialize the template
     template_text = "{}"
-    padded_template_text = template_text.format(" ".join(["<start_of_text>"] * prompt_len))
+    padded_template_text = template_text.format(" ".join([bos_token] * prompt_len))
     dummy_ids = tokenizer.encode(padded_template_text)
+    dummy_ids = dummy_ids[1:-1]
 
     # -1 for optimized tokens
-    dummy_ids = [i if i != 49406 else -1 for i in dummy_ids]
-    dummy_ids = [49406] + dummy_ids + [49407]
-    dummy_ids += [0] * (77 - len(dummy_ids))
+    dummy_ids = [i if i != bos_token_id else -1 for i in dummy_ids]
+    dummy_ids = [bos_token_id] + dummy_ids + [eos_token_id]
+    dummy_ids += [pad_token_id] * (model_max_len - len(dummy_ids))
     dummy_ids = torch.tensor([dummy_ids] * args["prompt_bs"]).to(device)
+    #dummy_ids = torch.tensor([dummy_ids] * args["prompt_bs"]).to(device)
 
     # for getting dummy embeds; -1 won't work for token_embedding
     tmp_dummy_ids = copy.deepcopy(dummy_ids)
@@ -162,6 +173,96 @@ def initialize_prompt(tokenizer, token_embedding, args, device):
     
     return prompt_embeds, dummy_embeds, dummy_ids
 
+
+def optimize_prompt_loop_builtin(model, tokenizer, token_embedding, all_target_features, args, device):
+    m = shared.sd_model
+    tokenizer = m.cond_stage_model.tokenizer
+
+    opt_iters = args["iter"]
+    lr = args["lr"]
+    weight_decay = args["weight_decay"]
+    print_step = args["print_step"]
+    batch_size = args["batch_size"]
+    print_new_best = getattr(args, 'print_new_best', False)
+
+    # initialize prompt
+    prompt_embeds, dummy_embeds, dummy_ids = initialize_prompt(tokenizer, token_embedding, args, device)
+    p_bs, p_len, p_dim = prompt_embeds.shape
+
+    # get optimizer
+    input_optimizer = torch.optim.AdamW([prompt_embeds], lr=lr, weight_decay=weight_decay)
+
+    best_sim = -1000 * args["loss_weight"]
+    best_text = ""
+
+    for step in range(opt_iters):
+        # randomly sample sample images and get features
+        if batch_size is None:
+            target_features = all_target_features
+        else:
+            curr_indx = torch.randperm(len(all_target_features))
+            target_features = all_target_features[curr_indx][0:batch_size]
+            
+        universal_target_features = all_target_features
+        
+        # forward projection
+        projected_embeds, nn_indices = nn_project(prompt_embeds, token_embedding, print_hits=False)
+        model
+
+        # get cosine similarity score with all target features
+        with torch.no_grad():
+            # padded_embeds = copy.deepcopy(dummy_embeds)
+            padded_embeds = dummy_embeds.detach().clone()
+            padded_embeds[dummy_ids == -1] = projected_embeds.reshape(-1, p_dim)
+            logits_per_image, _ = model.forward_text_embedding(model, padded_embeds, dummy_ids, universal_target_features)
+            scores_per_prompt = logits_per_image.mean(dim=0)
+            universal_cosim_score = scores_per_prompt.max().item()
+            best_indx = scores_per_prompt.argmax().item()
+        
+        # tmp_embeds = copy.deepcopy(prompt_embeds)
+        tmp_embeds = prompt_embeds.detach().clone()
+        tmp_embeds.data = projected_embeds.data
+        tmp_embeds.requires_grad = True
+        
+        # padding
+        # padded_embeds = copy.deepcopy(dummy_embeds)
+        padded_embeds = dummy_embeds.detach().clone()
+        padded_embeds[dummy_ids == -1] = tmp_embeds.reshape(-1, p_dim)
+        
+        logits_per_image, _ = model.forward_text_embedding(model, padded_embeds, dummy_ids, target_features)
+        cosim_scores = logits_per_image
+        loss = 1 - cosim_scores.mean()
+        loss = loss * args["loss_weight"]
+        
+        prompt_embeds.grad, = torch.autograd.grad(loss, [tmp_embeds])
+        
+        input_optimizer.step()
+        input_optimizer.zero_grad()
+
+        curr_lr = input_optimizer.param_groups[0]["lr"]
+        cosim_scores = cosim_scores.mean().item()
+
+        decoded_text = decode_ids(nn_indices, tokenizer)[best_indx]
+        if print_step is not None and (step % print_step == 0 or step == opt_iters-1):
+            per_step_message = f"step: {step}, lr: {curr_lr}"
+            if not print_new_best:
+                per_step_message = f"\n{per_step_message}, cosim: {universal_cosim_score:.3f}, text: {decoded_text}"
+            print(per_step_message)
+
+        if best_sim * args["loss_weight"] < universal_cosim_score * args["loss_weight"]:
+            best_sim = universal_cosim_score
+            best_text = decoded_text
+            if print_new_best:
+                print(f"new best cosine sim: {best_sim}")
+                print(f"new best prompt: {best_text}")
+
+
+    if print_step is not None:
+        print()
+        print(f"best cosine sim: {best_sim}")
+        print(f"best prompt: {best_text}")
+
+    return best_text
 
 def optimize_prompt_loop_pez(model, tokenizer, token_embedding, all_target_features, args, device):
     opt_iters = args["iter"]
@@ -250,9 +351,16 @@ def optimize_prompt_loop_pez(model, tokenizer, token_embedding, all_target_featu
 
     return best_text
 
+def text_text_loss(original_text_emb, modified_text_emb) -> float:
+    original = original_text_emb / original_text_emb.norm(dim=-1, keepdim=True) ** 2
+    modified = modified_text_emb / modified_text_emb.norm(dim=-1, keepdim=True) ** 2
+    return torch.dot(original, modified)
+
 
 def optimize_prompt(model=None, preprocess=None, args=None, device=None, target_images=None, target_prompts=None):
     global default_args
+    m = shared.sd_model
+    cond_func = m.get_learned_conditioning
     clip_model = 'ViT-L/14'
     pretrained = 'openai'
     if model == None or preprocess == None:
@@ -272,7 +380,7 @@ def optimize_prompt(model=None, preprocess=None, args=None, device=None, target_
     all_target_features = get_target_feature(model, preprocess, tokenizer_funct, device, target_images=target_images, target_prompts=target_prompts)
 
     # optimize prompt
-    learned_prompt = optimize_prompt_loop_pez(model, tokenizer, token_embedding, all_target_features, run_args, device)
+    learned_prompt = optimize_prompt_loop_builtin(model, tokenizer, token_embedding, all_target_features, run_args, device)
 
     return learned_prompt
     
