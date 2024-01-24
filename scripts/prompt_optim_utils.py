@@ -16,6 +16,7 @@ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLI
 import random
 import numpy as np
 import requests
+import re
 from io import BytesIO
 from PIL import Image
 from statistics import mean
@@ -188,7 +189,8 @@ def initialize_prompt(tokenizer, token_embedding, args, device):
     template_text = "{}"
     padded_template_text = template_text.format(" ".join([bos_token] * prompt_len))
     dummy_ids = tokenizer.encode(padded_template_text)
-    dummy_ids = dummy_ids[1:-1]
+    # if using the model's tokenizer, check to see if bos_token and eos_token are in the dummy_ids
+    # dummy_ids = dummy_ids[1:-1]
 
     # -1 for optimized tokens
     dummy_ids = [i if i != bos_token_id else -1 for i in dummy_ids]
@@ -208,15 +210,15 @@ def initialize_prompt(tokenizer, token_embedding, args, device):
 
 def optimize_prompt_loop_builtin(model, tokenizer, token_embedding, all_target_features, prompt_ids, text_target_features, args, device, tokenizer_funct):
     m = shared.sd_model
-    tokenizer = m.cond_stage_model.tokenizer
-    tokenizer_funct = open_clip.tokenizer.tokenize
+    # tokenizer = m.cond_stage_model.tokenizer
+    # tokenizer_funct = open_clip.tokenizer.tokenize
 
     opt_iters = args["iter"]
     lr = args["lr"]
     weight_decay = args["weight_decay"]
     print_step = args["print_step"]
     batch_size = args["batch_size"]
-    print_new_best = getattr(args, 'print_new_best', False)
+    print_new_best = args["print_new_best"]
 
     # initialize prompt
     prompt_embeds, dummy_embeds, dummy_ids = initialize_prompt(tokenizer, token_embedding, args, device)
@@ -225,8 +227,14 @@ def optimize_prompt_loop_builtin(model, tokenizer, token_embedding, all_target_f
     # get optimizer
     input_optimizer = torch.optim.AdamW([prompt_embeds], lr=lr, weight_decay=weight_decay)
 
+    best_sum = -1000 * args["loss_weight"]
     best_sim = -1000 * args["loss_weight"]
+    best_tt = -1000 * args["loss_tt"]
     best_text = ""
+    best_text_cs = ""
+    best_text_tt = ""
+
+    regex = re.compile(r"<|endoftext|>")
 
     trained_text_embedding = None
 
@@ -273,9 +281,8 @@ def optimize_prompt_loop_builtin(model, tokenizer, token_embedding, all_target_f
         cosim_scores = logits_per_image
 
         # loss
-        loss = 1 - cosim_scores.mean()
-        loss += tt_loss
-        loss = loss * args["loss_weight"]
+        loss = 1 - (cosim_scores.mean() * args["loss_weight"])
+        loss = loss - (tt_loss * args["loss_tt"])
         
         prompt_embeds.grad, = torch.autograd.grad(loss, [tmp_embeds])
         
@@ -286,6 +293,7 @@ def optimize_prompt_loop_builtin(model, tokenizer, token_embedding, all_target_f
         cosim_scores = cosim_scores.mean().item()
 
         decoded_text = decode_ids(nn_indices, tokenizer)[best_indx]
+        decoded_text = regex.sub("", decoded_text)
 
         # we can probably just use the padded embeds
         #trained_text_embedding = get_text_feature(model, tokenizer_funct, device, target_prompts=[decoded_text])
@@ -293,14 +301,29 @@ def optimize_prompt_loop_builtin(model, tokenizer, token_embedding, all_target_f
         if print_step is not None and (step % print_step == 0 or step == opt_iters-1):
             per_step_message = f"step: {step}, lr: {curr_lr}"
             if not print_new_best:
-                per_step_message = f"\n{per_step_message}, cosim: {universal_cosim_score:.3f}, text: {decoded_text}"
+                per_step_message = f"\n{per_step_message}, cosim: {universal_cosim_score:.3f}, tt_loss: {tt_loss}, text: {decoded_text}"
             print(per_step_message)
 
         if best_sim * args["loss_weight"] < universal_cosim_score * args["loss_weight"]:
             best_sim = universal_cosim_score
-            best_text = decoded_text
+            best_text_cs = decoded_text
             if print_new_best:
                 print(f"new best cosine sim: {best_sim}")
+                print(f"new best prompt: {best_text_cs}")
+
+        if best_tt * args["loss_tt"] < tt_loss * args["loss_tt"]:
+            best_tt = tt_loss * args["loss_tt"]
+            best_text_tt = decoded_text
+            if print_new_best:
+                print(f"new best tt loss: {best_tt}")
+                print(f"new best prompt: {best_text_tt}")
+
+        loss_mult = args["loss_weight"] * args["loss_tt"]
+        if best_sum * loss_mult < (universal_cosim_score + tt_loss) * loss_mult:
+            best_sum = (universal_cosim_score + tt_loss) * loss_mult
+            best_text = decoded_text
+            if print_new_best:
+                print(f"new best sum: {best_sum}")
                 print(f"new best prompt: {best_text}")
 
 
@@ -308,6 +331,8 @@ def optimize_prompt_loop_builtin(model, tokenizer, token_embedding, all_target_f
         print()
         print(f"best cosine sim: {best_sim}")
         print(f"best prompt: {best_text}")
+        print(f"best prompt cs: {best_text_cs}")
+        print(f"best prompt tt: {best_text_tt}")
 
     return best_text
 
@@ -399,6 +424,7 @@ def optimize_prompt_loop_pez(model, tokenizer, token_embedding, all_target_featu
     return best_text
 
 def text_text_loss(original_text_emb, modified_text_emb) -> float:
+    # larger number means more similarity
     original = original_text_emb / original_text_emb.norm(dim=-1, keepdim=True)
     modified = modified_text_emb / modified_text_emb.norm(dim=-1, keepdim=True)
     loss = (modified * original).sum(dim=-1).mean()
@@ -426,7 +452,16 @@ def optimize_prompt(model=None, preprocess=None, args=None, device=None, target_
 
     #m = shared.sd_model
     #model = m.cond_stage_model.tokenizer
-    tokenizer = m.cond_stage_model.tokenizer
+
+    # conditioner = getattr(m, 'conditioner', None)
+    # if conditioner is not None:
+    #     tokenizer = conditioner.embedders[0]
+    #     l_func = lambda text: tokenizer.tokenize(text, None)
+    #     tokenizer_funct = l_func
+    # else:
+    #     tokenizer = m.cond_stage_model.tokenizer
+    #     tokenizer_funct = open_clip.tokenizer.tokenize
+
     #tokenizer_funct = tokenizer.tokenize
     #tokenizer_funct = open_clip.get_tokenizer(clip_model)
     # get target features
