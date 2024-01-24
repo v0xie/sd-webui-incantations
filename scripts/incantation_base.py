@@ -29,7 +29,6 @@ class SubmoduleInfo:
                 self.arg_idx: int = arg_idx # where the list of args starts
 
 submodules: list[SubmoduleInfo] = [
-        SubmoduleInfo(module=P2HP()),
         SubmoduleInfo(module=IncantExtensionScript()),
         SubmoduleInfo(module=T2I0ExtensionScript()),
 ]
