@@ -46,43 +46,44 @@ todo...
 ---
 
 ### Credits
-- The authors of the papers for their method (https://arxiv.org/abs/2401.06345):
-	```
-	@misc{yu2024seek,
-      title={Seek for Incantations: Towards Accurate Text-to-Image Diffusion Synthesis through Prompt Engineering}, 
-      author={Chang Yu and Junran Peng and Xiangyu Zhu and Zhaoxiang Zhang and Qi Tian and Zhen Lei},
-      year={2024},
-      eprint={2401.06345},
-      archivePrefix={arXiv},
-      primaryClass={cs.CV}
-	}
+- The authors of the papers for their methods:
+      ```
+      @misc{yu2024seek,
+       title={Seek for Incantations: Towards Accurate Text-to-Image Diffusion Synthesis through Prompt Engineering}, 
+       author={Chang Yu and Junran Peng and Xiangyu Zhu and Zhaoxiang Zhang and Qi Tian and Zhen Lei},
+       year={2024},
+       eprint={2401.06345},
+       archivePrefix={arXiv},
+       primaryClass={cs.CV}
+      }
 
       @misc{tunanyan2023multiconcept,
-      title={Multi-Concept T2I-Zero: Tweaking Only The Text Embeddings and Nothing Else}, 
-      author={Hazarapet Tunanyan and Dejia Xu and Shant Navasardyan and Zhangyang Wang and Humphrey Shi},
-      year={2023},
-      eprint={2310.07419},
-      archivePrefix={arXiv},
-      primaryClass={cs.CV}
+       title={Multi-Concept T2I-Zero: Tweaking Only The Text Embeddings and Nothing Else}, 
+       author={Hazarapet Tunanyan and Dejia Xu and Shant Navasardyan and Zhangyang Wang and Humphrey Shi},
+       year={2023},
+       eprint={2310.07419},
+       archivePrefix={arXiv},
+       primaryClass={cs.CV}
       }
 
       @misc{sadat2023cads,
- 	title={CADS: Unleashing the Diversity of Diffusion Models through Condition-Annealed Sampling},
- 	author={Seyedmorteza Sadat and Jakob Buhmann and Derek Bradely and Otmar Hilliges and Romann M. Weber},
- 	year={2023},
- 	eprint={2310.17347},
- 	archivePrefix={arXiv},
- 	primaryClass={cs.CV}
+       title={CADS: Unleashing the Diversity of Diffusion Models through Condition-Annealed Sampling},
+       author={Seyedmorteza Sadat and Jakob Buhmann and Derek Bradely and Otmar Hilliges and Romann M. Weber},
+       year={2023},
+       eprint={2310.17347},
+       archivePrefix={arXiv},
+       primaryClass={cs.CV}
       }
 
       @misc{brack2023sega,
- 	title={SEGA: Instructing Text-to-Image Models using Semantic Guidance}, 
- 	author={Manuel Brack and Felix Friedrich and Dominik Hintersdorf and Lukas Struppek and Patrick Schramowski and Kristian Kersting},
- 	year={2023},
- 	eprint={2301.12247},
- 	archivePrefix={arXiv},
- 	primaryClass={cs.CV}
- }
-	```
+       title={SEGA: Instructing Text-to-Image Models using Semantic Guidance}, 
+       author={Manuel Brack and Felix Friedrich and Dominik Hintersdorf and Lukas Struppek and Patrick Schramowski and Kristian Kersting},
+       year={2023},
+       eprint={2301.12247},
+       archivePrefix={arXiv},
+       primaryClass={cs.CV}
+      }
+      ```
+- Hard Prompts Made Easy (https://github.com/YuxinWenRick/hard-prompts-made-easy)
 - @udon-universe's extension templates (https://github.com/udon-universe/stable-diffusion-webui-extension-templates)
 ---
