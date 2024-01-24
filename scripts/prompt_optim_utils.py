@@ -337,9 +337,10 @@ def optimize_prompt_loop_builtin(model, tokenizer, token_embedding, all_target_f
                 print(f"new best tt loss: {best_tt}")
                 print(f"new best prompt: {best_text_tt}")
 
-        loss_mult = args["loss_weight"] * args["loss_tt"]
-        if best_sum * loss_mult < (universal_cosim_score + tt_loss) * loss_mult:
-            best_sum = (universal_cosim_score + tt_loss) * loss_mult
+        loss_mult = args["loss_weight"] * args["loss_tt"] * args["loss_spar"]
+        total_loss = universal_cosim_score * args["loss_weight"] + tt_loss * args["loss_tt"] + spar_loss * args["loss_spar"]
+        if best_sum < total_loss:
+            best_sum = total_loss
             best_text = decoded_text
             if print_new_best:
                 print(f"new best sum: {best_sum}")
