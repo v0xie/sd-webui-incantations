@@ -133,6 +133,11 @@ def get_text_feature(model, tokenizer_funct, device, target_prompts=None):
 def get_padded_text_feature(model, tokenizer, token_embedding, tokenizer_funct, args, device, target_prompts=None):
     # dummy_ids -> padded ids
     # prompt_embeds = padded prompt
+    if target_prompts is None:
+        return None, None, None
+    if isinstance(target_prompts, list):
+        if len(target_prompts) == 0:
+            return None, None, None
 
     bos_token = getattr(tokenizer, "bos_token", "<start_of_text>")
     bos_token_id = getattr(tokenizer, "bos_token_id", 49406)
@@ -299,6 +304,7 @@ def optimize_prompt_loop_builtin(model, tokenizer, token_embedding, all_target_f
             # sparsity loss
             spar_loss = sparsity_loss(combined_embeddings)
         else:
+            tt_loss = 0
             # text-img loss between trained prompt and image
             ti_loss = text_image_loss(all_target_features, projected_embeds)
             # sparsity loss
@@ -309,7 +315,8 @@ def optimize_prompt_loop_builtin(model, tokenizer, token_embedding, all_target_f
 
         # loss
         loss =  1 - (cosim_scores.mean() * args["loss_weight"])
-        loss += 1 - (tt_loss * args["loss_tt"])
+        if tt_loss != 0:
+            loss += 1 - (tt_loss * args["loss_tt"])
         loss += 1 - (ti_loss * args["loss_ti"])
         loss += (spar_loss * args["loss_spar"])
         
@@ -353,7 +360,7 @@ def optimize_prompt_loop_builtin(model, tokenizer, token_embedding, all_target_f
                 print(f"new best tt loss: {best_tt}")
                 print(f"new best prompt: {best_text_tt}")
 
-        if best_spar * args["loss_spar"] < spar_loss * args["loss_spar"]:
+        if best_spar * args["loss_spar"] > spar_loss * args["loss_spar"]:
             best_spar = spar_loss * args["loss_spar"]
             best_text_spar = decoded_text
             if print_new_best:

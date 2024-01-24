@@ -70,6 +70,7 @@ class P2HP(UIWrapper):
             'loss_ti': loss_ti,
             'loss_spar': loss_spar,
         }
+        input_prompt = input_prompt.strip()
         target_prompts = None if len(input_prompt) == 0 else [input_prompt]
 
         learned_prompt = optimize_prompt(device=shared.device, args=run_args, target_images=[img], target_prompts=target_prompts)
