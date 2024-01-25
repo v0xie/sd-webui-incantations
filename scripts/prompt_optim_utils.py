@@ -831,29 +831,30 @@ def sparsity_loss(text_embeddings) -> torch.Tensor:
     return loss
 
 
-def optimize_prompt_s4a(original_prompt: str, img_coarse: list, img_fine: list, target_images=None, target_prompts=None):
+def optimize_prompt_s4a(original_prompt: str, img_coarse: list, img_fine: list, target_images=None, target_prompts=None, run_args=None):
     # S4A
     # S4A
     # S4A
-    run_args = {
-        "prompt_len": 16,
-        "iter": 3000,
-        "lr": 0.01,
-        "weight_decay": 0.1,
-        "prompt_bs": 1,
-        "print_step": 500,
-        "batch_size": 1,
-        "print_new_best": False,
-        "print_new_best_sum": True,
-        "loss_weight": 1.0,
-        "loss_qual": 1.0,
-        "loss_sem": 0.5,
-        "loss_tt": 0.5,
-        "loss_ti": 1.0,
-        "loss_spar": 0.5,
-        "clip_model": "ViT-L/14",
-        "pretrained": "openai",
-    }
+    if run_args is None:
+        run_args = {
+            "prompt_len": 16,
+            "iter": 3000,
+            "lr": 0.01,
+            "weight_decay": 0.1,
+            "prompt_bs": 1,
+            "print_step": 500,
+            "batch_size": 1,
+            "print_new_best": False,
+            "print_new_best_sum": True,
+            "loss_weight": 1.0,
+            "loss_qual": 1.0,
+            "loss_sem": 0.5,
+            "loss_tt": 0.5,
+            "loss_ti": 1.0,
+            "loss_spar": 0.5,
+            "clip_model": "ViT-L/14",
+            "pretrained": "openai",
+        }
 
     device = "cuda"
     #device = shared.device
