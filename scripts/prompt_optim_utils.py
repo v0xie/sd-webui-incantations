@@ -45,7 +45,8 @@ default_args = {
     "prompt_bs": 1,
     "print_step": 100,
     "batch_size": 1,
-    "print_new_best": True,
+    "print_new_best": False,
+    "print_new_best_sum": True,
     "loss_weight": 1.0,
     "clip_model": "ViT-L/14",
     "pretrained": "openai",
@@ -206,10 +207,11 @@ def initialize_prompt_init(tokenizer, token_embedding, prompt, args, device, ran
     # randomly optimize prompt embeddings
     template_text = f"{prompt}"
     encoded_prompt = tokenizer.encode(template_text)
-    prompt_len = len(encoded_prompt)
     if random_prompt:
+        prompt_len = args["prompt_len"]
         prompt_ids = torch.randint(vocab_size, (args["prompt_bs"], prompt_len)).to(device)
     else:
+        prompt_len = len(encoded_prompt)
         prompt_ids = torch.tensor([encoded_prompt] * args["prompt_bs"]).to(device)
 
     prompt_embeds = token_embedding(prompt_ids).detach()
@@ -302,9 +304,11 @@ def optimize_prompt_loop_s4a(model, tokenizer, token_embedding, img_coarse_featu
         og_prompt_embeds_padded[og_dummy_ids == -1] = og_prompt_embeds.reshape(-1, p_dim)
         og_prompt_embeds_padded.requires_grad = False
 
+        og_text_features = encode_text_embedding(model, og_prompt_embeds_padded, og_dummy_ids, avg_text=False)
+
     # trainable prompt
     # TODO : proper concat of prompt
-    prompt_embeds, dummy_embeds, dummy_ids = initialize_prompt_init(tokenizer, token_embedding, original_prompt, args, device, random_prompt=True)
+    prompt_embeds, dummy_embeds, dummy_ids = initialize_prompt_init(tokenizer, token_embedding, original_prompt, args, device, random_prompt=False)
 
     opt_iters = args["iter"]
     lr = args["lr"]
@@ -312,6 +316,7 @@ def optimize_prompt_loop_s4a(model, tokenizer, token_embedding, img_coarse_featu
     print_step = args["print_step"]
     batch_size = args["batch_size"]
     print_new_best = args["print_new_best"]
+    print_new_best_sum = args["print_new_best_sum"]
 
     # initialize prompt
     #prompt_embeds, dummy_embeds, dummy_ids = initialize_prompt(tokenizer, token_embedding, args, device)
@@ -362,7 +367,7 @@ def optimize_prompt_loop_s4a(model, tokenizer, token_embedding, img_coarse_featu
         text_features = encode_text_embedding(model, padded_embeds, dummy_ids, avg_text=False)
 
         # quality loss
-        qual_loss = quality_loss(grad_img_features, og_prompt_embeds, tmp_embeds)
+        qual_loss = quality_loss(grad_img_features, og_text_features, text_features)
 
         # semantic guidance loss
         sem_loss = semantic_loss(tmp_embeds, img_fine_features, 0.5, dash_token_emb)
@@ -371,11 +376,11 @@ def optimize_prompt_loop_s4a(model, tokenizer, token_embedding, img_coarse_featu
         ti_loss = text_image_loss(img_fine_features, text_features)
 
         # text-text loss - this works for sure
-        tt_loss = text_text_loss(og_prompt_embeds, tmp_embeds)
-        #tt_loss = text_text_loss(og_prompt_embeds_padded, padded_embeds)
+        #tt_loss = text_text_loss(og_prompt_embeds, tmp_embeds)
+        tt_loss = text_text_loss(og_prompt_embeds_padded, padded_embeds)
 
         # sparsity loss - unsure if this is correct
-        spar_loss = sparsity_loss(tmp_embeds)
+        spar_loss = sparsity_loss(padded_embeds)
 
         # loss
         loss =  1 - (qual_loss * args["loss_qual"])
@@ -446,7 +451,7 @@ def optimize_prompt_loop_s4a(model, tokenizer, token_embedding, img_coarse_featu
         if best_sum < total_loss:
             best_sum = total_loss
             best_text = decoded_text
-            if print_new_best:
+            if print_new_best or print_new_best_sum:
                 print(f"new best sum: {best_sum}")
                 print(f"new best prompt: {best_text}")
 
@@ -820,7 +825,8 @@ def sparsity_loss(text_embeddings) -> torch.Tensor:
     dot_product = torch.abs(dot_product) * (1 - eye)
 
     # Sum over all pairs and average over the batch
-    loss = dot_product.sum() / (batch_size * token_count * emb_dim)
+    loss = dot_product.sum() / (batch_size * token_count * (token_count-1))
+    #loss = dot_product.sum() / (batch_size * token_count * emb_dim)
 
     return loss
 
@@ -832,18 +838,19 @@ def optimize_prompt_s4a(original_prompt: str, img_coarse: list, img_fine: list, 
     run_args = {
         "prompt_len": 16,
         "iter": 3000,
-        "lr": 0.1,
+        "lr": 0.01,
         "weight_decay": 0.1,
         "prompt_bs": 1,
-        "print_step": 100,
+        "print_step": 500,
         "batch_size": 1,
         "print_new_best": False,
+        "print_new_best_sum": True,
         "loss_weight": 1.0,
-        "loss_sem": 0.0,
-        "loss_qual": 0.0,
-        "loss_tt": 0.0,
+        "loss_qual": 1.0,
+        "loss_sem": 0.5,
+        "loss_tt": 0.5,
         "loss_ti": 1.0,
-        "loss_spar": 0.0,
+        "loss_spar": 0.5,
         "clip_model": "ViT-L/14",
         "pretrained": "openai",
     }
