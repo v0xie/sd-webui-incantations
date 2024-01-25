@@ -36,15 +36,15 @@ class P2HP(UIWrapper):
                 output = gr.Textbox(value="", label='p2hp_output')
             prompt_len = gr.Slider(value=16, default=16, maximum=77, minimum=5, step = 1, label='p2hp_prompt_len')
             lr = gr.Slider(value=1e-02, default=1e-02, maximum=0.2, minimum=1e-03, step = 0.001, label='p2hp_lr')
-            iterations = gr.Slider(value=3000, default=2000, maximum=10000, minimum=100, step = 100, label='p2hp_iter')
+            iterations = gr.Slider(value=2000, default=2000, maximum=10000, minimum=100, step = 100, label='p2hp_iter')
             steps = gr.Slider(value=100, default=100, step=1, label='p2hp_steps')
             batch_size = gr.Slider(value=1, default=1, maximum=16, minimum=1, step=1, label='p2hp_bs')
             loss_weight = gr.Slider(value=1.0, default=1.0, step=0.01, minimum=0, maximum=2, label='p2hp_loss_weight')
-            loss_qual = gr.Slider(value=1.0, default=1.0, step=0.01, minimum=-2, maximum=2, label='p2hp_loss_qual')
+            loss_qual = gr.Slider(value=0.5, default=0.5, step=0.01, minimum=-2, maximum=2, label='p2hp_loss_qual')
             loss_sem = gr.Slider(value=1.0, default=1.0, step=0.01, minimum=-2, maximum=2, label='p2hp_loss_sem')
-            loss_tt = gr.Slider(value=1.0, default=1.0, step=0.01, minimum=-2, maximum=2, label='p2hp_loss_tt')
-            loss_spar = gr.Slider(value=1.0, default=1.0, step=0.01, minimum=-2, maximum=2, label='p2hp_loss_sparsity')
-            loss_ti = gr.Slider(value=1.0, default=1.0, step=0.01, minimum=-2, maximum=2, label='p2hp_loss_ti')
+            loss_tt = gr.Slider(value=0.6, default=0.6, step=0.01, minimum=-2, maximum=2, label='p2hp_loss_tt')
+            loss_spar = gr.Slider(value=0.5, default=0.5, step=0.01, minimum=-2, maximum=2, label='p2hp_loss_sparsity')
+            loss_ti = gr.Slider(value=0.8, default=0.8, step=0.01, minimum=-2, maximum=2, label='p2hp_loss_ti')
             btn = gr.Button(value='Pez', type='button')
             btn.click(self.call_optimize_prompt, inputs = [img, img_coarse, prompt_len, lr, iterations, steps, batch_size, input_prompt, loss_weight, loss_qual, loss_sem, loss_tt, loss_spar, loss_ti], outputs = [output])
 
@@ -64,9 +64,10 @@ class P2HP(UIWrapper):
             'prompt_len': prompt_len,
             'lr': lr,
             'iter': iter,
-            'steps': steps,
+            'print_step': steps,
             'batch_size': batch_size,
             'prompt_bs': batch_size,
+            'weight_decay': 0.01, #TODO: make this a parameter
             'print_new_best': False, 
             'print_new_best_sum': True, 
             'loss_weight': loss_weight,
@@ -81,7 +82,7 @@ class P2HP(UIWrapper):
 
         if img_coarse is not None:
             print('Optimizing prompt with coarse image')
-            learned_prompt = optimize_prompt_s4a(input_prompt, img_coarse, img, run_args = run_args)
+            learned_prompt = optimize_prompt_s4a(input_prompt, [img_coarse], [img], run_args = run_args)
         else:
             learned_prompt = optimize_prompt(device=shared.device, args=run_args, target_images=[img], target_prompts=target_prompts)
         return learned_prompt
