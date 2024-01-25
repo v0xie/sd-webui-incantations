@@ -58,7 +58,7 @@ def read_json(filename: str) -> Mapping[str, Any]:
         return json.load(fp)
 
 
-def nn_project(curr_embeds, embedding_layer, print_hits=False):
+def nn_project(curr_embeds, embedding_layer, embedding_matrix, print_hits=False):
     with torch.no_grad():
         bsz,seq_len,emb_dim = curr_embeds.shape
         
@@ -68,19 +68,19 @@ def nn_project(curr_embeds, embedding_layer, print_hits=False):
         curr_embeds = curr_embeds.reshape((-1,emb_dim))
         curr_embeds = normalize_embeddings(curr_embeds) # queries
 
-        embedding_matrix = embedding_layer.weight
-        embedding_matrix = normalize_embeddings(embedding_matrix)
+        # embedding_matrix = embedding_layer.weight
+        # embedding_matrix = normalize_embeddings(embedding_matrix)
         
         hits = semantic_search(curr_embeds, embedding_matrix, 
                                 query_chunk_size=curr_embeds.shape[0], 
                                 top_k=1,
                                 score_function=dot_score)
 
-        if print_hits:
-            all_hits = []
-            for hit in hits:
-                all_hits.append(hit[0]["score"])
-            print(f"mean hits:{mean(all_hits)}")
+        # if print_hits:
+        #     all_hits = []
+        #     for hit in hits:
+        #         all_hits.append(hit[0]["score"])
+        #     print(f"mean hits:{mean(all_hits)}")
         
         nn_indices = torch.tensor([hit[0]["corpus_id"] for hit in hits], device=curr_embeds.device)
         nn_indices = nn_indices.reshape((bsz,seq_len))
@@ -192,7 +192,7 @@ def get_target_feature(model, preprocess, tokenizer_funct, device, target_images
 
     return image_target_features
 
-def initialize_prompt_init(tokenizer, token_embedding, prompt, args, device):
+def initialize_prompt_init(tokenizer, token_embedding, prompt, args, device, random_prompt=False):
     bos_token = getattr(tokenizer, "bos_token", "<start_of_text>")
     bos_token_id = getattr(tokenizer, "bos_token_id", 49406)
     eos_token = getattr(tokenizer, "eos_token", "<end_of_text>")
@@ -207,7 +207,10 @@ def initialize_prompt_init(tokenizer, token_embedding, prompt, args, device):
     template_text = f"{prompt}"
     encoded_prompt = tokenizer.encode(template_text)
     prompt_len = len(encoded_prompt)
-    prompt_ids = torch.tensor([encoded_prompt] * args["prompt_bs"]).to(device)
+    if random_prompt:
+        prompt_ids = torch.randint(vocab_size, (args["prompt_bs"], prompt_len)).to(device)
+    else:
+        prompt_ids = torch.tensor([encoded_prompt] * args["prompt_bs"]).to(device)
 
     prompt_embeds = token_embedding(prompt_ids).detach()
     prompt_embeds.requires_grad = True
@@ -275,42 +278,33 @@ def initialize_prompt(tokenizer, token_embedding, args, device):
 
 def optimize_prompt_loop_s4a(model, tokenizer, token_embedding, img_coarse_features, img_fine_features, original_prompt, args, device, tokenizer_funct):
 
-    dash_token = "-"
-    dash_token_emb = get_text_feature(model, tokenizer_funct, device, target_prompts='-')
+    with torch.no_grad():
+        embedding_matrix = token_embedding.weight
+        embedding_matrix = normalize_embeddings(embedding_matrix)
 
-    # constant gradient from coarse to fine
-    _img_fine_features = img_fine_features / img_fine_features.norm(dim=1, keepdim=True)
-    _img_coarse_features = img_coarse_features / img_coarse_features.norm(dim=1, keepdim=True)
-    grad_img_features = _img_fine_features - _img_coarse_features
+        dash_token = "-"
+        dash_token_emb = get_text_feature(model, tokenizer_funct, device, target_prompts='-')
 
-    # original prompt
-    og_prompt_embeds, og_dummy_embeds, og_dummy_ids = initialize_prompt_init(tokenizer, token_embedding, original_prompt, args, device)
-    p_bs, p_len, p_dim = og_prompt_embeds.shape
+        # constant gradient from coarse to fine
+        _img_fine_features = img_fine_features / img_fine_features.norm(dim=1, keepdim=True)
+        _img_coarse_features = img_coarse_features / img_coarse_features.norm(dim=1, keepdim=True)
+        grad_img_features = _img_fine_features - _img_coarse_features
 
-    og_prompt_embeds.requires_grad = False
-    og_dummy_embeds.requires_grad = False
-    og_dummy_ids.requires_grad = False
+        # original prompt
+        og_prompt_embeds, og_dummy_embeds, og_dummy_ids = initialize_prompt_init(tokenizer, token_embedding, original_prompt, args, device)
+        p_bs, p_len, p_dim = og_prompt_embeds.shape
 
-    og_prompt_embeds_padded = og_dummy_embeds.detach().clone()
-    og_prompt_embeds_padded[og_dummy_ids == -1] = og_prompt_embeds.reshape(-1, p_dim)
-    og_prompt_embeds_padded.requires_grad = False
+        og_prompt_embeds.requires_grad = False
+        og_dummy_embeds.requires_grad = False
+        og_dummy_ids.requires_grad = False
+
+        og_prompt_embeds_padded = og_dummy_embeds.detach().clone()
+        og_prompt_embeds_padded[og_dummy_ids == -1] = og_prompt_embeds.reshape(-1, p_dim)
+        og_prompt_embeds_padded.requires_grad = False
 
     # trainable prompt
     # TODO : proper concat of prompt
-    prompt_embeds, dummy_embeds, dummy_ids = initialize_prompt_init(tokenizer, token_embedding, original_prompt, args, device)
-
-    # 
-
-
-
-    #prompt_embeds, dummy_embeds, dummy_ids = initialize_prompt(tokenizer, token_embedding, args, device)
-
-    # prompt_embeds = unpadded_original_prompt_embeds.detach().clone()
-    # prompt_embeds.requires_grad = True
-
-    # -1 for optimized tokens
-    # ids = [0] * prompt_embeds.shape[1] + [-1] * prompt_embeds.shape[1] + [0] * (77 - prompt_embeds.shape[1] * 2)
-    # ids = torch.tensor(ids).to(device)
+    prompt_embeds, dummy_embeds, dummy_ids = initialize_prompt_init(tokenizer, token_embedding, original_prompt, args, device, random_prompt=True)
 
     opt_iters = args["iter"]
     lr = args["lr"]
@@ -324,15 +318,15 @@ def optimize_prompt_loop_s4a(model, tokenizer, token_embedding, img_coarse_featu
     p_bs, p_len, p_dim = prompt_embeds.shape
 
     # get optimizer
-    input_optimizer = torch.optim.AdamW([prompt_embeds], lr=lr, weight_decay=weight_decay)
+    input_optimizer = torch.optim.AdamW([prompt_embeds], lr=lr, maximize=False)
+    #kinput_optimizer = torch.optim.AdamW([prompt_embeds], lr=lr, weight_decay=weight_decay)
 
     best_sum =  -1000 * args["loss_weight"]
-
     best_qual = -1000 * args["loss_qual"] # sparsity loss 
     best_sem =  -1000 * args["loss_sem"] # sparsity loss 
     best_tt =   -1000 * args["loss_tt"]
     best_ti =   -1000 * args["loss_ti"]
-    best_spar =  1000 * args["loss_spar"] # sparsity loss 
+    best_spar = 1000 * args["loss_spar"] # sparsity loss 
 
     best_text = ""
     best_text_qual = ""
@@ -346,7 +340,7 @@ def optimize_prompt_loop_s4a(model, tokenizer, token_embedding, img_coarse_featu
     for step in range(opt_iters):
         
         # forward projection to find matching tokens
-        projected_embeds, nn_indices = nn_project(prompt_embeds, token_embedding, print_hits=False)
+        projected_embeds, nn_indices = nn_project(prompt_embeds, token_embedding, embedding_matrix, print_hits=False)
 
         tmp_embeds = prompt_embeds.detach().clone()
         tmp_embeds.data = projected_embeds.data
@@ -361,32 +355,33 @@ def optimize_prompt_loop_s4a(model, tokenizer, token_embedding, img_coarse_featu
         # spar_loss = 0
 
         #if text_target_features is not None:
-        # with torch.no_grad():
-        #     combined_embeddings = combine_embeddings(projected_embeds, og_prompt_embeds)
+        with torch.no_grad():
+            combined_embeddings = combine_embeddings(tmp_embeds, og_prompt_embeds)
 
         # forward
         text_features = encode_text_embedding(model, padded_embeds, dummy_ids, avg_text=False)
 
         # quality loss
-        qual_loss = quality_loss(grad_img_features, og_prompt_embeds_padded, text_features)
-
-        # text-img loss between orig+trained prompt and image
-        ti_loss = text_image_loss(img_fine_features, text_features)
-
-        # text-text loss
-        tt_loss = text_text_loss(og_prompt_embeds_padded, padded_embeds)
-
-        # sparsity loss
-        spar_loss = sparsity_loss(padded_embeds)
+        qual_loss = quality_loss(grad_img_features, og_prompt_embeds, tmp_embeds)
 
         # semantic guidance loss
         sem_loss = semantic_loss(tmp_embeds, img_fine_features, 0.5, dash_token_emb)
 
+        # text-img loss between orig+trained prompt and image
+        ti_loss = text_image_loss(img_fine_features, text_features)
+
+        # text-text loss - this works for sure
+        tt_loss = text_text_loss(og_prompt_embeds, tmp_embeds)
+        #tt_loss = text_text_loss(og_prompt_embeds_padded, padded_embeds)
+
+        # sparsity loss - unsure if this is correct
+        spar_loss = sparsity_loss(tmp_embeds)
+
         # loss
         loss =  1 - (qual_loss * args["loss_qual"])
-        loss += 1 - (sem_loss * args["loss_sem"])
-        loss += 1 - (ti_loss * args["loss_ti"])
-        loss += 1 - (tt_loss * args["loss_tt"])
+        loss += 1 - (sem_loss  * args["loss_sem"])
+        loss += 1 - (ti_loss   * args["loss_ti"])
+        loss += 1 - (tt_loss   * args["loss_tt"])
         loss += (spar_loss * args["loss_spar"])
         
         prompt_embeds.grad, = torch.autograd.grad(loss, [tmp_embeds])
@@ -401,53 +396,52 @@ def optimize_prompt_loop_s4a(model, tokenizer, token_embedding, img_coarse_featu
         decoded_text = regex.sub("", decoded_text)
 
         total_loss = \
+            + (qual_loss * args["loss_qual"]) \
+            + (sem_loss * args["loss_sem"]) \
             + (tt_loss * args["loss_tt"]) \
             + (ti_loss * args["loss_ti"]) \
-            - spar_loss * args["loss_spar"] \
-            + (qual_loss * args["loss_qual"]) \
-            + (sem_loss * args["loss_sem"])
+            - (spar_loss * args["loss_spar"])
 
         if print_step is not None and (step % print_step == 0 or step == opt_iters-1):
             per_step_message = f"step: {step}, lr: {curr_lr}"
-            if not print_new_best:
-                per_step_message = f"\n{per_step_message}, total: {total_loss:.3f}, tt_loss: {tt_loss:.3f}, ti_loss: {ti_loss:.3f}, spar_loss: {spar_loss:.3f}\n text: {decoded_text}"
+            # if not print_new_best:
+            per_step_message = f"\n{per_step_message}, total: {total_loss:.3f}, qual: {qual_loss:.3f}, sem: {sem_loss:.3f}, tt: {tt_loss:.3f}, ti: {ti_loss:.3f}, spar: {spar_loss:.3f}\n text: {decoded_text}"
             print(per_step_message)
 
-        if best_qual * args["loss_qual"] < tt_loss * args["loss_qual"]:
-            best_qual = tt_loss * args["loss_qual"]
+        if best_qual * args["loss_qual"] < qual_loss * args["loss_qual"]:
+            best_qual = qual_loss * args["loss_qual"]
             best_text_qual = decoded_text
             if print_new_best:
-                print(f"new best tt loss: {best_qual}")
-                print(f"new best prompt: {best_text_qual}")
+                print(f"new best qual loss: {best_qual}")
+                print(f"new best qual: {best_text_qual}")
 
-        if best_sem * args["loss_sem"] < tt_loss * args["loss_sem"]:
-            best_sem = tt_loss * args["loss_sem"]
+        if best_sem * args["loss_sem"] < sem_loss * args["loss_sem"]:
+            best_sem = sem_loss * args["loss_sem"]
             best_text_sem = decoded_text
             if print_new_best:
-                print(f"new best tt loss: {best_sem}")
-                print(f"new best prompt: {best_text_sem}")
+                print(f"new best sem loss: {best_sem}")
+                print(f"new best sem: {best_text_sem}")
 
         if best_tt * args["loss_tt"] < tt_loss * args["loss_tt"]:
             best_tt = tt_loss * args["loss_tt"]
             best_text_tt = decoded_text
             if print_new_best:
                 print(f"new best tt loss: {best_tt}")
-                print(f"new best prompt: {best_text_tt}")
-
+                print(f"new best tt: {best_text_tt}")
 
         if best_ti * args["loss_ti"] < ti_loss * args["loss_ti"]:
             best_ti = ti_loss * args["loss_ti"]
             best_text_ti = decoded_text
             if print_new_best:
-                print(f"new best tt loss: {best_ti}")
-                print(f"new best prompt: {best_text_ti}")
+                print(f"new best ti loss: {best_ti}")
+                print(f"new best ti: {best_text_ti}")
 
         if best_spar * args["loss_spar"] > spar_loss * args["loss_spar"]:
             best_spar = spar_loss * args["loss_spar"]
             best_text_spar = decoded_text
             if print_new_best:
-                print(f"new best tt loss: {best_spar}")
-                print(f"new best prompt: {best_text_spar}")
+                print(f"new best spar loss: {best_spar}")
+                print(f"new best spar: {best_text_spar}")
 
         if best_sum < total_loss:
             best_sum = total_loss
@@ -458,7 +452,7 @@ def optimize_prompt_loop_s4a(model, tokenizer, token_embedding, img_coarse_featu
 
 
     if print_step is not None:
-        print()
+        print(f"sum: {best_sum}, qual: {best_qual}, sem: {best_sem}, tt: {best_tt}, ti: {best_ti}, spar: {best_spar}")
         print(f"best prompt: {best_text}")
         print(f"best prompt qual: {best_text_qual}")
         print(f"best prompt sem: {best_text_sem}")
@@ -535,7 +529,7 @@ def optimize_prompt_loop_builtin(model, tokenizer, token_embedding, all_target_f
     best_sim =  -1000 * args["loss_weight"]
     best_tt =   -1000 * args["loss_tt"]
     best_ti =   -1000 * args["loss_ti"]
-    best_spar =  1000 * args["loss_spar"] # sparsity loss 
+    best_spar = -1000 * args["loss_spar"] # sparsity loss 
 
     best_text = ""
     best_text_cs = ""
@@ -817,16 +811,16 @@ def sparsity_loss(text_embeddings) -> torch.Tensor:
     norm_embeddings = text_embeddings / text_embeddings.norm(dim=-1, keepdim=True)
 
     # Compute all pairwise dot products
-    # dot_product.shape = (batch_size, token_count, token_count)
+    # dot_product.shape = (batch_size, token_count, emb_dim)
     dot_product = torch.matmul(norm_embeddings, norm_embeddings.transpose(-2, -1))
 
     # Zero out diagonal elements (self dot products) and take absolute values
-    batch_size, token_count, _ = text_embeddings.shape
+    batch_size, token_count, emb_dim = text_embeddings.shape
     eye = torch.eye(token_count, device=text_embeddings.device).unsqueeze(0).expand(batch_size, -1, -1)
     dot_product = torch.abs(dot_product) * (1 - eye)
 
     # Sum over all pairs and average over the batch
-    loss = dot_product.sum() / (batch_size * token_count * (token_count - 1))
+    loss = dot_product.sum() / (batch_size * token_count * emb_dim)
 
     return loss
 
@@ -843,13 +837,13 @@ def optimize_prompt_s4a(original_prompt: str, img_coarse: list, img_fine: list, 
         "prompt_bs": 1,
         "print_step": 100,
         "batch_size": 1,
-        "print_new_best": True,
+        "print_new_best": False,
         "loss_weight": 1.0,
-        "loss_sem": 1.0,
-        "loss_qual": 1.0,
-        "loss_tt": 1.0,
+        "loss_sem": 0.0,
+        "loss_qual": 0.0,
+        "loss_tt": 0.0,
         "loss_ti": 1.0,
-        "loss_spar": 1.0,
+        "loss_spar": 0.0,
         "clip_model": "ViT-L/14",
         "pretrained": "openai",
     }
