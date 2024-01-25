@@ -192,6 +192,7 @@ class IncantExtensionScript(UIWrapper):
                         inc_active = gr.Checkbox(value=False, default=False, label="Active", elem_id='incant_active')
                         inc_quality = gr.Checkbox(value=False, default=False, label="Append Generated Caption", elem_id='incant_append_prompt', info="Append interrogated caption to prompt. (Deepbooru is reversed, if disabled, will not append the masked original prompt)")
                         inc_deepbooru = gr.Checkbox(value=False, default=False, label="Deepbooru Interrogate", elem_id='incant_deepbooru')
+                        inc_coarse_step = gr.Slider(value = 10, minimum = 1, maximum = 120, step = 1, label="Coarse Step", elem_id = 'incant_coarse_step')
                         with gr.Row():
                                 inc_delim = gr.Textbox(value='BREAK', label="Delimiter", elem_id='incant_delim', info="Prompt DELIM Optimized Prompt. Try BREAK, AND, NOT, etc.")
                                 inc_word = gr.Textbox(value='-', label="Word Replacement", elem_id='incant_word', info="Replace masked words with this")
@@ -199,10 +200,11 @@ class IncantExtensionScript(UIWrapper):
                                 inc_gamma = gr.Slider(value = 0.2, minimum = -1.0, maximum = 1.0, step = 0.0001, label="Gamma", elem_id = 'incant_gamma', info="If gamma > 0, mask words with similarity less than gamma percent. If gamma < 0, mask more similar words. For Deepbooru, try higher values > 0.7")
                 inc_active.do_not_save_to_config = True
                 inc_quality.do_not_save_to_config = True
+                inc_deepbooru.do_not_save_to_config = True
                 inc_delim.do_not_save_to_config = True
                 inc_word.do_not_save_to_config = True
-                inc_deepbooru.do_not_save_to_config = True
                 inc_gamma.do_not_save_to_config = True
+                inc_coarse_step.do_not_save_to_config = True
                 self.infotext_fields = [
                         (inc_active, lambda d: gr.Checkbox.update(value='INCANT Active' in d)),
                         (inc_quality, 'INCANT Append Prompt'),
@@ -210,6 +212,7 @@ class IncantExtensionScript(UIWrapper):
                         (inc_delim, 'INCANT Delim'),
                         (inc_word, 'INCANT Word'),
                         (inc_gamma, 'INCANT Gamma'),
+                        (inc_coarse_step, 'INCANT Coarse'),
                 ]
                 self.paste_field_names = [
                         'incant_active',
@@ -218,8 +221,9 @@ class IncantExtensionScript(UIWrapper):
                         'incant_delim',
                         'incant_word',
                         'incant_gamma',
+                        'incant_coarse',
                 ]
-                return [inc_active, inc_quality, inc_deepbooru, inc_delim, inc_word, inc_gamma]
+                return [inc_active, inc_quality, inc_deepbooru, inc_delim, inc_word, inc_gamma, inc_coarse_step]
 
         def interrogator(self, deepbooru=False): 
                 if deepbooru:
@@ -230,7 +234,7 @@ class IncantExtensionScript(UIWrapper):
         def before_process(self, p: StableDiffusionProcessing, *args, **kwargs):
                 self.incant_before_process(p, *args, **kwargs)
 
-        def incant_before_process(self, p: StableDiffusionProcessing, inc_active, inc_quality, inc_deepbooru, inc_delim, inc_word, inc_gamma, *args, **kwargs):
+        def incant_before_process(self, p: StableDiffusionProcessing, inc_active, inc_quality, inc_deepbooru, inc_delim, inc_word, inc_gamma, inc_coarse_step, *args, **kwargs):
                 inc_active = getattr(p, "incant_active", inc_active)
                 if inc_active is False:
                         return
@@ -239,7 +243,7 @@ class IncantExtensionScript(UIWrapper):
         def process(self, p: StableDiffusionProcessing, *args, **kwargs):
                 self.incant_process(p, *args, **kwargs)
 
-        def incant_process(self, p: StableDiffusionProcessing, inc_active, inc_quality, inc_deepbooru, inc_delim, inc_word, inc_gamma, *args, **kwargs):
+        def incant_process(self, p: StableDiffusionProcessing, inc_active, inc_quality, inc_deepbooru, inc_delim, inc_word, inc_gamma, inc_coarse_step, *args, **kwargs):
                 inc_active = getattr(p, "incant_active", inc_active)
                 if inc_active is False:
                         return
@@ -272,7 +276,7 @@ class IncantExtensionScript(UIWrapper):
         def before_process_batch(self, p: StableDiffusionProcessing, *args, **kwargs):
                 self.incant_before_process_batch(p, *args, **kwargs)
 
-        def incant_before_process_batch(self, p: StableDiffusionProcessing, inc_active, inc_quality, inc_deepbooru, inc_delim, inc_word, inc_gamma, *args, **kwargs):
+        def incant_before_process_batch(self, p: StableDiffusionProcessing, inc_active, inc_quality, inc_deepbooru, inc_delim, inc_word, inc_gamma, inc_coarse_step, *args, **kwargs):
                 inc_active = getattr(p, "incant_active", inc_active)
                 if inc_active is False:
                         return
@@ -282,6 +286,7 @@ class IncantExtensionScript(UIWrapper):
                 inc_word = getattr(p, "incant_word", inc_word)
                 fine_step = getattr(p, "incant_fine", None)
                 inc_gamma = getattr(p, "incant_gamma", inc_gamma)
+                inc_coarse_step = getattr(p, "incant_coarse", inc_coarse_step)
                 if fine_step == None:
                         #print(f"Fine step {fine_step} is greater than total steps {p.steps}, setting to {p.steps-2}")
                         fine_step = p.steps - 2
@@ -324,7 +329,7 @@ class IncantExtensionScript(UIWrapper):
                                 "INCANT Fine": fine_step,
                                 "INCANT Gamma": inc_gamma,
                 })
-                self.create_hook(p, inc_active, inc_quality, inc_deepbooru, inc_delim, inc_word, inc_gamma, *args, **kwargs)
+                self.create_hook(p, inc_active, inc_quality, inc_deepbooru, inc_delim, inc_word, inc_gamma, inc_coarse_step, *args, **kwargs)
         
         def parse_concept_prompt(self, prompt:str) -> list[str]:
                 """
@@ -342,7 +347,7 @@ class IncantExtensionScript(UIWrapper):
                         return []
                 return [x.strip() for x in prompt.split(",")]
 
-        def create_hook(self, p, active, quality, deepbooru, delim, word, gamma, *args, **kwargs):
+        def create_hook(self, p, active, quality, deepbooru, delim, word, gamma, coarse_step, *args, **kwargs):
 
                 import clip
                 # Create a list of parameters for each concept
@@ -352,7 +357,6 @@ class IncantExtensionScript(UIWrapper):
                 incant_params.prompts = [pr for pr in p.prompts]
                 #incant_params.prompt_tokens = clip.tokenize(list(p.prompt), truncate=True).to(devices.device_interrogate)
                 incant_params.quality = quality 
-                #incant_params.coarse = coarse
                 incant_params.delim = delim
                 incant_params.word = word 
                 incant_params.deepbooru = deepbooru
@@ -362,6 +366,8 @@ class IncantExtensionScript(UIWrapper):
                         print(f"Fine step {fine} is greater than total steps {p.steps}, setting to {p.steps}")
                         fine = max(p.steps - 2, 1)
                 incant_params.gamma = gamma
+                incant_params.coarse = coarse_step 
+
                 incant_params.qual_scale = 0
                 incant_params.sem_scale = 0
                 incant_params.iteration = p.iteration
@@ -435,13 +441,11 @@ class IncantExtensionScript(UIWrapper):
                         fine_images = []
                         for img in images:
                                 img = to_pil(img)
-                                #img_array = np.asarray(img)
-                                #img_array = torch.from_numpy(img_array).to(shared.device)
                                 incant_params.img_fine.append(img)
 
-                        #fine_images = [to_pil(img) for img in images]
                         self.interrogate_images(incant_params, p)
                         devices.torch_gc()
+
                         # compute masked_prompts
                         batch_start_idx = n * p.batch_size
                         batch_end_idx = (n + 1) * p.batch_size
@@ -544,38 +548,20 @@ class IncantExtensionScript(UIWrapper):
                 return masked_prompt
 
         def cfg_after_cfg_callback(self, params: AfterCFGCallbackParams, incant_params: IncantStateParams):
-                pass
-                #p = incant_params.p
-                #fine = incant_params.fine
-                #second_stage = incant_params.second_stage
-                #x = params.x
+                p = incant_params.p
+                coarse_step = incant_params.coarse
+                second_stage = incant_params.second_stage
+                x = params.x
 
                 ## BUG: webui params passes shared.state.sampling_step instead of the internal self.step
-                #if shared.state is not None:
-                #        step = max(params.sampling_step, shared.state.sampling_step)
-                #else:
-                #        step = params.sampling_step
+                # meaning that the sampling step is usually incorrect
+                step = params.sampling_step
 
                 ## FIXME: why is the max value of step 2 less than the total steps???
-                #if step == fine - 2 and not second_stage:
-                #        # print(f"\nFine step: {step}\n")
-
-                #        # decode fine images
-                #        fine_images = self.decode_images(x)
-                #        incant_params.img_fine = fine_images 
-
-                #        # compute embedding stuff
-                #        self.interrogate_images(incant_params, p)
-                #        devices.torch_gc()
-
-                #        # compute masked_prompts
-                #        for batch_idx, caption_matches_item in enumerate(incant_params.matches_fine):
-                #                batch_mask_prompts = []
-                #                for caption, matches in caption_matches_item:
-                #                        batch_mask_prompts.append(self.mask_prompt(incant_params.gamma, matches, caption, incant_params.word))
-                #                incant_params.masked_prompt.append(batch_mask_prompts)
-                #else:
-                #        pass
+                if step == coarse_step and not second_stage:
+                        print(f"\nCoarse step: {step}\n")
+                        coarse_img = self.decode_images(x)
+                        incant_params.img_coarse.extend(coarse_img)
 
         def compute_gradients(self, emb_fine, emb_coarse):
                 out_gradients = []
