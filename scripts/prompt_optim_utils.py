@@ -333,7 +333,8 @@ def optimize_prompt_loop_s4a(model, tokenizer, token_embedding, img_coarse_featu
 
     # trainable prompt
     # TODO : proper concat of prompt
-    prompt_embeds, dummy_embeds, dummy_ids = initialize_prompt_init(tokenizer, token_embedding, original_prompt, args, device, random_prompt=False)
+    # TODO: random prompt param
+    prompt_embeds, dummy_embeds, dummy_ids = initialize_prompt_init(tokenizer, token_embedding, original_prompt, args, device, random_prompt=True)
 
     opt_iters = args["iter"]
     lr = args["lr"]
@@ -348,7 +349,7 @@ def optimize_prompt_loop_s4a(model, tokenizer, token_embedding, img_coarse_featu
     p_bs, p_len, p_dim = prompt_embeds.shape
 
     # get optimizer
-    input_optimizer = torch.optim.AdamW([prompt_embeds], lr=lr, maximize=False)
+    input_optimizer = torch.optim.AdamW([prompt_embeds], lr=lr, maximize=True)
     #kinput_optimizer = torch.optim.AdamW([prompt_embeds], lr=lr, weight_decay=weight_decay)
 
     best_sum =  -1000 * args["loss_weight"]
@@ -356,7 +357,7 @@ def optimize_prompt_loop_s4a(model, tokenizer, token_embedding, img_coarse_featu
     best_sem =  -1000 * args["loss_sem"] # sparsity loss 
     best_tt =   -1000 * args["loss_tt"]
     best_ti =   -1000 * args["loss_ti"]
-    best_spar = 1000 * args["loss_spar"] # sparsity loss 
+    best_spar = -1000 * args["loss_spar"] # sparsity loss 
 
     best_text = ""
     best_text_qual = ""
@@ -381,15 +382,7 @@ def optimize_prompt_loop_s4a(model, tokenizer, token_embedding, img_coarse_featu
         padded_embeds = dummy_embeds.detach().clone()
         padded_embeds[dummy_ids == -1] = tmp_embeds.reshape(-1, p_dim)
 
-        # tt_loss = 0
-        # spar_loss = 0
-
-        #if text_target_features is not None:
-        # with torch.no_grad():
-        #     combined_embeddings = combine_embeddings(tmp_embeds, og_prompt_embeds)
-
         # forward
-        #text_features = encode_text_embedding(model, padded_embeds, dummy_ids, avg_text=False)
         text_features = model.forward_text_embedding(model, padded_embeds, dummy_ids, img_fine_features, return_feature=True)
 
         # quality loss
@@ -422,7 +415,7 @@ def optimize_prompt_loop_s4a(model, tokenizer, token_embedding, img_coarse_featu
         loss += (ti_loss   * args["loss_ti"])
         loss += (tt_loss   * args["loss_tt"])
         loss += (spar_loss * args["loss_spar"])
-        loss = loss * args["loss_weight"]
+        #loss = loss * args["loss_weight"]
 
         #loss.backward()
 
@@ -442,7 +435,7 @@ def optimize_prompt_loop_s4a(model, tokenizer, token_embedding, img_coarse_featu
             + (sem_loss * args["loss_sem"]) \
             + (tt_loss * args["loss_tt"]) \
             + (ti_loss * args["loss_ti"]) \
-            - (spar_loss * args["loss_spar"])
+            + (spar_loss * args["loss_spar"])
 
         if print_step is not None and (step % print_step == 0 or step == opt_iters-1):
             per_step_message = f"step: {step}, lr: {curr_lr}"
@@ -478,7 +471,7 @@ def optimize_prompt_loop_s4a(model, tokenizer, token_embedding, img_coarse_featu
                 print(f"new best ti loss: {best_ti}")
                 print(f"new best ti: {best_text_ti}")
 
-        if best_spar * args["loss_spar"] > spar_loss * args["loss_spar"]:
+        if best_spar * args["loss_spar"] < spar_loss * args["loss_spar"]:
             best_spar = spar_loss * args["loss_spar"]
             best_text_spar = decoded_text
             if print_new_best:
@@ -511,7 +504,7 @@ def quality_loss(grad_img_features, original_text_emb, modified_text_emb) -> flo
     original = original_text_emb / original_text_emb.norm(dim=-1, keepdim=True)
     modified = modified_text_emb / modified_text_emb.norm(dim=-1, keepdim=True)
     grad_text_text = modified - original 
-    loss = (grad_img_features * grad_text_text.t()).sum(dim=-1).mean()
+    loss = (grad_img_features @ grad_text_text.t()).mean()
     #loss = (grad_img_features * grad_text_text).sum(dim=-1).mean()
     return loss
 
@@ -520,7 +513,7 @@ def text_text_loss(original_text_emb, modified_text_emb) -> float:
     # larger number means more similarity
     original = original_text_emb / original_text_emb.norm(dim=-1, keepdim=True)
     modified = modified_text_emb / modified_text_emb.norm(dim=-1, keepdim=True)
-    loss = (modified * original.t()).sum(dim=-1).mean() # actually cosine similarity
+    loss = (modified @ original.t()).mean()
     #loss = (modified * original).sum(dim=-1).mean() # actually cosine similarity
     return loss
 
@@ -529,7 +522,7 @@ def text_image_loss(image_emb, modified_text_emb) -> float:
     # larger number means more similarity
     image_norm = image_emb / image_emb.norm(dim=-1, keepdim=True)
     text_norm = modified_text_emb / modified_text_emb.norm(dim=-1, keepdim=True)
-    loss = (text_norm * image_norm.t()).sum(dim=-1).mean()
+    loss = (text_norm @ image_norm.t()).mean()
     #loss = (text_norm * image_norm).sum(dim=-1).mean()
     return loss
 
@@ -841,7 +834,9 @@ def semantic_loss(modified_text_embedding, masked_text_embedding):
     modified_text_embedding (Tensor): A tensor of shape (batch_size, d) where d is the embedding dimension.
     masked_text_embedding (Tensor): A tensor of shape (batch_size, d) where d is the embedding dimension.
     """
-    loss = (modified_text_embedding * masked_text_embedding.t()).sum(dim=-1).mean()
+    mod_norm = modified_text_embedding / modified_text_embedding.norm(dim=-1, keepdim=True)
+    masked_norm = masked_text_embedding / masked_text_embedding.norm(dim=-1, keepdim=True)
+    loss = (mod_norm @ masked_norm.t()).sum(dim=-1).mean()
     return loss
 
 # def semantic_loss(text_embeddings, image_features, threshold, dash_token_emb):
@@ -918,16 +913,16 @@ def optimize_prompt_s4a(original_prompt: str, img_coarse: list, img_fine: list, 
             "lr": 0.1,
             "weight_decay": 0.1,
             "prompt_bs": 1,
-            "print_step": 500,
+            "print_step": 100,
             "batch_size": 1,
             "print_new_best": False,
             "print_new_best_sum": False,
             "loss_weight": 1.0,
-            "loss_qual": 1.0,
-            "loss_sem": 1.0,
-            "loss_tt": 1.0,
-            "loss_ti": 1.0,
-            "loss_spar": 1.0,
+            "loss_qual":   0.5,
+            "loss_sem":    0.5,
+            "loss_tt":     0.5,
+            "loss_ti":     0.5,
+            "loss_spar":   0.5,
             "clip_model": "ViT-L/14",
             "pretrained": "openai",
         }
