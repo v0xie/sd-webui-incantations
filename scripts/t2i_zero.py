@@ -104,7 +104,8 @@ class T2I0ExtensionScript(UIWrapper):
                 return [active, window_size, ctnms_alpha, correction_threshold, correction_strength]
 
         def process_batch(self, p: StableDiffusionProcessing, *args, **kwargs):
-               self.t2i0_process_batch(p, *args, **kwargs)
+                self.unhook_callbacks()
+                self.t2i0_process_batch(p, *args, **kwargs)
 
         def t2i0_process_batch(self, p: StableDiffusionProcessing, active, window_size, ctnms_alpha, correction_threshold, correction_strength, *args, **kwargs):
                 active = getattr(p, "t2i0_active", active)

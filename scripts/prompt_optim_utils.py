@@ -165,7 +165,8 @@ def get_padded_text_feature(model, tokenizer, token_embedding, tokenizer_funct, 
     unpadded_prompt_embeds.requires_grad = False
 
     #dummy_ids = [bos_token_id] + dummy_ids + [eos_token_id]
-    dummy_ids += [pad_token_id] * (model_max_len - len(dummy_ids))
+    dummy_ids += [0] * (model_max_len - len(dummy_ids))
+    #dummy_ids += [pad_token_id] * (model_max_len - len(dummy_ids))
     dummy_ids = torch.tensor([dummy_ids] * args["prompt_bs"]).to(device)
 
     prompt_ids = dummy_ids.to(device)
@@ -177,8 +178,15 @@ def get_padded_text_feature(model, tokenizer, token_embedding, tokenizer_funct, 
 
 def get_target_feature(model, preprocess, tokenizer_funct, device, target_images=None, target_prompts=None):
     """ Encode target images into features
+    Args:
+        model: CLIP model
+        preprocess: image preprocessor
+        tokenizer_funct (callable): tokenizer function
+        device (str): torch device
+        target_images (Image): PIL Image
     
-    Returns: encoded image embedding
+    Returns:
+    tensor: encoded image embedding
     """
     image_target_features = None
     text_target_features = None
@@ -187,11 +195,8 @@ def get_target_feature(model, preprocess, tokenizer_funct, device, target_images
             curr_images = [preprocess(i).unsqueeze(0) for i in target_images]
             curr_images = torch.concatenate(curr_images).to(device)
             image_target_features = model.encode_image(curr_images)
-    #if target_prompts is not None:
-    #    texts = tokenizer_funct(target_prompts).to(device)
-    #    text_target_features = model.encode_text(texts)
-
     return image_target_features
+
 
 def initialize_prompt_init(tokenizer, token_embedding, prompt, args, device, random_prompt=False):
     bos_token = getattr(tokenizer, "bos_token", "<start_of_text>")
@@ -207,11 +212,13 @@ def initialize_prompt_init(tokenizer, token_embedding, prompt, args, device, ran
     # randomly optimize prompt embeddings
     template_text = f"{prompt}"
     encoded_prompt = tokenizer.encode(template_text)
+    prompt_len = len(encoded_prompt)
+    # encoded_prompt = [bos_token_id] + encoded_prompt + [eos_token_id]
+
     if random_prompt:
         prompt_len = args["prompt_len"]
         prompt_ids = torch.randint(vocab_size, (args["prompt_bs"], prompt_len)).to(device)
     else:
-        prompt_len = len(encoded_prompt)
         prompt_ids = torch.tensor([encoded_prompt] * args["prompt_bs"]).to(device)
 
     prompt_embeds = token_embedding(prompt_ids).detach()
@@ -227,7 +234,7 @@ def initialize_prompt_init(tokenizer, token_embedding, prompt, args, device, ran
     # -1 for optimized tokens
     dummy_ids = [i if i != bos_token_id else -1 for i in dummy_ids]
     dummy_ids = [bos_token_id] + dummy_ids + [eos_token_id]
-    dummy_ids += [pad_token_id] * (model_max_len - len(dummy_ids))
+    dummy_ids += [0] * (model_max_len - len(dummy_ids))
     dummy_ids = torch.tensor([dummy_ids] * args["prompt_bs"]).to(device)
     #dummy_ids = torch.tensor([dummy_ids] * args["prompt_bs"]).to(device)
 
@@ -295,6 +302,7 @@ def optimize_prompt_loop_s4a(model, tokenizer, token_embedding, img_coarse_featu
         # original prompt
         og_prompt_embeds, og_dummy_embeds, og_dummy_ids = initialize_prompt_init(tokenizer, token_embedding, original_prompt, args, device)
         p_bs, p_len, p_dim = og_prompt_embeds.shape
+        #og_text_features = model.forward_text_embedding(model, og_prompt_embeds, og_dummy_ids, img_fine_features, return_feature=True)
 
         og_prompt_embeds.requires_grad = False
         og_dummy_embeds.requires_grad = False
@@ -302,9 +310,26 @@ def optimize_prompt_loop_s4a(model, tokenizer, token_embedding, img_coarse_featu
 
         og_prompt_embeds_padded = og_dummy_embeds.detach().clone()
         og_prompt_embeds_padded[og_dummy_ids == -1] = og_prompt_embeds.reshape(-1, p_dim)
-        og_prompt_embeds_padded.requires_grad = False
+        # og_prompt_embeds_padded.requires_grad = False
 
         og_text_features = encode_text_embedding(model, og_prompt_embeds_padded, og_dummy_ids, avg_text=False)
+
+        # [batch size, prompt len, prompt dim]
+        masked_p_len = min(p_len * 2, 77-2)
+        masked_prompt_ids = [49406] + [-2] * (p_len) + [-1] * (p_len) + [49407] + [0] * (77 - masked_p_len - 2)
+        if len(masked_prompt_ids) > 77:
+            masked_prompt_ids = masked_prompt_ids[0:77]
+            masked_prompt_ids[-1] = 49407
+        masked_prompt_ids = torch.tensor([masked_prompt_ids] * args["prompt_bs"]).to(device)
+        #masked_prompt_tokens = [49406] + [-1] * (masked_p_len) + [49407] + [0] * (77 - masked_p_len - 2)
+
+        masked_prompt_embeds = semantic_guidance(og_prompt_embeds, img_fine_features, 0.5, dash_token_emb)
+        masked_prompt_embeds_padded = og_dummy_embeds.detach().clone()
+        masked_prompt_embeds_padded[og_dummy_ids == -1] = og_prompt_embeds.reshape(-1, p_dim)
+        masked_prompt_embeds_padded[masked_prompt_ids == -1] = masked_prompt_embeds.reshape(-1, p_dim)
+
+        masked_prompt_text_features = encode_text_embedding(model, masked_prompt_embeds_padded, masked_prompt_ids, avg_text=False)
+
 
     # trainable prompt
     # TODO : proper concat of prompt
@@ -360,35 +385,47 @@ def optimize_prompt_loop_s4a(model, tokenizer, token_embedding, img_coarse_featu
         # spar_loss = 0
 
         #if text_target_features is not None:
-        with torch.no_grad():
-            combined_embeddings = combine_embeddings(tmp_embeds, og_prompt_embeds)
+        # with torch.no_grad():
+        #     combined_embeddings = combine_embeddings(tmp_embeds, og_prompt_embeds)
 
         # forward
-        text_features = encode_text_embedding(model, padded_embeds, dummy_ids, avg_text=False)
+        #text_features = encode_text_embedding(model, padded_embeds, dummy_ids, avg_text=False)
+        text_features = model.forward_text_embedding(model, padded_embeds, dummy_ids, img_fine_features, return_feature=True)
 
         # quality loss
+        #qual_loss = quality_loss(grad_img_features, og_text_features, text_features)
         qual_loss = quality_loss(grad_img_features, og_text_features, text_features)
 
         # semantic guidance loss
-        sem_loss = semantic_loss(tmp_embeds, img_fine_features, 0.5, dash_token_emb)
+        sem_loss = semantic_loss(text_features, masked_prompt_text_features)
 
         # text-img loss between orig+trained prompt and image
+        #ti_loss = text_image_loss(img_fine_features, padded_embeds)
         ti_loss = text_image_loss(img_fine_features, text_features)
 
         # text-text loss - this works for sure
         #tt_loss = text_text_loss(og_prompt_embeds, tmp_embeds)
-        tt_loss = text_text_loss(og_prompt_embeds_padded, padded_embeds)
+        tt_loss = text_text_loss(og_text_features, text_features)
 
         # sparsity loss - unsure if this is correct
-        spar_loss = sparsity_loss(padded_embeds)
+        spar_loss = sparsity_loss(og_prompt_embeds)
+        #spar_loss = sparsity_loss(padded_embeds)
 
         # loss
-        loss =  1 - (qual_loss * args["loss_qual"])
-        loss += 1 - (sem_loss  * args["loss_sem"])
-        loss += 1 - (ti_loss   * args["loss_ti"])
-        loss += 1 - (tt_loss   * args["loss_tt"])
+        #loss =  1 - (qual_loss * args["loss_qual"])
+        #loss += 1 - (sem_loss  * args["loss_sem"])
+        #loss += 1 - (ti_loss   * args["loss_ti"])
+        #loss += 1 - (tt_loss   * args["loss_tt"])
+        #loss += (spar_loss * args["loss_spar"])
+        loss =  (qual_loss * args["loss_qual"])
+        loss += (sem_loss  * args["loss_sem"])
+        loss += (ti_loss   * args["loss_ti"])
+        loss += (tt_loss   * args["loss_tt"])
         loss += (spar_loss * args["loss_spar"])
-        
+        loss = loss * args["loss_weight"]
+
+        #loss.backward()
+
         prompt_embeds.grad, = torch.autograd.grad(loss, [tmp_embeds])
         
         input_optimizer.step()
@@ -474,7 +511,8 @@ def quality_loss(grad_img_features, original_text_emb, modified_text_emb) -> flo
     original = original_text_emb / original_text_emb.norm(dim=-1, keepdim=True)
     modified = modified_text_emb / modified_text_emb.norm(dim=-1, keepdim=True)
     grad_text_text = modified - original 
-    loss = (grad_img_features * grad_text_text).sum(dim=-1).mean()
+    loss = (grad_img_features * grad_text_text.t()).sum(dim=-1).mean()
+    #loss = (grad_img_features * grad_text_text).sum(dim=-1).mean()
     return loss
 
 
@@ -482,7 +520,8 @@ def text_text_loss(original_text_emb, modified_text_emb) -> float:
     # larger number means more similarity
     original = original_text_emb / original_text_emb.norm(dim=-1, keepdim=True)
     modified = modified_text_emb / modified_text_emb.norm(dim=-1, keepdim=True)
-    loss = (modified * original).sum(dim=-1).mean() # actually cosine similarity
+    loss = (modified * original.t()).sum(dim=-1).mean() # actually cosine similarity
+    #loss = (modified * original).sum(dim=-1).mean() # actually cosine similarity
     return loss
 
 
@@ -490,7 +529,8 @@ def text_image_loss(image_emb, modified_text_emb) -> float:
     # larger number means more similarity
     image_norm = image_emb / image_emb.norm(dim=-1, keepdim=True)
     text_norm = modified_text_emb / modified_text_emb.norm(dim=-1, keepdim=True)
-    loss = (text_norm * image_norm).sum(dim=-1).mean()
+    loss = (text_norm * image_norm.t()).sum(dim=-1).mean()
+    #loss = (text_norm * image_norm).sum(dim=-1).mean()
     return loss
 
 
@@ -769,7 +809,7 @@ def optimize_prompt_loop_builtin(model, tokenizer, token_embedding, all_target_f
 
 #     return best_text
 
-def semantic_loss(text_embeddings, image_features, threshold, dash_token_emb):
+def semantic_guidance(text_embeddings, image_features, threshold, dash_token_emb):
     """
     Calculate the semantic guidance loss
     First calculates the word-level similarity to the image features
@@ -793,12 +833,47 @@ def semantic_loss(text_embeddings, image_features, threshold, dash_token_emb):
         # Calculate the masked prompt by substituting tokens with '-' if below threshold
         if similarity < threshold:
             masked_prompt[:, i, :] = dash_token_emb
+    return masked_prompt 
 
-    # TODO: fix this
-    og_prompt = og_prompt / og_prompt.norm(dim=-1, keepdim=True)
-    masked_prompt = masked_prompt / masked_prompt.norm(dim=-1, keepdim=True)
-    loss = (og_prompt * masked_prompt).sum(dim=-1).mean()
+def semantic_loss(modified_text_embedding, masked_text_embedding):
+    """
+    Parameters:
+    modified_text_embedding (Tensor): A tensor of shape (batch_size, d) where d is the embedding dimension.
+    masked_text_embedding (Tensor): A tensor of shape (batch_size, d) where d is the embedding dimension.
+    """
+    loss = (modified_text_embedding * masked_text_embedding.t()).sum(dim=-1).mean()
     return loss
+
+# def semantic_loss(text_embeddings, image_features, threshold, dash_token_emb):
+#     """
+#     Calculate the semantic guidance loss
+#     First calculates the word-level similarity to the image features
+#     Then calculates the masked prompt by substituting tokens with '-' if below threshold.
+# 
+#     Parameters:
+#     text_embeddings (Tensor): A tensor of shape (batch_size, token_count, d) where d is the embedding dimension.
+#     image_features (Tensor): A tensor of shape (batch_size, d) where d is the feature dimension.
+#     threshold (float): The threshold for the sparsity loss.
+#     """
+#     loss = 0.0
+#     token_count = text_embeddings.shape[1]
+# 
+#     og_prompt = text_embeddings
+#     masked_prompt = text_embeddings.detach().clone()
+#     # Calculate cosine similarity to image features for each word token
+#     for i in range(token_count):
+#         token = text_embeddings[:, i, :]
+#         token = token / token.norm(dim=-1, keepdim=True)
+#         similarity = token @ image_features.t()
+#         # Calculate the masked prompt by substituting tokens with '-' if below threshold
+#         if similarity < threshold:
+#             masked_prompt[:, i, :] = dash_token_emb
+# 
+#     # TODO: fix this
+#     og_prompt = og_prompt / og_prompt.norm(dim=-1, keepdim=True)
+#     masked_prompt = masked_prompt / masked_prompt.norm(dim=-1, keepdim=True)
+#     loss = (og_prompt * masked_prompt).sum(dim=-1).mean()
+#     return loss
 
 
 
@@ -825,7 +900,8 @@ def sparsity_loss(text_embeddings) -> torch.Tensor:
     dot_product = torch.abs(dot_product) * (1 - eye)
 
     # Sum over all pairs and average over the batch
-    loss = dot_product.sum() / (batch_size * token_count * (token_count-1))
+    loss = dot_product.sum() / (batch_size * token_count ** 2)
+    #loss = dot_product.sum() / (batch_size * token_count * (token_count-1))
     #loss = dot_product.sum() / (batch_size * token_count * emb_dim)
 
     return loss
@@ -839,19 +915,19 @@ def optimize_prompt_s4a(original_prompt: str, img_coarse: list, img_fine: list, 
         run_args = {
             "prompt_len": 16,
             "iter": 3000,
-            "lr": 0.01,
+            "lr": 0.1,
             "weight_decay": 0.1,
             "prompt_bs": 1,
             "print_step": 500,
             "batch_size": 1,
             "print_new_best": False,
-            "print_new_best_sum": True,
+            "print_new_best_sum": False,
             "loss_weight": 1.0,
             "loss_qual": 1.0,
-            "loss_sem": 0.5,
-            "loss_tt": 0.5,
+            "loss_sem": 1.0,
+            "loss_tt": 1.0,
             "loss_ti": 1.0,
-            "loss_spar": 0.5,
+            "loss_spar": 1.0,
             "clip_model": "ViT-L/14",
             "pretrained": "openai",
         }
@@ -876,7 +952,7 @@ def optimize_prompt_s4a(original_prompt: str, img_coarse: list, img_fine: list, 
     # prompt
     #prompt_ids, text_target_features, unpadded_prompt_embeds = get_padded_text_feature(model, tokenizer, token_embedding, tokenizer_funct, run_args, device, target_prompts=[original_prompt])
     # tuple
-    prompt_tensors = get_padded_text_feature(model, tokenizer, token_embedding, tokenizer_funct, run_args, device, target_prompts=[original_prompt])
+    #prompt_tensors = get_padded_text_feature(model, tokenizer, token_embedding, tokenizer_funct, run_args, device, target_prompts=[original_prompt])
 
     if 0:
         all_target_features = get_target_feature(model, preprocess, tokenizer_funct, device, target_images=img_fine, target_prompts=target_prompts)
