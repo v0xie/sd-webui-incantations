@@ -30,7 +30,9 @@ logger.setLevel(environ.get("SD_WEBUI_LOG_LEVEL", logging.INFO))
 
 """
 
-Unofficial implementation of algorithms in Multi-Concept T2I-Zero: Tweaking Only The Text Embeddings and Nothing Else, and Enhancing Semantic Fidelity in Text-to-Image Synthesis: Attention Regulation in Diffusion Models
+Unofficial implementation of algorithms in "Multi-Concept T2I-Zero: Tweaking Only The Text Embeddings and Nothing Else"
+
+Also implements some "Reduce distortion in generation" algorithms from "Enhancing Semantic Fidelity in Text-to-Image Synthesis: Attention Regulation in Diffusion Models"
 
 
 @misc{tunanyan2023multiconcept,
@@ -91,17 +93,16 @@ class T2I0ExtensionScript(UIWrapper):
                 with gr.Accordion('Multi-Concept T2I-Zero [arXiv:2310.07419v1]', open=True):
                         active = gr.Checkbox(value=False, default=False, label="Active", elem_id='t2i0_active')
                         with gr.Row():
-                                attnreg = gr.Checkbox(value=False, default=False, label="Use Attention Regulation", elem_id='t2i0_use_attnreg')
-                                ema_factor = gr.Slider(value=0.0, minimum=0.0, maximum=4.0, default=2.0, label="EMA Smoothing Factor", elem_id='t2i0_use_attnreg')
-                                step_end = gr.Slider(value=25, minimum=0, maximum=150, default=1, step=1, label="Step End", elem_id='t2i0_step_end')
-                        with gr.Row():
-                                tokens = gr.Textbox(value="", label="Tokens", elem_id='t2i0_tokens', info="Comma separated list of tokens to condition on")
+                                tokens = gr.Textbox(visible=False, value="", label="Tokens", elem_id='t2i0_tokens', info="Comma separated list of tokens to condition on")
                         with gr.Row():
                                 window_size = gr.Slider(value = 15, minimum = 0, maximum = 100, step = 1, label="Correction by Similarities Window Size", elem_id = 't2i0_window_size', info="Exclude contribution of tokens further than this from the current token")
                                 correction_threshold = gr.Slider(value = 0.5, minimum = 0.0, maximum = 1.0, step = 0.01, label="CbS Score Threshold", elem_id = 't2i0_correction_threshold', info="Filter dimensions with similarity below this threshold")
                                 correction_strength = gr.Slider(value = 0.25, minimum = 0.0, maximum = 0.999, step = 0.01, label="CbS Correction Strength", elem_id = 't2i0_correction_strength', info="The strength of the correction, default 0.25")
                         with gr.Row():
                                 ctnms_alpha = gr.Slider(value = 0.1, minimum = 0.0, maximum = 1.0, step = 0.01, label="Alpha for Cross-Token Non-Maximum Suppression", elem_id = 't2i0_ctnms_alpha', info="Contribution of the suppressed attention map, default 0.1")
+                                attnreg = gr.Checkbox(visible=False, value=False, default=False, label="Use Attention Regulation", elem_id='t2i0_use_attnreg')
+                                ema_factor = gr.Slider(value=0.0, minimum=0.0, maximum=4.0, default=2.0, label="EMA Smoothing Factor", elem_id='t2i0_use_attnreg')
+                                step_end = gr.Slider(value=25, minimum=0, maximum=150, default=1, step=1, label="Step End", elem_id='t2i0_step_end')
                 active.do_not_save_to_config = True
                 attnreg.do_not_save_to_config = True
                 ema_factor.do_not_save_to_config = True
