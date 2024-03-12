@@ -30,7 +30,8 @@ logger.setLevel(environ.get("SD_WEBUI_LOG_LEVEL", logging.INFO))
 
 """
 
-Unofficial implementation of algorithms in Multi-Concept T2I-Zero: Tweaking Only The Text Embeddings and Nothing Else
+Unofficial implementation of algorithms in Multi-Concept T2I-Zero: Tweaking Only The Text Embeddings and Nothing Else, and Enhancing Semantic Fidelity in Text-to-Image Synthesis: Attention Regulation in Diffusion Models
+
 
 @misc{tunanyan2023multiconcept,
       title={Multi-Concept T2I-Zero: Tweaking Only The Text Embeddings and Nothing Else}, 
@@ -41,8 +42,17 @@ Unofficial implementation of algorithms in Multi-Concept T2I-Zero: Tweaking Only
       primaryClass={cs.CV}
 }
 
+@misc{zhang2024enhancing,
+    title={Enhancing Semantic Fidelity in Text-to-Image Synthesis: Attention Regulation in Diffusion Models},
+    author={Yang Zhang and Teoh Tze Tzun and Lim Wei Hern and Tiviatis Sim and Kenji Kawaguchi},
+    year={2024},
+    eprint={2403.06381},
+    archivePrefix={arXiv},
+    primaryClass={cs.CV}
+}
+
 Author: v0xie
-GitHub URL: https://github.com/v0xie/sd-webui-semantic-guidance
+GitHub URL: https://github.com/v0xie/sd-webui-incantation
 
 """
 
@@ -50,6 +60,7 @@ handles = []
 
 class T2I0StateParams:
         def __init__(self):
+                self.tokens: str = "" # [0, 20]
                 self.window_size_period: int = 10 # [0, 20]
                 self.ctnms_alpha: float = 0.05 # [0., 1.] if abs value of difference between uncodition and concept-conditioned is less than this, then zero out the concept-conditioned values less than this
                 self.correction_threshold: float = 0.5 # [0., 1.]
@@ -77,6 +88,8 @@ class T2I0ExtensionScript(UIWrapper):
                 with gr.Accordion('Multi-Concept T2I-Zero [arXiv:2310.07419v1]', open=True):
                         active = gr.Checkbox(value=False, default=False, label="Active", elem_id='t2i0_active')
                         with gr.Row():
+                                tokens = gr.Textbox(value="", label="Tokens", elem_id='t2i0_tokens', info="Comma separated list of tokens to condition on")
+                        with gr.Row():
                                 window_size = gr.Slider(value = 15, minimum = 0, maximum = 100, step = 1, label="Correction by Similarities Window Size", elem_id = 't2i0_window_size', info="Exclude contribution of tokens further than this from the current token")
                                 correction_threshold = gr.Slider(value = 0.5, minimum = 0.0, maximum = 1.0, step = 0.01, label="CbS Score Threshold", elem_id = 't2i0_correction_threshold', info="Filter dimensions with similarity below this threshold")
                                 correction_strength = gr.Slider(value = 0.25, minimum = 0.0, maximum = 0.999, step = 0.01, label="CbS Correction Strength", elem_id = 't2i0_correction_strength', info="The strength of the correction, default 0.25")
@@ -101,12 +114,12 @@ class T2I0ExtensionScript(UIWrapper):
                         't2i0_correction_threshold',
                         't2i0_correction_strength'
                 ]
-                return [active, window_size, ctnms_alpha, correction_threshold, correction_strength]
+                return [active, window_size, ctnms_alpha, correction_threshold, correction_strength, tokens]
 
         def process_batch(self, p: StableDiffusionProcessing, *args, **kwargs):
                self.t2i0_process_batch(p, *args, **kwargs)
 
-        def t2i0_process_batch(self, p: StableDiffusionProcessing, active, window_size, ctnms_alpha, correction_threshold, correction_strength, *args, **kwargs):
+        def t2i0_process_batch(self, p: StableDiffusionProcessing, active, window_size, ctnms_alpha, correction_threshold, correction_strength, tokens, *args, **kwargs):
                 active = getattr(p, "t2i0_active", active)
                 if active is False:
                         return
@@ -114,15 +127,17 @@ class T2I0ExtensionScript(UIWrapper):
                 ctnms_alpha = getattr(p, "t2i0_ctnms_alpha", ctnms_alpha)
                 correction_threshold = getattr(p, "t2i0_correction_threshold", correction_threshold)
                 correction_strength = getattr(p, "t2i0_correction_strength", correction_strength)
+                correction_strength = getattr(p, "t2i0_tokens", tokens)
                 p.extra_generation_params.update({
                         "T2I-0 Active": active,
+                        "T2I-0 Tokens": tokens,
                         "T2I-0 window_size Period": window_size,
                         "T2I-0 CTNMS Alpha": ctnms_alpha,
                         "T2I-0 CbS Score Threshold": correction_threshold,
                         "T2I-0 CbS Correction Strength": correction_strength,
                 })
 
-                self.create_hook(p, active, window_size, ctnms_alpha, correction_threshold, correction_strength, p.width, p.height)
+                self.create_hook(p, active, window_size, ctnms_alpha, correction_threshold, correction_strength, tokens, p.width, p.height)
 
         def parse_concept_prompt(self, prompt:str) -> list[str]:
                 """
@@ -140,7 +155,7 @@ class T2I0ExtensionScript(UIWrapper):
                         return []
                 return [x.strip() for x in prompt.split(",")]
 
-        def create_hook(self, p, active, window_size, ctnms_alpha, correction_threshold, correction_strength, width, height, *args, **kwargs):
+        def create_hook(self, p, active, window_size, ctnms_alpha, correction_threshold, correction_strength, tokens, width, height, *args, **kwargs):
                 # Create a list of parameters for each concept
                 t2i0_params = []
 
