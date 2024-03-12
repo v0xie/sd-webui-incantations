@@ -223,6 +223,7 @@ class T2I0ExtensionScript(UIWrapper):
                 for module in cross_attn_modules:
                         self.remove_field_cross_attn_modules(module, 't2i0_last_attn_map')
                         self.remove_field_cross_attn_modules(module, 't2i0_step')
+                        self.remove_field_cross_attn_modules(module, 't2i0_step_end')
                         self.remove_field_cross_attn_modules(module, 't2i0_ema_factor')
                         _remove_all_forward_hooks(module, 'cross_token_non_maximum_suppression')
                 script_callbacks.remove_current_script_callbacks()
