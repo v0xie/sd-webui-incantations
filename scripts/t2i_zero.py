@@ -92,7 +92,7 @@ class T2I0ExtensionScript(UIWrapper):
                         active = gr.Checkbox(value=False, default=False, label="Active", elem_id='t2i0_active')
                         with gr.Row():
                                 attnreg = gr.Checkbox(value=False, default=False, label="Use Attention Regulation", elem_id='t2i0_use_attnreg')
-                                ema_factor = gr.Slider(value=2.0, minimum=0.01, maximum=4.0, default=2.0, label="EMA Smoothing Factor", elem_id='t2i0_use_attnreg')
+                                ema_factor = gr.Slider(value=0.0, minimum=0.0, maximum=4.0, default=2.0, label="EMA Smoothing Factor", elem_id='t2i0_use_attnreg')
                                 step_end = gr.Slider(value=25, minimum=0, maximum=150, default=1, step=1, label="Step End", elem_id='t2i0_step_end')
                         with gr.Row():
                                 tokens = gr.Textbox(value="", label="Tokens", elem_id='t2i0_tokens', info="Comma separated list of tokens to condition on")
@@ -225,6 +225,7 @@ class T2I0ExtensionScript(UIWrapper):
                         self.remove_field_cross_attn_modules(module, 't2i0_step')
                         self.remove_field_cross_attn_modules(module, 't2i0_step_end')
                         self.remove_field_cross_attn_modules(module, 't2i0_ema_factor')
+                        self.remove_field_cross_attn_modules(module, 't2i0_ema')
                         _remove_all_forward_hooks(module, 'cross_token_non_maximum_suppression')
                 script_callbacks.remove_current_script_callbacks()
 
@@ -315,18 +316,20 @@ class T2I0ExtensionScript(UIWrapper):
                         self.add_field_cross_attn_modules(module, 't2i0_last_attn_map', None)
                         self.add_field_cross_attn_modules(module, 't2i0_step', torch.tensor([0]).to(device=shared.device))
                         self.add_field_cross_attn_modules(module, 't2i0_step_end', torch.tensor([step_end]).to(device=shared.device))
+                        self.add_field_cross_attn_modules(module, 't2i0_ema', None)
                         self.add_field_cross_attn_modules(module, 't2i0_ema_factor', torch.tensor([ema_factor]).to(device=shared.device, dtype=torch.float16))
 
                 def cross_token_non_maximum_suppression(module, input, kwargs, output):
                         context = kwargs.get('context', None)
                         if context is None:
                                 return
-                        batch_size, sequence_length, inner_dim = output.shape
 
                         current_step = module.t2i0_step
                         end_step = module.t2i0_step_end
                         if current_step > end_step and end_step > 0:
                                 return
+
+                        batch_size, sequence_length, inner_dim = output.shape
 
                         max_dims = width*height
                         factor = math.isqrt(max_dims // sequence_length) # should be a square of 2
@@ -344,6 +347,9 @@ class T2I0ExtensionScript(UIWrapper):
                         # Reshape the attention map to batch_size, height, width
                         # FIXME: need to assert the height/width divides into the sequence length
                         attention_map = output.view(batch_size, downscale_height, downscale_width, inner_dim)
+
+                        if module.t2i0_ema is None:
+                                module.t2i0_ema = output.detach().clone()
 
                         # Select token indices (Assuming this is provided as t2i0_params or similar)
                         selected_tokens = torch.tensor(list(range(inner_dim)))  # Example: Replace with actual indices
@@ -370,7 +376,18 @@ class T2I0ExtensionScript(UIWrapper):
                         # Reshape back to original dimensions
                         suppressed_attention_map = suppressed_attention_map.view(batch_size, sequence_length, inner_dim)
 
-                        out_tensor = (1-alpha) * output + alpha * suppressed_attention_map
+                        # Calculate the EMA of the suppressed attention map
+                        if module.t2i0_ema_factor > 0:
+                                ema = module.t2i0_ema
+                                ema_factor = module.t2i0_ema_factor / (1 + current_step)
+                                # Add the suppressed attention map to the EMA
+                                ema = ema_factor * ema + (1 - ema_factor) * suppressed_attention_map
+                                module.t2i0_ema = ema
+                                out_tensor = (1 -alpha) * output + (alpha) * ema
+                                #out_tensor = (1-alpha) * ema + alpha * suppressed_attention_map
+                        else:
+                                out_tensor = (1-alpha) * output + alpha * suppressed_attention_map
+
 
                         # increment step
                         module.t2i0_step += 1
