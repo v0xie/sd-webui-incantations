@@ -97,7 +97,7 @@ class T2I0ExtensionScript(UIWrapper):
                                 tokens = gr.Textbox(visible=False, value="", label="Tokens", elem_id='t2i0_tokens', info="Comma separated list of tokens to condition on")
                         with gr.Row():
                                 window_size = gr.Slider(value = 3, minimum = 0, maximum = 100, step = 1, label="Correction by Similarities Window Size", elem_id = 't2i0_window_size', info="Exclude contribution of tokens further than this from the current token")
-                                correction_threshold = gr.Slider(value = 0.0, minimum = -1.0, maximum = 1.0, step = 0.01, label="CbS Score Threshold", elem_id = 't2i0_correction_threshold', info="Filter dimensions with similarity below this threshold")
+                                correction_threshold = gr.Slider(value = 0.0, minimum = 0., maximum = 1.0, step = 0.001, label="CbS Score Threshold", elem_id = 't2i0_correction_threshold', info="Filter dimensions with similarity below this threshold")
                                 correction_strength = gr.Slider(value = 0.0, minimum = 0.0, maximum = 0.999, step = 0.01, label="CbS Correction Strength", elem_id = 't2i0_correction_strength', info="The strength of the correction, default 0.1")
                         with gr.Row():
                                 attnreg = gr.Checkbox(visible=False, value=False, default=False, label="Use Attention Regulation", elem_id='t2i0_use_attnreg')
@@ -289,7 +289,10 @@ class T2I0ExtensionScript(UIWrapper):
                         # often there is a huge difference between the max and min values, so we use a log-like function instead
                         k = 10
                         e= 2.718281
-                        pct = min(0.999999999, max(0.000001, 1 - e**(-k * percentile)))
+                        pct_max = 1/(1+1e-10)
+                        pct_min = 1e-16
+                        # max of 0.999... to 0.0000...1
+                        pct = min(pct_max, max(pct_min, 1 - e**(-k * percentile)))
                         tau = torch.quantile(Sc_flat_positive, pct)
 
                         Sc_tilde = Sc * (Sc > tau)  # Apply threshold and filter
@@ -429,6 +432,12 @@ class T2I0ExtensionScript(UIWrapper):
                 width = sp.width
                 height = sp.height
                 ctnms_alpha = sp.ctnms_alpha
+
+                step = params.sampling_step
+                step_end = sp.step_end
+
+                if step > step_end:
+                        return
 
                 for batch_idx, batch in enumerate(text_cond):
                         window = list(range(0, len(batch)))
