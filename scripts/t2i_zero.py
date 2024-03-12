@@ -54,7 +54,7 @@ Also implements some "Reduce distortion in generation" algorithms from "Enhancin
 }
 
 Author: v0xie
-GitHub URL: https://github.com/v0xie/sd-webui-incantation
+GitHub URL: https://github.com/v0xie/sd-webui-incantations
 
 """
 
