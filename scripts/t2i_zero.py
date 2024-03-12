@@ -92,17 +92,17 @@ class T2I0ExtensionScript(UIWrapper):
         def setup_ui(self, is_img2img) -> list:
                 with gr.Accordion('Multi-Concept T2I-Zero [arXiv:2310.07419v1]', open=True):
                         active = gr.Checkbox(value=False, default=False, label="Active", elem_id='t2i0_active')
+                        step_end = gr.Slider(value=25, minimum=0, maximum=150, default=1, step=1, label="Step End", elem_id='t2i0_step_end')
                         with gr.Row():
                                 tokens = gr.Textbox(visible=False, value="", label="Tokens", elem_id='t2i0_tokens', info="Comma separated list of tokens to condition on")
                         with gr.Row():
-                                window_size = gr.Slider(value = 15, minimum = 0, maximum = 100, step = 1, label="Correction by Similarities Window Size", elem_id = 't2i0_window_size', info="Exclude contribution of tokens further than this from the current token")
-                                correction_threshold = gr.Slider(value = 0.5, minimum = 0.0, maximum = 1.0, step = 0.01, label="CbS Score Threshold", elem_id = 't2i0_correction_threshold', info="Filter dimensions with similarity below this threshold")
-                                correction_strength = gr.Slider(value = 0.25, minimum = 0.0, maximum = 0.999, step = 0.01, label="CbS Correction Strength", elem_id = 't2i0_correction_strength', info="The strength of the correction, default 0.25")
+                                window_size = gr.Slider(value = 3, minimum = 0, maximum = 100, step = 1, label="Correction by Similarities Window Size", elem_id = 't2i0_window_size', info="Exclude contribution of tokens further than this from the current token")
+                                correction_threshold = gr.Slider(value = 0.0, minimum = -1.0, maximum = 1.0, step = 0.01, label="CbS Score Threshold", elem_id = 't2i0_correction_threshold', info="Filter dimensions with similarity below this threshold")
+                                correction_strength = gr.Slider(value = 0.0, minimum = 0.0, maximum = 0.999, step = 0.01, label="CbS Correction Strength", elem_id = 't2i0_correction_strength', info="The strength of the correction, default 0.1")
                         with gr.Row():
-                                ctnms_alpha = gr.Slider(value = 0.1, minimum = 0.0, maximum = 1.0, step = 0.01, label="Alpha for Cross-Token Non-Maximum Suppression", elem_id = 't2i0_ctnms_alpha', info="Contribution of the suppressed attention map, default 0.1")
                                 attnreg = gr.Checkbox(visible=False, value=False, default=False, label="Use Attention Regulation", elem_id='t2i0_use_attnreg')
-                                ema_factor = gr.Slider(value=0.0, minimum=0.0, maximum=4.0, default=2.0, label="EMA Smoothing Factor", elem_id='t2i0_use_attnreg')
-                                step_end = gr.Slider(value=25, minimum=0, maximum=150, default=1, step=1, label="Step End", elem_id='t2i0_step_end')
+                                ctnms_alpha = gr.Slider(value = 0.1, minimum = 0.0, maximum = 1.0, step = 0.01, label="Alpha for Cross-Token Non-Maximum Suppression", elem_id = 't2i0_ctnms_alpha', info="Contribution of the suppressed attention map, default 0.1")
+                                ema_factor = gr.Slider(value=0.0, minimum=0.0, maximum=4.0, default=2.0, label="EMA Smoothing Factor", elem_id='t2i0_ema_factor')
                 active.do_not_save_to_config = True
                 attnreg.do_not_save_to_config = True
                 ema_factor.do_not_save_to_config = True
@@ -113,22 +113,22 @@ class T2I0ExtensionScript(UIWrapper):
                 correction_strength.do_not_save_to_config = True
                 self.infotext_fields = [
                         (active, lambda d: gr.Checkbox.update(value='T2I-0 Active' in d)),
-                        (attnreg, lambda d: gr.Checkbox.update(value='T2I-0 AttnReg' in d)),
+                        #(attnreg, lambda d: gr.Checkbox.update(value='T2I-0 AttnReg' in d)),
+                        (step_end, 'T2I-0 Step End'),
                         (window_size, 'T2I-0 Window Size'),
                         (ctnms_alpha, 'T2I-0 CTNMS Alpha'),
                         (correction_threshold, 'T2I-0 CbS Score Threshold'),
                         (correction_strength, 'T2I-0 CbS Correction Strength'),
-                        (ema_factor, 'T2I-0 EMA Smoothing Factor'),
-                        (step_end, 'T2I-0 Step End'),
+                        (ema_factor, 'T2I-0 CTNMS EMA Smoothing Factor'),
                 ]
                 self.paste_field_names = [
                         't2i0_active',
                         't2i0_attnreg',
-                        't2i0_ema_factor',
                         't2i0_window_size',
                         't2i0_ctnms_alpha',
                         't2i0_correction_threshold',
                         't2i0_correction_strength'
+                        't2i0_ema_factor',
                         't2i0_step_end'
                 ]
                 return [active, attnreg, window_size, ctnms_alpha, correction_threshold, correction_strength, tokens, ema_factor, step_end]
@@ -150,13 +150,14 @@ class T2I0ExtensionScript(UIWrapper):
                 tokens = getattr(p, "t2i0_tokens", tokens)
                 p.extra_generation_params.update({
                         "T2I-0 Active": active,
-                        "T2I-0 AttnReg": attnreg,
-                        "T2I-0 EMA Smoothing Factor": ema_factor,
-                        "T2I-0 Tokens": tokens,
+                        #"T2I-0 AttnReg": attnreg,
+                        #"T2I-0 Tokens": tokens,
                         "T2I-0 window_size Period": window_size,
-                        "T2I-0 CTNMS Alpha": ctnms_alpha,
                         "T2I-0 CbS Score Threshold": correction_threshold,
                         "T2I-0 CbS Correction Strength": correction_strength,
+                        "T2I-0 CTNMS Alpha": ctnms_alpha,
+                        "T2I-0 Step End": step_end,
+                        "T2I-0 EMA Smoothing Factor": ema_factor,
                 })
 
                 self.create_hook(p, active, attnreg, window_size, ctnms_alpha, correction_threshold, correction_strength, tokens, ema_factor, step_end, p.width, p.height)
@@ -443,9 +444,11 @@ class T2I0ExtensionScript(UIWrapper):
                 extra_axis_options = {
                         xyz_grid.AxisOption("[T2I-0] Active", str, t2i0_apply_override('t2i0_active', boolean=True), choices=xyz_grid.boolean_choice(reverse=True)),
                         xyz_grid.AxisOption("[T2I-0] ctnms_alpha", float, t2i0_apply_field("t2i0_ctnms_alpha")),
+                        xyz_grid.AxisOption("[T2I-0] Step End", float, t2i0_apply_field("t2i0_step_end")),
                         xyz_grid.AxisOption("[T2I-0] Window Size", int, t2i0_apply_field("t2i0_window_size")),
                         xyz_grid.AxisOption("[T2I-0] Correction Threshold", float, t2i0_apply_field("t2i0_correction_threshold")),
                         xyz_grid.AxisOption("[T2I-0] Correction Strength", float, t2i0_apply_field("t2i0_correction_strength")),
+                        xyz_grid.AxisOption("[T2I-0] CTNMS EMA Smoothing Factor", float, t2i0_apply_field("t2i0_ema_factor")),
                 }
                 return extra_axis_options
 
