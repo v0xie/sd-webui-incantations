@@ -26,7 +26,7 @@ class P2HP(UIWrapper):
         return self.ui(is_img2img)
     
     def ui(self, is_img2img) -> list:
-        with gr.Accordion('Prompt Optimization', open=True):
+        with gr.Accordion('Prompt Optimization', open=False):
             #img_path = "F:\\temp\\meme.png"
             with gr.Row():
                 img = gr.Image(value=None, label='p2hp_img', sources=['upload','clipboard'], type='pil')
