@@ -29,8 +29,16 @@ logger = logging.getLogger(__name__)
 logger.setLevel(environ.get("SD_WEBUI_LOG_LEVEL", logging.INFO))
 
 """
-PAG perturbed attention guidance
-todo: citation
+An unofficial implementation of "Self-Rectifying Diffusion Sampling with Perturbed-Attention Guidance" for Automatic1111 WebUI.
+
+@misc{ahn2024selfrectifying,
+      title={Self-Rectifying Diffusion Sampling with Perturbed-Attention Guidance}, 
+      author={Donghoon Ahn and Hyoungwon Cho and Jaewon Min and Wooseok Jang and Jungwoo Kim and SeonHwa Kim and Hyun Hee Park and Kyong Hwan Jin and Seungryong Kim},
+      year={2024},
+      eprint={2403.17377},
+      archivePrefix={arXiv},
+      primaryClass={cs.CV}
+}
 
 Author: v0xie
 GitHub URL: https://github.com/v0xie/sd-webui-incantations
@@ -50,7 +58,8 @@ class PAGStateParams:
                 self.crossattn_modules = [] # callable lambda
                 self.to_v_modules = []
                 self.to_out_modules = []
-                self.pag_scale: int = 10 # [0, 20]
+                self.guidance_scale: int = -1 # CFG
+                self.pag_scale: int = -1      # PAG guidance scale
 
                 self.attnreg: bool = False
                 self.ema_smoothing_factor: float = 2.0
@@ -168,16 +177,18 @@ class PAGExtensionScript(UIWrapper):
                         return []
                 return [x.strip() for x in prompt.split(",")]
 
-        def create_hook(self, p, active, attnreg, pag_scale, ctnms_alpha, correction_threshold, correction_strength, tokens, ema_factor, step_end, width, height, *args, **kwargs):
+        def create_hook(self, p: StableDiffusionProcessing, active, attnreg, pag_scale, ctnms_alpha, correction_threshold, correction_strength, tokens, ema_factor, step_end, width, height, *args, **kwargs):
                 # Create a list of parameters for each concept
                 pag_params = []
 
                 #for _, strength in concept_conds:
                 params = PAGStateParams()
+                params.guidance_scale = p.cfg_scale
+                params.pag_scale = pag_scale
+
                 params.attnreg = attnreg 
                 params.ema_smoothing_factor = ema_factor 
                 params.step_end = step_end 
-                params.pag_scale = pag_scale
                 params.ctnms_alpha = ctnms_alpha
                 params.correction_threshold = correction_threshold
                 params.correction_strength = correction_strength
@@ -185,6 +196,7 @@ class PAGExtensionScript(UIWrapper):
                 params.width = width
                 params.height = height 
                 params.dims = [width, height]
+
                 # Get all the qv modules
                 cross_attn_modules = self.get_cross_attn_modules()
                 params.crossattn_modules = [m for m in cross_attn_modules if 'CrossAttention' in m.__class__.__name__]
@@ -238,38 +250,10 @@ class PAGExtensionScript(UIWrapper):
                         _remove_all_forward_hooks(to_v, 'to_v_pre_hook')
                 script_callbacks.remove_current_script_callbacks()
 
-        def apply_attnreg(self, f, C, alpha, B, *args, **kwargs):
-                """
-                Apply attention regulation on an embedding.
-
-                Args:
-                f (Tensor): The embedding tensor of shape (n, d).
-                C (list): Indices of selected tokens.
-                alpha (float): Attnreg strength.
-                B (float): Lagrange multiplier B > 0
-                gamma (int): Window size for the windowing function.
-
-                Returns:
-                Tensor: The corrected embedding tensor.
-                """
-
-                n, d = f.shape
-                f_tilde = f.detach().clone()  # Copy the embedding tensor
-
-                for token_idx, c in enumerate(C):
-                        pass
-                return f_tilde
-
         def ready_hijack_forward(self, crossattn_modules, alpha, width, height, ema_factor, step_end):
-                """ Create a hook to modify the output of the forward pass of the cross attention module 
-                Arguments:
-                        alpha: float - The strength of the CTNMS correction, default 0.1
-                        width: int - The width of the final output image map
-                        height: int - The height of the final output image map
-                        ema_factor: float - EMA smoothing factor, default 2.0
-                        step_end: int - The number of steps to apply the CTNMS correction, after which don't
-
-                Only modifies the output of the cross attention modules that get context (i.e. text embedding)
+                """ Create hooks in the forward pass of the cross attention modules
+                Copies the output of the to_v module to the parent module
+                Then applies the PAG perturbation to the output of the cross attention module (multiplication by identity)
                 """
 
                 # add field for last_to_v
@@ -367,6 +351,21 @@ class PAGExtensionScript(UIWrapper):
 
 
         def on_cfg_denoised_callback(self, params: CFGDenoisedParams, pag_params: list[PAGStateParams]):
+                """ Callback function for the CFGDenoisedParams 
+                This is where we combine CFG and PAG
+                Refer to pg.22 A.2 of the PAG paper for how CFG and PAG combine
+
+                s: PAG guidance scale, w: CFG guidance scale
+
+                To work around the issue of CFG guidance being applied to the PAG guidance, 
+                we can use the following formulation:
+
+                ~ϵθ (xt, c) = ϵθ (xt, c) + w(ϵθ (xt, c) − ϵθ (xt, ϕ)) + s(ϵθ (xt, c) − ˆϵθ (xt, c))  
+                ~ϵθ (xt, c) = ϵθ (xt, c) + w(CFG) + s(PAG)  
+                ~ϵθ (xt, c) = ϵθ (xt, c) + w(CFG + s/w(PAG))
+                
+                
+                """
                 # original x_out
                 x_out = params.x
 
@@ -388,8 +387,15 @@ class PAGExtensionScript(UIWrapper):
                 for module in pag_params[0].crossattn_modules:
                         setattr(module, 'pag_enable', True)
 
-                # replace uncond with pag_x_out
+                # get the PAG guidance
                 pag_x_out = params.inner_model(x_in, sigma_in, cond=conds)
+
+                # combine CFG and PAG
+                pag_scale = pag_params[0].pag_scale
+                cfg_scale = pag_params[0].guidance_scale
+                pag_x_out[-uncond.shape[0]:] = x_out[-uncond.shape[0]:] + (pag_scale/cfg_scale)*(x_out[-uncond.shape[0]:] - pag_x_out[-uncond.shape[0]:])
+
+                # update x_out
                 x_out[-uncond.shape[0]:] = pag_x_out[-uncond.shape[0]:]
                 params.x = x_out
 
