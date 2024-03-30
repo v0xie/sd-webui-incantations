@@ -47,12 +47,15 @@ class PAGStateParams:
                 self.sigma = None
                 self.text_uncond = None
                 self.make_condition_dict = None # callable lambda
+                self.crossattn_modules = [] # callable lambda
+                self.to_v_modules = []
+                self.to_out_modules = []
+                self.pag_scale: int = 10 # [0, 20]
 
                 self.attnreg: bool = False
                 self.ema_smoothing_factor: float = 2.0
                 self.step_end : int = 25
                 self.tokens: str = "" # [0, 20]
-                self.pag_scale: int = 10 # [0, 20]
                 self.ctnms_alpha: float = 0.05 # [0., 1.] if abs value of difference between uncodition and concept-conditioned is less than this, then zero out the concept-conditioned values less than this
                 self.correction_threshold: float = 0.5 # [0., 1.]
                 self.correction_strength: float = 0.25 # [0., 1.) # larger bm is less volatile changes in momentum
@@ -182,6 +185,13 @@ class PAGExtensionScript(UIWrapper):
                 params.width = width
                 params.height = height 
                 params.dims = [width, height]
+                # Get all the qv modules
+                cross_attn_modules = self.get_cross_attn_modules()
+                params.crossattn_modules = [m for m in cross_attn_modules if 'CrossAttention' in m.__class__.__name__]
+                # to_k = [m for m in cross_attn_modules if 'to_k' in m.network_layer_name]
+                #params.to_v_modules = [getattr(m, 'to_v', None) for m in crossattn_modules if getattr(m, 'to_v', None)]
+                #params.to_out_modules = [getattr(m, 'to_out', None) for m in crossattn_modules if getattr(m, 'to_out', None)]
+                #params.to_out_modules = [m for m in cross_attn_modules if 'to_out' in m.network_layer_name]
                 pag_params.append(params)
 
                 # Use lambda to call the callback function with the parameters to avoid global variables
@@ -189,9 +199,15 @@ class PAGExtensionScript(UIWrapper):
                 z = lambda params: self.on_cfg_denoised_callback(params, pag_params)
                 un = lambda params: self.unhook_callbacks()
 
+                # # qv_modules.extend([m for m in cross_attn_modules if 'to_q' in m.network_layer_name])
+                # # qv_modules.extend([m for m in cross_attn_modules if 'to_k' in m.network_layer_name])
+                # to_q: torch.nn.Module = crossattn_modules[0].to_q
+                # to_k: torch.nn.Module = crossattn_modules[0].to_k
+                # to_v: torch.nn.Module = crossattn_modules[0].to_v
+
                 # Hook callbacks
                 #if ctnms_alpha > 0:
-                self.ready_hijack_forward(ctnms_alpha, width, height, ema_factor, step_end)
+                self.ready_hijack_forward(params.crossattn_modules, ctnms_alpha, width, height, ema_factor, step_end)
 
                 logger.debug('Hooked callbacks')
                 script_callbacks.on_cfg_denoiser(y)
@@ -212,12 +228,14 @@ class PAGExtensionScript(UIWrapper):
                 logger.debug('Unhooked callbacks')
                 cross_attn_modules = self.get_cross_attn_modules()
                 for module in cross_attn_modules:
-                        self.remove_field_cross_attn_modules(module, 'pag_last_attn_map')
-                        self.remove_field_cross_attn_modules(module, 'pag_step')
-                        self.remove_field_cross_attn_modules(module, 'pag_step_end')
-                        self.remove_field_cross_attn_modules(module, 'pag_ema_factor')
-                        self.remove_field_cross_attn_modules(module, 'pag_ema')
-                        _remove_all_forward_hooks(module, 'cross_token_non_maximum_suppression')
+                        to_v = getattr(module, 'to_v', None)
+                        to_out = getattr(module, 'to_out', None)
+                        self.remove_field_cross_attn_modules(module, 'pag_enable')
+                        self.remove_field_cross_attn_modules(module, 'pag_last_to_v')
+                        self.remove_field_cross_attn_modules(to_v, 'pag_parent_module')
+                        self.remove_field_cross_attn_modules(to_out, 'pag_parent_module')
+                        _remove_all_forward_hooks(module, 'pag_pre_hook')
+                        _remove_all_forward_hooks(to_v, 'to_v_pre_hook')
                 script_callbacks.remove_current_script_callbacks()
 
         def apply_attnreg(self, f, C, alpha, B, *args, **kwargs):
@@ -242,58 +260,7 @@ class PAGExtensionScript(UIWrapper):
                         pass
                 return f_tilde
 
-        def correction_by_similarities(self, f, C, percentile, gamma, alpha):
-                """
-                Apply the Correction by Similarities algorithm on embeddings.
-
-                Args:
-                f (Tensor): The embedding tensor of shape (n, d).
-                C (list): Indices of selected tokens.
-                percentile (float): Percentile to use for score threshold.
-                gamma (int): Window size for the windowing function.
-                alpha (float): Correction strength.
-
-                Returns:
-                Tensor: The corrected embedding tensor.
-                """
-                if alpha == 0:
-                        return f
-
-                n, d = f.shape
-                f_tilde = f.detach().clone()  # Copy the embedding tensor
-
-                # Define a windowing function
-                def psi(c, gamma, n, dtype, device):
-                        window = torch.zeros(n, dtype=dtype, device=device)
-                        start = max(0, c - gamma)
-                        end = min(n, c + gamma + 1)
-                        window[start:end] = 1
-                        return window
-
-                for token_idx, c in enumerate(C):
-                        Sc = f[c] * f  # Element-wise multiplication
-                        Sc_flat_positive = Sc[Sc > 0] # product = greater positive value indicates more similarity, filter out values under score threshold from 0 to max
-
-                        # calculate score threshold to filter out values under score threshold
-                        # often there is a huge difference between the max and min values, so we use a log-like function instead
-                        k = 10
-                        e= 2.718281
-                        pct_max = 1/(1+1e-10)
-                        pct_min = 1e-16
-                        # max of 0.999... to 0.0000...1
-                        pct = min(pct_max, max(pct_min, 1 - e**(-k * percentile)))
-                        tau = torch.quantile(Sc_flat_positive, pct)
-
-                        Sc_tilde = Sc * (Sc > tau)  # Apply threshold and filter
-                        Sc_tilde /= Sc_tilde.max()  # Normalize
-
-                        window = psi(c, gamma, n, Sc_tilde.dtype, Sc_tilde.device).unsqueeze(1)  # Apply windowing function
-                        Sc_tilde *= window
-                        f_c_tilde = torch.sum(Sc_tilde * f, dim=0)  # Combine embeddings
-                        f_tilde[c] = (1 - alpha) * f[c] + alpha * f_c_tilde  # Blend embeddings
-                return f_tilde
-
-        def ready_hijack_forward(self, alpha, width, height, ema_factor, step_end):
+        def ready_hijack_forward(self, crossattn_modules, alpha, width, height, ema_factor, step_end):
                 """ Create a hook to modify the output of the forward pass of the cross attention module 
                 Arguments:
                         alpha: float - The strength of the CTNMS correction, default 0.1
@@ -304,101 +271,49 @@ class PAGExtensionScript(UIWrapper):
 
                 Only modifies the output of the cross attention modules that get context (i.e. text embedding)
                 """
-                cross_attn_modules = self.get_cross_attn_modules()
 
-                # Get all the qv modules
-                qv_modules = []
-                crossattn_modules = [m for m in cross_attn_modules if 'CrossAttention' in m.__class__.__name__]
-                # qv_modules.extend([m for m in cross_attn_modules if 'to_q' in m.network_layer_name])
-                # qv_modules.extend([m for m in cross_attn_modules if 'to_k' in m.network_layer_name])
-                to_q: torch.nn.Module = crossattn_modules[0].to_q
-                to_k: torch.nn.Module = crossattn_modules[0].to_k
-                to_v: torch.nn.Module = crossattn_modules[0].to_v
-
-
-
-                # add field for last_attn_map
+                # add field for last_to_v
                 for module in crossattn_modules:
-                        self.add_field_cross_attn_modules(module, 'pag_last_attn_map', None)
-                        self.add_field_cross_attn_modules(module, 'pag_step', torch.tensor([0]).to(device=shared.device))
-                        self.add_field_cross_attn_modules(module, 'pag_step_end', torch.tensor([step_end]).to(device=shared.device))
-                        self.add_field_cross_attn_modules(module, 'pag_ema', None)
-                        self.add_field_cross_attn_modules(module, 'pag_ema_factor', torch.tensor([ema_factor]).to(device=shared.device, dtype=torch.float16))
+                        to_v = getattr(module, 'to_v', None)
+                        to_out = getattr(module, 'to_out', None)
+                        self.add_field_cross_attn_modules(module, 'pag_enable', False)
+                        self.add_field_cross_attn_modules(module, 'pag_last_to_v', None)
+                        self.add_field_cross_attn_modules(to_v, 'pag_parent_module', [module])
+                        self.add_field_cross_attn_modules(to_out, 'pag_parent_module', [module])
+
+                def to_v_pre_hook(module, input, kwargs, output):
+                        """ Copy the output of the to_v module to the parent module """
+                        parent_module = getattr(module, 'pag_parent_module', None)
+                        # copy the output of the to_v module to the parent module
+                        setattr(parent_module[0], 'pag_last_to_v', output.detach().clone())
 
                 def pag_pre_hook(module, input, kwargs, output):
-
-                        current_step = module.pag_step
-                        end_step = module.pag_step_end
-                        if current_step > end_step and end_step > 0:
+                        if hasattr(module, 'pag_enable') and getattr(module, 'pag_enable', False) is False:
                                 return
-
-                        batch_size, sequence_length, inner_dim = output.shape
-
-                        max_dims = width*height
-                        factor = math.isqrt(max_dims // sequence_length) # should be a square of 2
-                        downscale_width = width // factor
-                        downscale_height = height // factor
-                        if downscale_width * downscale_height != sequence_length:
-                                print(f"Error: Width: {width}, height: {height}, Downscale width: {downscale_width}, height: {downscale_height}, Factor: {factor}, Max dims: {max_dims}\n")
+                        if not hasattr(module, 'pag_last_to_v'):
+                                # oops we forgot to unhook
                                 return
+                        #print(f"Pag enabled")
 
-                        h = module.heads
-                        head_dim = inner_dim // h
-                        dtype = output.dtype
-                        device = output.device
+                        batch_size, seq_len, inner_dim = output.shape
+                        identity = torch.eye(seq_len).expand(batch_size, -1, -1).to(output.device)
 
-                        # Reshape the attention map to batch_size, height, width
-                        # FIXME: need to assert the height/width divides into the sequence length
-                        attention_map = output.view(batch_size, downscale_height, downscale_width, inner_dim)
+                        # get the last to_v output
+                        last_to_v = getattr(module, 'pag_last_to_v', None)
 
-                        if module.pag_ema is None:
-                                module.pag_ema = output.detach().clone()
-
-                        # Select token indices (Assuming this is provided as pag_params or similar)
-                        selected_tokens = torch.tensor(list(range(inner_dim)))  # Example: Replace with actual indices
-
-                        # Extract and process the selected attention maps
-                        # GaussianBlur expects the input [..., C, H, W]
-                        gaussian_blur = GaussianBlur(kernel_size=3, sigma=1)
-                        AC = attention_map[:, :, :, selected_tokens]  # Extracting relevant attention maps
-                        AC = AC.permute(0, 3, 1, 2)
-                        AC = gaussian_blur(AC)  # Applying Gaussian smoothing
-                        AC = AC.permute(0, 2, 3, 1)
-
-                        # Find the maximum contributing token for each pixel
-                        M = torch.argmax(AC, dim=-1)
-
-                        # Create one-hot vectors for suppression
-                        t = attention_map.size(-1)
-                        one_hot_M = F.one_hot(M, num_classes=t).to(dtype=dtype, device=device)
-
-                        # Apply the suppression mask
-                        #suppressed_attention_map = one_hot_M.unsqueeze(2) * attention_map
-                        suppressed_attention_map = one_hot_M * attention_map
-
-                        # Reshape back to original dimensions
-                        suppressed_attention_map = suppressed_attention_map.view(batch_size, sequence_length, inner_dim)
-
-                        # Calculate the EMA of the suppressed attention map
-                        if module.pag_ema_factor > 0:
-                                ema = module.pag_ema
-                                ema_factor = module.pag_ema_factor / (1 + current_step)
-                                # Add the suppressed attention map to the EMA
-                                ema = ema_factor * ema + (1 - ema_factor) * suppressed_attention_map
-                                module.pag_ema = ema
-                                out_tensor = (1 -alpha) * output + (alpha) * ema
-                                #out_tensor = (1-alpha) * ema + alpha * suppressed_attention_map
+                        if last_to_v is not None:    
+                                new_output = torch.einsum('bij,bjk->bik', identity, last_to_v)
+                                return new_output
                         else:
-                                out_tensor = (1-alpha) * output + alpha * suppressed_attention_map
+                                # this is bad
+                                return output
 
+                # Create hooks 
+                for module in crossattn_modules:
+                        handle_parent = module.register_forward_hook(pag_pre_hook, with_kwargs=True)
+                        to_v = getattr(module, 'to_v', None)
+                        handle_to_v = to_v.register_forward_hook(to_v_pre_hook, with_kwargs=True)
 
-                        # increment step
-                        module.pag_step += 1
-
-                        return out_tensor
-                # Hook
-                for module in cross_attn_modules:
-                        handle = module.register_forward_hook(pag_pre_hook, with_kwargs=True)
 
         def get_middle_block_modules(self):
                 """ Get all attention modules from the middle block 
@@ -469,10 +384,18 @@ class PAGExtensionScript(UIWrapper):
                 conds = make_condition_dict(cond_in, image_cond_in)
                 #setattr(conds, "pag_active", True)
                 
-                # make prediction
-                pag_x_out = params.inner_model(x_in, sigma_in, cond=conds)
+                # set pag_enable to True
+                for module in pag_params[0].crossattn_modules:
+                        setattr(module, 'pag_enable', True)
 
-                pass
+                # replace uncond with pag_x_out
+                pag_x_out = params.inner_model(x_in, sigma_in, cond=conds)
+                x_out[-uncond.shape[0]:] = pag_x_out[-uncond.shape[0]:]
+                params.x = x_out
+
+                # set pag_enable to False
+                for module in pag_params[0].crossattn_modules:
+                        setattr(module, 'pag_enable', False)
 
         def get_xyz_axis_options(self) -> dict:
                 xyz_grid = [x for x in scripts.scripts_data if x.script_class.__module__ == "xyz_grid.py"][0].module
