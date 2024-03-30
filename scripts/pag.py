@@ -8,7 +8,7 @@ from scripts.ui_wrapper import UIWrapper, arg
 from modules import script_callbacks
 from modules.hypernetworks import hypernetwork
 #import modules.sd_hijack_optimizations
-from modules.script_callbacks import CFGDenoiserParams
+from modules.script_callbacks import CFGDenoiserParams, CFGDenoisedParams
 from modules.prompt_parser import reconstruct_multicond_batch
 from modules.processing import StableDiffusionProcessing
 #from modules.shared import sd_model, opts
@@ -41,6 +41,13 @@ handles = []
 
 class PAGStateParams:
         def __init__(self):
+                self.x_in = None
+                self.text_cond = None
+                self.image_cond = None
+                self.sigma = None
+                self.text_uncond = None
+                self.make_condition_dict = None # callable lambda
+
                 self.attnreg: bool = False
                 self.ema_smoothing_factor: float = 2.0
                 self.step_end : int = 25
@@ -179,6 +186,7 @@ class PAGExtensionScript(UIWrapper):
 
                 # Use lambda to call the callback function with the parameters to avoid global variables
                 y = lambda params: self.on_cfg_denoiser_callback(params, pag_params)
+                z = lambda params: self.on_cfg_denoised_callback(params, pag_params)
                 un = lambda params: self.unhook_callbacks()
 
                 # Hook callbacks
@@ -187,6 +195,7 @@ class PAGExtensionScript(UIWrapper):
 
                 logger.debug('Hooked callbacks')
                 script_callbacks.on_cfg_denoiser(y)
+                script_callbacks.on_cfg_denoised(z)
                 script_callbacks.on_script_unloaded(self.unhook_callbacks)
 
         def postprocess_batch(self, p, *args, **kwargs):
@@ -425,30 +434,45 @@ class PAGExtensionScript(UIWrapper):
                         text_cond = params.text_cond['crossattn'] # SD XL
                 else:
                         text_cond = params.text_cond # SD 1.5
-                params.text_uncond = text_cond
 
-                # sp = pag_params[0]
-                # pag_scale = sp.pag_scale
-                # correction_strength = sp.correction_strength
-                # score_threshold = sp.correction_threshold
-                # width = sp.width
-                # height = sp.height
-                # ctnms_alpha = sp.ctnms_alpha
+                        pag_params[0].x_in = params.x.clone().detach()
+                        pag_params[0].text_cond = params.text_cond.clone().detach()
+                        pag_params[0].sigma = params.sigma.clone().detach()
+                        pag_params[0].image_cond = params.image_cond.clone().detach()
+                        pag_params[0].text_uncond = params.text_cond.clone().detach()
 
-                # step = params.sampling_step
-                # step_end = sp.step_end
+                # assign callable lambda to make_condition_dict
+                if shared.sd_model.model.conditioning_key == "crossattn-adm":
+                        pag_params[0].make_condition_dict = lambda c_crossattn, c_adm: {"c_crossattn": [c_crossattn], "c_adm": c_adm}
+                else:
+                        if isinstance(pag_params[0].text_uncond, dict):
+                                pag_params[0].make_condition_dict = lambda c_crossattn, c_concat: {**c_crossattn, "c_concat": [c_concat]}
+                        else:
+                                pag_params[0].make_condition_dict = lambda c_crossattn, c_concat: {"c_crossattn": [c_crossattn], "c_concat": [c_concat]}
 
-                # if step > step_end:
-                #         return
 
-                # for batch_idx, batch in enumerate(text_cond):
-                #         window = list(range(0, len(batch)))
-                #         f_bar = self.correction_by_similarities(batch, window, score_threshold, pag_scale, correction_strength)
-                #         if isinstance(params.text_cond, dict):
-                #                 params.text_cond['crossattn'][batch_idx] = f_bar
-                #         else:
-                #                 params.text_cond[batch_idx] = f_bar
-                # return
+        def on_cfg_denoised_callback(self, params: CFGDenoisedParams, pag_params: list[PAGStateParams]):
+                # original x_out
+                x_out = params.x
+
+                # passed from on_cfg_denoiser_callback
+                x_in = pag_params[0].x_in
+                tensor = pag_params[0].text_cond
+                uncond = pag_params[0].text_uncond
+                image_cond_in = pag_params[0].image_cond
+                sigma_in = pag_params[0].sigma
+                
+                # concatenate the conditions 
+                # "modules/sd_samplers_cfg_denoiser.py:237"
+                cond_in = catenate_conds([tensor, uncond])
+                make_condition_dict = pag_params[0].make_condition_dict
+                conds = make_condition_dict(cond_in, image_cond_in)
+                #setattr(conds, "pag_active", True)
+                
+                # make prediction
+                pag_x_out = params.inner_model(x_in, sigma_in, cond=conds)
+
+                pass
 
         def get_xyz_axis_options(self) -> dict:
                 xyz_grid = [x for x in scripts.scripts_data if x.script_class.__module__ == "xyz_grid.py"][0].module
@@ -462,6 +486,25 @@ class PAGExtensionScript(UIWrapper):
                         xyz_grid.AxisOption("[PAG] CTNMS EMA Smoothing Factor", float, pag_apply_field("pag_ema_factor")),
                 }
                 return extra_axis_options
+        
+
+# class PAGDenoiser(sd_samplers_cfg_denoiser.CFGDenoiser):
+#         @property
+#         def inner_model(self):
+#                 if self.model_wrap is None:
+#                         denoiser = k_diffusion.external.CompVisVDenoiser if shared.sd_model.parameterization == "v" else k_diffusion.external.CompVisDenoiser
+#                         self.model_wrap = denoiser(shared.sd_model, quantize=shared.opts.enable_quantization)
+# 
+#                 return self.model_wrap
+
+# Hijacks
+
+def catenate_conds(conds):
+    if not isinstance(conds[0], dict):
+        return torch.cat(conds)
+
+    return {key: torch.cat([x[key] for x in conds]) for key in conds[0].keys()}
+
 
 # XYZ Plot
 # Based on @mcmonkey4eva's XYZ Plot implementation here: https://github.com/mcmonkeyprojects/sd-dynamic-thresholding/blob/master/scripts/dynamic_thresholding.py
