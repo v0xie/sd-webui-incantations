@@ -5,7 +5,7 @@ import gradio as gr
 import scipy.stats as stats
 
 from scripts.ui_wrapper import UIWrapper, arg
-from modules import script_callbacks
+from modules import script_callbacks, patches
 from modules.hypernetworks import hypernetwork
 #import modules.sd_hijack_optimizations
 from modules.script_callbacks import CFGDenoiserParams, CFGDenoisedParams 
@@ -156,13 +156,6 @@ class PAGExtensionScript(UIWrapper):
                 p.extra_generation_params.update({
                         "PAG Active": active,
                         "PAG Scale": pag_scale,
-                        #"PAG AttnReg": attnreg,
-                        #"PAG Tokens": tokens,
-                        # "PAG CbS Score Threshold": correction_threshold,
-                        # "PAG CbS Correction Strength": correction_strength,
-                        # "PAG CTNMS Alpha": ctnms_alpha,
-                        # "PAG Step End": step_end,
-                        # "PAG EMA Smoothing Factor": ema_factor,
                 })
 
                 self.create_hook(p, active, attnreg, pag_scale, ctnms_alpha, correction_threshold, correction_strength, tokens, ema_factor, step_end, p.width, p.height)
@@ -237,7 +230,11 @@ class PAGExtensionScript(UIWrapper):
                 if denoiser is None:
                         return
 
-                #pag_params = getattr(p, "pag_params", None)
+                pag_params = getattr(p, "pag_params", None)
+                if pag_params:
+                       delattr(p, "pag_params")
+                       pag_params = None
+
                 self.unhook_callbacks(denoiser)
                 active = getattr(p, "pag_active", active)
                 if active is False:
@@ -438,32 +435,26 @@ class PAGExtensionScript(UIWrapper):
         
         def cfg_after_cfg_callback(self, params, pag_params):
                 pass
-                #self.unpatch_combine_denoised(pag_params)
 
         def patch_combine_denoised(self, pag_params):
-                # pag_scale = pag_params[0].pag_scale
-                # pag_x_out = pag_params[0].pag_x_out
-                if hasattr(pag_params[0].denoiser, 'original_combine_denoised'):
-                        self.unpatch_combine_denoised(pag_params[0].denoiser)
-                        #pag_params[0].pag_scale = pag_scale
-                        #pag_params[0].pag_x_out = pag_x_out
-                #if not hasattr(pag_params[0].denoiser, 'pag_wrapped'):
-                original_func = pag_params[0].denoiser.combine_denoised
-                        #setattr(pag_params[0].denoiser, 'pag_wrapped', True)
-                setattr(pag_params[0].denoiser, 'original_combine_denoised', original_func)
-                setattr(pag_params[0].denoiser, 'combine_denoised', wrap_combined_denoised_with_extra_cond(pag_params))
+                denoiser = pag_params[0].denoiser
+                if hasattr(denoiser, 'original_combine_denoised'):
+                        self.unpatch_combine_denoised(denoiser)
+                original_func = denoiser.combine_denoised
+                setattr(denoiser, 'original_combine_denoised', original_func)
+                setattr(denoiser, 'combine_denoised', wrap_combined_denoised_with_extra_cond(pag_params))
                 print("Patched combine_denoised")
         
         def unpatch_combine_denoised(self, denoiser):
                 if hasattr(denoiser, 'original_combine_denoised'):
+                        repl_func = denoiser.combine_denoised
                         original_func = denoiser.original_combine_denoised
                         setattr(denoiser, 'combine_denoised', original_func)
+                        delattr(denoiser, 'original_combine_denoised')
+                        del repl_func
                 else:
                        setattr(denoiser, 'combine_denoised', CFGDenoiser.combine_denoised)
                 print("Unpatched combine_denoised")
-
-        # def on_cfg_denoised_callback(self, params, pag_params: list[PAGStateParams]):
-        #         denoiser = pag_params[0].denoiser
 
         def get_xyz_axis_options(self) -> dict:
                 xyz_grid = [x for x in scripts.scripts_data if x.script_class.__module__ == "xyz_grid.py"][0].module
@@ -471,13 +462,8 @@ class PAGExtensionScript(UIWrapper):
                         xyz_grid.AxisOption("[PAG] Active", str, pag_apply_override('pag_active', boolean=True), choices=xyz_grid.boolean_choice(reverse=True)),
                         xyz_grid.AxisOption("[PAG] PAG Scale", float, pag_apply_field("pag_scale")),
                         #xyz_grid.AxisOption("[PAG] ctnms_alpha", float, pag_apply_field("pag_ctnms_alpha")),
-                        #xyz_grid.AxisOption("[PAG] Step End", float, pag_apply_field("pag_step_end")),
-                        #xyz_grid.AxisOption("[PAG] Correction Threshold", float, pag_apply_field("pag_correction_threshold")),
-                        #xyz_grid.AxisOption("[PAG] Correction Strength", float, pag_apply_field("pag_correction_strength")),
-                        #xyz_grid.AxisOption("[PAG] CTNMS EMA Smoothing Factor", float, pag_apply_field("pag_ema_factor")),
                 }
                 return extra_axis_options
-
 
 def wrap_combined_denoised_with_extra_cond(pag_params):
         def combine_denoised_wrapped(x_out, conds_list, uncond, cond_scale):
@@ -489,6 +475,8 @@ def wrap_combined_denoised_with_extra_cond(pag_params):
                         for cond_index, weight in conds:
                                 denoised[i] += (x_out[cond_index] - denoised_uncond[i]) * (weight * cond_scale)
                                 denoised[i] += (x_out[cond_index] - denoised_uncond_pag[i]) * (weight * pag_params[0].pag_scale)
+                print(f"wrapped combine_denoised - pag_scale:{pag_params[0].pag_scale}")
+                del pag_params[0].pag_x_out
                 return denoised
         return combine_denoised_wrapped 
 
