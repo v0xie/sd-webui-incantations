@@ -45,7 +45,7 @@ class PAGStateParams:
                 self.ema_smoothing_factor: float = 2.0
                 self.step_end : int = 25
                 self.tokens: str = "" # [0, 20]
-                self.window_size_period: int = 10 # [0, 20]
+                self.pag_scale: int = 10 # [0, 20]
                 self.ctnms_alpha: float = 0.05 # [0., 1.] if abs value of difference between uncodition and concept-conditioned is less than this, then zero out the concept-conditioned values less than this
                 self.correction_threshold: float = 0.5 # [0., 1.]
                 self.correction_strength: float = 0.25 # [0., 1.) # larger bm is less volatile changes in momentum
@@ -71,58 +71,59 @@ class PAGExtensionScript(UIWrapper):
         def setup_ui(self, is_img2img) -> list:
                 with gr.Accordion('PAG', open=False):
                         active = gr.Checkbox(value=False, default=False, label="Active", elem_id='pag_active')
+                        with gr.Row():
+                                pag_scale = gr.Slider(value = 1.0, minimum = 0, maximum = 20.0, step = 0.5, label="PAG Scale", elem_id = 'pag_scale', info="")
                         step_end = gr.Slider(value=25, minimum=0, maximum=150, default=1, step=1, label="Step End", elem_id='pag_step_end')
                         with gr.Row():
                                 tokens = gr.Textbox(visible=False, value="", label="Tokens", elem_id='pag_tokens', info="Comma separated list of tokens to condition on")
                         with gr.Row():
-                                window_size = gr.Slider(value = 3, minimum = 0, maximum = 100, step = 1, label="Correction by Similarities Window Size", elem_id = 'pag_window_size', info="Exclude contribution of tokens further than this from the current token")
-                                correction_threshold = gr.Slider(value = 0.0, minimum = 0., maximum = 1.0, step = 0.001, label="CbS Score Threshold", elem_id = 'pag_correction_threshold', info="Filter dimensions with similarity below this threshold")
-                                correction_strength = gr.Slider(value = 0.0, minimum = 0.0, maximum = 0.999, step = 0.01, label="CbS Correction Strength", elem_id = 'pag_correction_strength', info="The strength of the correction, default 0.1")
+                                correction_threshold = gr.Slider(visible=False, value = 0.0, minimum = 0., maximum = 1.0, step = 0.001, label="CbS Score Threshold", elem_id = 'pag_correction_threshold', info="Filter dimensions with similarity below this threshold")
+                                correction_strength = gr.Slider(visible=False, value = 0.0, minimum = 0.0, maximum = 0.999, step = 0.01, label="CbS Correction Strength", elem_id = 'pag_correction_strength', info="The strength of the correction, default 0.1")
                         with gr.Row():
                                 attnreg = gr.Checkbox(visible=False, value=False, default=False, label="Use Attention Regulation", elem_id='pag_use_attnreg')
-                                ctnms_alpha = gr.Slider(value = 0.1, minimum = 0.0, maximum = 1.0, step = 0.01, label="Alpha for Cross-Token Non-Maximum Suppression", elem_id = 'pag_ctnms_alpha', info="Contribution of the suppressed attention map, default 0.1")
-                                ema_factor = gr.Slider(value=0.0, minimum=0.0, maximum=4.0, default=2.0, label="EMA Smoothing Factor", elem_id='pag_ema_factor')
+                                ctnms_alpha = gr.Slider(visible=False, value = 0.1, minimum = 0.0, maximum = 1.0, step = 0.01, label="Alpha for Cross-Token Non-Maximum Suppression", elem_id = 'pag_ctnms_alpha', info="Contribution of the suppressed attention map, default 0.1")
+                                ema_factor = gr.Slider(visible=False, value=0.0, minimum=0.0, maximum=4.0, default=2.0, label="EMA Smoothing Factor", elem_id='pag_ema_factor')
                 active.do_not_save_to_config = True
+                pag_scale.do_not_save_to_config = True
                 attnreg.do_not_save_to_config = True
                 ema_factor.do_not_save_to_config = True
                 step_end.do_not_save_to_config = True
-                window_size.do_not_save_to_config = True
                 ctnms_alpha.do_not_save_to_config = True
                 correction_threshold.do_not_save_to_config = True
                 correction_strength.do_not_save_to_config = True
                 self.infotext_fields = [
                         (active, lambda d: gr.Checkbox.update(value='PAG Active' in d)),
+                        (pag_scale, 'PAG Scale'),
                         #(attnreg, lambda d: gr.Checkbox.update(value='PAG AttnReg' in d)),
-                        (step_end, 'PAG Step End'),
-                        (window_size, 'PAG Window Size'),
-                        (ctnms_alpha, 'PAG CTNMS Alpha'),
-                        (correction_threshold, 'PAG CbS Score Threshold'),
-                        (correction_strength, 'PAG CbS Correction Strength'),
-                        (ema_factor, 'PAG CTNMS EMA Smoothing Factor'),
+                        # (step_end, 'PAG Step End'),
+                        # (ctnms_alpha, 'PAG CTNMS Alpha'),
+                        # (correction_threshold, 'PAG CbS Score Threshold'),
+                        # (correction_strength, 'PAG CbS Correction Strength'),
+                        # (ema_factor, 'PAG CTNMS EMA Smoothing Factor'),
                 ]
                 self.paste_field_names = [
                         'pag_active',
-                        'pag_attnreg',
-                        'pag_window_size',
-                        'pag_ctnms_alpha',
-                        'pag_correction_threshold',
-                        'pag_correction_strength'
-                        'pag_ema_factor',
-                        'pag_step_end'
+                        'pag_scale',
+                        #'pag_attnreg',
+                        #'pag_ctnms_alpha',
+                        #'pag_correction_threshold',
+                        #'pag_correction_strength'
+                        #'pag_ema_factor',
+                        #'pag_step_end'
                 ]
-                return [active, attnreg, window_size, ctnms_alpha, correction_threshold, correction_strength, tokens, ema_factor, step_end]
+                return [active, attnreg, pag_scale, ctnms_alpha, correction_threshold, correction_strength, tokens, ema_factor, step_end]
 
         def process_batch(self, p: StableDiffusionProcessing, *args, **kwargs):
                self.pag_process_batch(p, *args, **kwargs)
 
-        def pag_process_batch(self, p: StableDiffusionProcessing, active, attnreg, window_size, ctnms_alpha, correction_threshold, correction_strength, tokens, ema_factor, step_end, *args, **kwargs):
+        def pag_process_batch(self, p: StableDiffusionProcessing, active, attnreg, pag_scale, ctnms_alpha, correction_threshold, correction_strength, tokens, ema_factor, step_end, *args, **kwargs):
                 active = getattr(p, "pag_active", active)
                 use_attnreg = getattr(p, "pag_attnreg", attnreg)
                 ema_factor = getattr(p, "pag_ema_factor", ema_factor)
                 step_end = getattr(p, "pag_step_end", step_end)
                 if active is False:
                         return
-                window_size = getattr(p, "pag_window_size", window_size)
+                pag_scale = getattr(p, "pag_scale", pag_scale)
                 ctnms_alpha = getattr(p, "pag_ctnms_alpha", ctnms_alpha)
                 correction_threshold = getattr(p, "pag_correction_threshold", correction_threshold)
                 correction_strength = getattr(p, "pag_correction_strength", correction_strength)
@@ -131,15 +132,15 @@ class PAGExtensionScript(UIWrapper):
                         "PAG Active": active,
                         #"PAG AttnReg": attnreg,
                         #"PAG Tokens": tokens,
-                        "PAG window_size Period": window_size,
-                        "PAG CbS Score Threshold": correction_threshold,
-                        "PAG CbS Correction Strength": correction_strength,
-                        "PAG CTNMS Alpha": ctnms_alpha,
-                        "PAG Step End": step_end,
-                        "PAG EMA Smoothing Factor": ema_factor,
+                        "PAG Scale": pag_scale,
+                        # "PAG CbS Score Threshold": correction_threshold,
+                        # "PAG CbS Correction Strength": correction_strength,
+                        # "PAG CTNMS Alpha": ctnms_alpha,
+                        # "PAG Step End": step_end,
+                        # "PAG EMA Smoothing Factor": ema_factor,
                 })
 
-                self.create_hook(p, active, attnreg, window_size, ctnms_alpha, correction_threshold, correction_strength, tokens, ema_factor, step_end, p.width, p.height)
+                self.create_hook(p, active, attnreg, pag_scale, ctnms_alpha, correction_threshold, correction_strength, tokens, ema_factor, step_end, p.width, p.height)
 
         def parse_concept_prompt(self, prompt:str) -> list[str]:
                 """
@@ -157,7 +158,7 @@ class PAGExtensionScript(UIWrapper):
                         return []
                 return [x.strip() for x in prompt.split(",")]
 
-        def create_hook(self, p, active, attnreg, window_size, ctnms_alpha, correction_threshold, correction_strength, tokens, ema_factor, step_end, width, height, *args, **kwargs):
+        def create_hook(self, p, active, attnreg, pag_scale, ctnms_alpha, correction_threshold, correction_strength, tokens, ema_factor, step_end, width, height, *args, **kwargs):
                 # Create a list of parameters for each concept
                 pag_params = []
 
@@ -166,7 +167,7 @@ class PAGExtensionScript(UIWrapper):
                 params.attnreg = attnreg 
                 params.ema_smoothing_factor = ema_factor 
                 params.step_end = step_end 
-                params.window_size_period = window_size
+                params.pag_scale = pag_scale
                 params.ctnms_alpha = ctnms_alpha
                 params.correction_threshold = correction_threshold
                 params.correction_strength = correction_strength
@@ -181,8 +182,8 @@ class PAGExtensionScript(UIWrapper):
                 un = lambda params: self.unhook_callbacks()
 
                 # Hook callbacks
-                if ctnms_alpha > 0:
-                        self.ready_hijack_forward(ctnms_alpha, width, height, ema_factor, step_end)
+                #if ctnms_alpha > 0:
+                self.ready_hijack_forward(ctnms_alpha, width, height, ema_factor, step_end)
 
                 logger.debug('Hooked callbacks')
                 script_callbacks.on_cfg_denoiser(y)
@@ -295,18 +296,27 @@ class PAGExtensionScript(UIWrapper):
                 Only modifies the output of the cross attention modules that get context (i.e. text embedding)
                 """
                 cross_attn_modules = self.get_cross_attn_modules()
+
+                # Get all the qv modules
+                qv_modules = []
+                crossattn_modules = [m for m in cross_attn_modules if 'CrossAttention' in m.__class__.__name__]
+                # qv_modules.extend([m for m in cross_attn_modules if 'to_q' in m.network_layer_name])
+                # qv_modules.extend([m for m in cross_attn_modules if 'to_k' in m.network_layer_name])
+                to_q: torch.nn.Module = crossattn_modules[0].to_q
+                to_k: torch.nn.Module = crossattn_modules[0].to_k
+                to_v: torch.nn.Module = crossattn_modules[0].to_v
+
+
+
                 # add field for last_attn_map
-                for module in cross_attn_modules:
+                for module in crossattn_modules:
                         self.add_field_cross_attn_modules(module, 'pag_last_attn_map', None)
                         self.add_field_cross_attn_modules(module, 'pag_step', torch.tensor([0]).to(device=shared.device))
                         self.add_field_cross_attn_modules(module, 'pag_step_end', torch.tensor([step_end]).to(device=shared.device))
                         self.add_field_cross_attn_modules(module, 'pag_ema', None)
                         self.add_field_cross_attn_modules(module, 'pag_ema_factor', torch.tensor([ema_factor]).to(device=shared.device, dtype=torch.float16))
 
-                def cross_token_non_maximum_suppression(module, input, kwargs, output):
-                        context = kwargs.get('context', None)
-                        if context is None:
-                                return
+                def pag_pre_hook(module, input, kwargs, output):
 
                         current_step = module.pag_step
                         end_step = module.pag_step_end
@@ -379,14 +389,26 @@ class PAGExtensionScript(UIWrapper):
                         return out_tensor
                 # Hook
                 for module in cross_attn_modules:
-                        handle = module.register_forward_hook(cross_token_non_maximum_suppression, with_kwargs=True)
+                        handle = module.register_forward_hook(pag_pre_hook, with_kwargs=True)
 
-        def get_cross_attn_modules(self):
-                """ Get all cross attention modules """
+        def get_middle_block_modules(self):
+                """ Get all attention modules from the middle block 
+                Refere to page 22 of the PAG paper, Appendix A.2
+                
+                """
                 m = shared.sd_model
                 nlm = m.network_layer_mapping
-                cross_attn_modules = [m for m in nlm.values() if 'CrossAttention' in m.__class__.__name__]
-                return cross_attn_modules
+                middle_block_modules = [m for m in nlm.values() if 'middle_block_1_transformer_blocks_0_attn1' in m.network_layer_name and 'CrossAttention' in m.__class__.__name__]
+                return middle_block_modules
+
+        def get_cross_attn_modules(self):
+                """ Get all croos attention modules """
+                return self.get_middle_block_modules()
+                # m = shared.sd_model
+                # nlm = m.network_layer_mapping
+                # cross_attn_modules = [m for m in nlm.values() if 'Attention' in m.__class__.__name__]
+                # cross_attn_modules = [m for m in nlm.values() if 'attn' in m.__class__.__name__]
+                # return cross_attn_modules
 
         def add_field_cross_attn_modules(self, module, field, value):
                 """ Add a field to a module if it doesn't exist """
@@ -403,29 +425,30 @@ class PAGExtensionScript(UIWrapper):
                         text_cond = params.text_cond['crossattn'] # SD XL
                 else:
                         text_cond = params.text_cond # SD 1.5
+                params.text_uncond = text_cond
 
-                sp = pag_params[0]
-                window_size = sp.window_size_period
-                correction_strength = sp.correction_strength
-                score_threshold = sp.correction_threshold
-                width = sp.width
-                height = sp.height
-                ctnms_alpha = sp.ctnms_alpha
+                # sp = pag_params[0]
+                # pag_scale = sp.pag_scale
+                # correction_strength = sp.correction_strength
+                # score_threshold = sp.correction_threshold
+                # width = sp.width
+                # height = sp.height
+                # ctnms_alpha = sp.ctnms_alpha
 
-                step = params.sampling_step
-                step_end = sp.step_end
+                # step = params.sampling_step
+                # step_end = sp.step_end
 
-                if step > step_end:
-                        return
+                # if step > step_end:
+                #         return
 
-                for batch_idx, batch in enumerate(text_cond):
-                        window = list(range(0, len(batch)))
-                        f_bar = self.correction_by_similarities(batch, window, score_threshold, window_size, correction_strength)
-                        if isinstance(params.text_cond, dict):
-                                params.text_cond['crossattn'][batch_idx] = f_bar
-                        else:
-                                params.text_cond[batch_idx] = f_bar
-                return
+                # for batch_idx, batch in enumerate(text_cond):
+                #         window = list(range(0, len(batch)))
+                #         f_bar = self.correction_by_similarities(batch, window, score_threshold, pag_scale, correction_strength)
+                #         if isinstance(params.text_cond, dict):
+                #                 params.text_cond['crossattn'][batch_idx] = f_bar
+                #         else:
+                #                 params.text_cond[batch_idx] = f_bar
+                # return
 
         def get_xyz_axis_options(self) -> dict:
                 xyz_grid = [x for x in scripts.scripts_data if x.script_class.__module__ == "xyz_grid.py"][0].module
@@ -433,7 +456,7 @@ class PAGExtensionScript(UIWrapper):
                         xyz_grid.AxisOption("[PAG] Active", str, pag_apply_override('pag_active', boolean=True), choices=xyz_grid.boolean_choice(reverse=True)),
                         xyz_grid.AxisOption("[PAG] ctnms_alpha", float, pag_apply_field("pag_ctnms_alpha")),
                         xyz_grid.AxisOption("[PAG] Step End", float, pag_apply_field("pag_step_end")),
-                        xyz_grid.AxisOption("[PAG] Window Size", int, pag_apply_field("pag_window_size")),
+                        xyz_grid.AxisOption("[PAG] Window Size", int, pag_apply_field("pag_scale")),
                         xyz_grid.AxisOption("[PAG] Correction Threshold", float, pag_apply_field("pag_correction_threshold")),
                         xyz_grid.AxisOption("[PAG] Correction Strength", float, pag_apply_field("pag_correction_strength")),
                         xyz_grid.AxisOption("[PAG] CTNMS EMA Smoothing Factor", float, pag_apply_field("pag_ema_factor")),
