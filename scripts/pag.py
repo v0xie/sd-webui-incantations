@@ -424,13 +424,12 @@ def combine_denoised_pass_conds_list(*args, **kwargs):
                 logger.error("new_params is None")
                 return original_func(*args, **kwargs)
 
-        # scale = kwargs.get("scale", None)
-        # if scale is None:
-        #         logger.error("pag_scale is None")
-        #         return original_func(*args, **kwargs)
-        # else:
-        #         scale = scale.pag_scale
-        #         pass
+        scale = global_scale
+        if scale is None:
+                logger.error("pag_scale is None")
+                return original_func(*args, **kwargs)
+        #elif scale == 0:
+        #        return original_func(*args, **kwargs)
         
         def new_combine_denoised(x_out, conds_list, uncond, cond_scale):
                 denoised_uncond = x_out[-uncond.shape[0]:]
