@@ -8,7 +8,7 @@ from scripts.ui_wrapper import UIWrapper, arg
 from modules import script_callbacks, patches
 from modules.hypernetworks import hypernetwork
 #import modules.sd_hijack_optimizations
-from modules.script_callbacks import CFGDenoiserParams, CFGDenoisedParams 
+from modules.script_callbacks import CFGDenoiserParams, CFGDenoisedParams, AfterCFGCallbackParams
 from modules.prompt_parser import reconstruct_multicond_batch
 from modules.processing import StableDiffusionProcessing
 #from modules.shared import sd_model, opts
@@ -74,10 +74,12 @@ class PAGStateParams:
                 self.to_v_modules = []
                 self.to_out_modules = []
                 self.guidance_scale: int = -1 # CFG
-                self.pag_x_out: None
-                self.batch_size : int = -1      # Batch size
-                self.denoiser: None # CFGDenoiser
+                self.pag_x_out = None
+                self.batch_size = -1      # Batch size
+                self.denoiser = None # CFGDenoiser
                 self.patched_combine_denoised = None
+                self.conds_list = None
+                self.uncond_shape_0 = None
 
 
 class PAGExtensionScript(UIWrapper):
@@ -114,10 +116,13 @@ class PAGExtensionScript(UIWrapper):
         def process_batch(self, p: StableDiffusionProcessing, *args, **kwargs):
                self.pag_process_batch(p, *args, **kwargs)
 
-        def pag_process_batch(self, p: StableDiffusionProcessing, active, attnreg, pag_scale, ctnms_alpha, correction_threshold, correction_strength, tokens, ema_factor, step_end, *args, **kwargs):
+        def pag_process_batch(self, p: StableDiffusionProcessing, active, pag_scale, *args, **kwargs):
+                self.remove_all_hooks()
+
                 active = getattr(p, "pag_active", active)
                 if active is False:
                         return
+
                 pag_scale = getattr(p, "pag_scale", pag_scale)
                 p.extra_generation_params.update({
                         "PAG Active": active,
@@ -131,9 +136,12 @@ class PAGExtensionScript(UIWrapper):
 
                 #for _, strength in concept_conds:
                 params = PAGStateParams()
-                params.guidance_scale = p.cfg_scale
                 params.pag_scale = pag_scale
+                params.guidance_scale = p.cfg_scale
                 params.batch_size = p.batch_size
+                params.denoiser = None
+
+                setattr(p, "pag_scale", pag_scale)
 
                 # Get all the qv modules
                 cross_attn_modules = self.get_cross_attn_modules()
@@ -141,16 +149,18 @@ class PAGExtensionScript(UIWrapper):
                 pag_params.append(params)
 
                 # Use lambda to call the callback function with the parameters to avoid global variables
-                y = lambda params: self.on_cfg_denoiser_callback(params, pag_params, ImmutableFloat(pag_scale))
-                z = lambda params: self.on_cfg_denoised_callback(params, pag_params)
-                un = lambda pag_params: self.unhook_callbacks(None)
+                cfg_denoise_lambda = lambda x: self.on_cfg_denoiser_callback(x, params, p)
+                cfg_denoised_lambda = lambda x: self.on_cfg_denoised_callback(x, params)
+                after_cfg_lambda = lambda x: self.cfg_after_cfg_callback(x, params)
+                unhook_lambda = lambda x: self.unhook_callbacks(params)
 
                 self.ready_hijack_forward(params.crossattn_modules, pag_scale)
 
                 logger.debug('Hooked callbacks')
-                script_callbacks.on_cfg_denoiser(y)
-                script_callbacks.on_cfg_denoised(z)
-                script_callbacks.on_script_unloaded(un)
+                script_callbacks.on_cfg_denoiser(cfg_denoise_lambda)
+                script_callbacks.on_cfg_denoised(cfg_denoised_lambda)
+                script_callbacks.on_cfg_after_cfg(after_cfg_lambda)
+                script_callbacks.on_script_unloaded(unhook_lambda)
 
         def postprocess_batch(self, p, *args, **kwargs):
                 self.pag_postprocess_batch(p, *args, **kwargs)
@@ -158,31 +168,26 @@ class PAGExtensionScript(UIWrapper):
         def pag_postprocess_batch(self, p, active, *args, **kwargs):
                 sampler = getattr(p, "sampler", None)
                 if sampler is None:
+                        logger.error("Sampler is None")
                         return
-                denoiser = getattr(sampler, "model_wrap_cfg", None)
-                if denoiser is None:
-                        return
+                
+                # denoiser = getattr(sampler, "model_wrap_cfg", None)
+                # if denoiser is None:
+                #         return
 
-                pag_params = getattr(p, "pag_params", None)
-                if pag_params:
-                       delattr(p, "pag_params")
-                       pag_params = None
+                # pag_params = getattr(p, "pag_params", None)
+                # if pag_params:
+                #        delattr(p, "pag_params")
+                #        pag_params = None
 
-                self.unhook_callbacks(denoiser)
+                # self.unhook_callbacks()
+                script_callbacks.remove_current_script_callbacks()
+                logger.debug('Removed script callbacks')
                 active = getattr(p, "pag_active", active)
                 if active is False:
                         return
 
-        def unhook_callbacks(self, denoiser=None):
-                global handles
-                try:
-                       patches.undo(__name__, denoiser, "combine_denoised")
-                except KeyError:
-                        pass
-                except RuntimeError:
-                        print("Error unhooking combine_denoised")
-                        pass
-                logger.debug('Unhooked callbacks')
+        def remove_all_hooks(self):
                 cross_attn_modules = self.get_cross_attn_modules()
                 for module in cross_attn_modules:
                         to_v = getattr(module, 'to_v', None)
@@ -194,18 +199,42 @@ class PAGExtensionScript(UIWrapper):
                         self.remove_field_cross_attn_modules(to_out, 'pag_parent_module')
                         _remove_all_forward_hooks(module, 'pag_pre_hook')
                         _remove_all_forward_hooks(to_v, 'to_v_pre_hook')
-                if denoiser:
+
+        def unhook_callbacks(self, pag_params: PAGStateParams):
+
+                global handles
+
+                # cross_attn_modules = self.get_cross_attn_modules()
+                # for module in cross_attn_modules:
+                #         to_v = getattr(module, 'to_v', None)
+                #         to_out = getattr(module, 'to_out', None)
+                #         self.remove_field_cross_attn_modules(module, 'pag_enable')
+                #         self.remove_field_cross_attn_modules(module, 'pag_scale')
+                #         self.remove_field_cross_attn_modules(module, 'pag_last_to_v')
+                #         self.remove_field_cross_attn_modules(to_v, 'pag_parent_module')
+                #         self.remove_field_cross_attn_modules(to_out, 'pag_parent_module')
+                #         _remove_all_forward_hooks(module, 'pag_pre_hook')
+                #         _remove_all_forward_hooks(to_v, 'to_v_pre_hook')
+
+                if pag_params is None:
+                       logger.error("PAG params is None")
+                       return
+
+                if pag_params.denoiser is not None:
+                        denoiser = pag_params.denoiser
+                        setattr(denoiser, 'combine_denoised_patched', False)
                         try:
                                 patches.undo(__name__, denoiser, "combine_denoised")
-                                print("Unpatched combine_denoised")
                         except KeyError:
+                                logger.exception("KeyError unhooking combine_denoised")
                                 pass
                         except RuntimeError:
+                                logger.exception("RuntimeError unhooking combine_denoised")
                                 pass
-                                #self.unpatch_combine_denoised(denoiser)
-                script_callbacks.remove_current_script_callbacks()
+                        pag_params.denoiser = None
 
-        def ready_hijack_forward(self, crossattn_modules, pag_scale, width, height, ema_factor, step_end):
+
+        def ready_hijack_forward(self, crossattn_modules, pag_scale):
                 """ Create hooks in the forward pass of the cross attention modules
                 Copies the output of the to_v module to the parent module
                 Then applies the PAG perturbation to the output of the cross attention module (multiplication by identity)
@@ -278,39 +307,43 @@ class PAGExtensionScript(UIWrapper):
                 if hasattr(module, field):
                         delattr(module, field)
 
-        def on_cfg_denoiser_callback(self, params: CFGDenoiserParams, pag_params: list[PAGStateParams], immutable_pag_scale):
-                pag_params[0].denoiser = params.denoiser
-                try:
-                       patches.undo(__name__, params.denoiser, "combine_denoised")
-                       pag_params[0].patched_combine_denoised = None
-                except KeyError:
-                        pass
-                except RuntimeError:
-                        pass
+        def on_cfg_denoiser_callback(self, params: CFGDenoiserParams, pag_params: PAGStateParams, p: StableDiffusionProcessing):
+                self.unhook_callbacks(pag_params)
 
-                setattr(pag_params[0], "patched_combine_denoised", None)
+                if pag_params.denoiser is None:
+                        pag_params.denoiser = params.denoiser
+                # patch combine_denoised
+                if getattr(params.denoiser, 'combine_denoised_patched', False) is False:
+                        try:
+                                setattr(params.denoiser, 'combine_denoised_original', params.denoiser.combine_denoised)
+                                # create patch that references the original function
+                                pass_conds_func = lambda *args, **kwargs: combine_denoised_pass_conds_list(
+                                        *args,
+                                        **kwargs,
+                                        original_func = params.denoiser.combine_denoised_original,
+                                        pag_params = pag_params,
+                                        denoiser = params.denoiser)
+                                pag_params.patched_combine_denoised = patches.patch(__name__, params.denoiser, "combine_denoised", pass_conds_func)
 
-                def wrap_combined_denoised_with_extra_cond(new_params):
-                        def combine_denoised_wrapped(x_out, conds_list, uncond, cond_scale):
-                                denoised_uncond = x_out[-uncond.shape[0]:]
-                                denoised_uncond_pag = new_params[0].pag_x_out[-uncond.shape[0]:]
-                                denoised = torch.clone(denoised_uncond)
+                                setattr(params.denoiser, 'combine_denoised_patched', True)
+                                setattr(params.denoiser, 'combine_denoised_original', patches.original(__name__, params.denoiser, "combine_denoised"))
+                        except KeyError:
+                                logger.exception("KeyError patching combine_denoised")
+                                pass
+                        except RuntimeError:
+                                logger.exception("RuntimeError patching combine_denoised")
+                                pass
+                logger.debug('Patched combine_denoised')
 
-                                for i, conds in enumerate(conds_list):
-                                        for cond_index, weight in conds:
-                                                denoised[i] += (x_out[cond_index] - denoised_uncond[i]) * (weight * cond_scale)
-                                                denoised[i] += (x_out[cond_index] - denoised_uncond_pag[i]) * (weight * float(immutable_pag_scale))
-                                print(f"wrapped combine_denoised - pag_scale:{float(immutable_pag_scale)}")
-                                del new_params[0].pag_x_out
-                                return denoised
-                        return combine_denoised_wrapped 
+                setattr(pag_params.denoiser, "pag_scale", pag_params.pag_scale)
+                logger.debug(f'Set PAG scale in denoiser to {pag_params.pag_scale}')
 
-                pag_params[0].patched_combine_denoised = patches.patch(
-                        key = __name__,
-                        obj =  params.denoiser,
-                        field = "combine_denoised", 
-                        replacement = wrap_combined_denoised_with_extra_cond(pag_params)
-                )
+                # pag_params.patched_combine_denoised = patches.patch(
+                #         key = __name__,
+                #         obj =  params.denoiser,
+                #         field = "combine_denoised", 
+                #         replacement = wrap_combined_denoised_with_extra_cond(pag_params)
+                # )
 
                 # self.unpatch_combine_denoised(params.denoiser)
 
@@ -319,24 +352,24 @@ class PAGExtensionScript(UIWrapper):
                 else:
                         text_cond = params.text_cond # SD 1.5
 
-                        pag_params[0].x_in = params.x.clone().detach()
-                        pag_params[0].text_cond = params.text_cond.clone().detach()
-                        pag_params[0].sigma = params.sigma.clone().detach()
-                        pag_params[0].image_cond = params.image_cond.clone().detach()
-                        pag_params[0].text_uncond = params.text_cond.clone().detach()
-                        pag_params[0].denoiser = params.denoiser
+                        pag_params.x_in = params.x.clone().detach()
+                        pag_params.text_cond = params.text_cond.clone().detach()
+                        pag_params.sigma = params.sigma.clone().detach()
+                        pag_params.image_cond = params.image_cond.clone().detach()
+                        pag_params.text_uncond = params.text_cond.clone().detach()
+                        pag_params.denoiser = params.denoiser
 
                 # assign callable lambda to make_condition_dict
                 if shared.sd_model.model.conditioning_key == "crossattn-adm":
-                        pag_params[0].make_condition_dict = lambda c_crossattn, c_adm: {"c_crossattn": [c_crossattn], "c_adm": c_adm}
+                        pag_params.make_condition_dict = lambda c_crossattn, c_adm: {"c_crossattn": [c_crossattn], "c_adm": c_adm}
                 else:
-                        if isinstance(pag_params[0].text_uncond, dict):
-                                pag_params[0].make_condition_dict = lambda c_crossattn, c_concat: {**c_crossattn, "c_concat": [c_concat]}
+                        if isinstance(pag_params.text_uncond, dict):
+                                pag_params.make_condition_dict = lambda c_crossattn, c_concat: {**c_crossattn, "c_concat": [c_concat]}
                         else:
-                                pag_params[0].make_condition_dict = lambda c_crossattn, c_concat: {"c_crossattn": [c_crossattn], "c_concat": [c_concat]}
+                                pag_params.make_condition_dict = lambda c_crossattn, c_concat: {"c_crossattn": [c_crossattn], "c_concat": [c_concat]}
 
 
-        def on_cfg_denoised_callback(self, params: CFGDenoisedParams, pag_params: list[PAGStateParams]):
+        def on_cfg_denoised_callback(self, params: CFGDenoisedParams, pag_params: PAGStateParams):
                 """ Callback function for the CFGDenoisedParams 
                 This is where we combine CFG and PAG
                 Refer to pg.22 A.2 of the PAG paper for how CFG and PAG combine
@@ -367,47 +400,66 @@ class PAGExtensionScript(UIWrapper):
                 x_out = params.x
 
                 # passed from on_cfg_denoiser_callback
-                x_in = pag_params[0].x_in
-                tensor = pag_params[0].text_cond
-                uncond = pag_params[0].text_uncond
-                image_cond_in = pag_params[0].image_cond
-                sigma_in = pag_params[0].sigma
+                x_in = pag_params.x_in
+                tensor = pag_params.text_cond
+                uncond = pag_params.text_uncond
+                image_cond_in = pag_params.image_cond
+                sigma_in = pag_params.sigma
                 
                 # concatenate the conditions 
                 # "modules/sd_samplers_cfg_denoiser.py:237"
                 cond_in = catenate_conds([tensor, uncond])
-                make_condition_dict = pag_params[0].make_condition_dict
+                make_condition_dict = pag_params.make_condition_dict
                 conds = make_condition_dict(cond_in, image_cond_in)
                 #setattr(conds, "pag_active", True)
                 
                 # set pag_enable to True
-                for module in pag_params[0].crossattn_modules:
+                for module in pag_params.crossattn_modules:
                         setattr(module, 'pag_enable', True)
 
                 # get the PAG guidance
                 pag_x_out = params.inner_model(x_in, sigma_in, cond=conds)
 
                 # combine CFG and PAG
-                pag_scale = pag_params[0].pag_scale
-                cfg_scale = pag_params[0].guidance_scale
+                pag_scale = pag_params.pag_scale
+                cfg_scale = pag_params.guidance_scale
 
                 # update pag_x_out
-                pag_params[0].pag_x_out = pag_x_out
+                pag_params.pag_x_out = pag_x_out
 
                 params.x = x_out
 
                 # set pag_enable to False
-                for module in pag_params[0].crossattn_modules:
+                for module in pag_params.crossattn_modules:
                         setattr(module, 'pag_enable', False)
                 
                 # patch combine_denoised
                 # self.patch_combine_denoised(pag_params)
         
-        def cfg_after_cfg_callback(self, params, pag_params):
+        def cfg_after_cfg_callback(self, params: AfterCFGCallbackParams, pag_params: PAGStateParams):
+                #self.unhook_callbacks(pag_params)
                 pass
+                # x = params.x
+                
+                # conds_list = pag_params.conds_list
+                # pag_x_out = pag_params.pag_x_out
+                # pag_scale = pag_params.pag_scale
+                # uncond_shape_0 = pag_params.uncond_shape_0
+
+                # def combine_denoised_with_pag(x_out, conds_list, uncond, cond_scale):
+                #         # unchanged
+                #         denoised_uncond = pag_x_out[-uncond_shape_0:]
+                #         denoised = torch.clone(denoised_uncond)
+
+                #         for i, conds in enumerate(conds_list):
+                #                 for cond_index, weight in conds:
+                #                         denoised[i] += (x_out[cond_index] - denoised_uncond[i]) * (weight * cond_scale)
+                #         return denoised
+
+                # params.x = combine_denoised_with_pag(x, conds_list, None, pag_scale)
 
         # def patch_combine_denoised(self, pag_params):
-        #         denoiser = pag_params[0].denoiser
+        #         denoiser = pag_params.denoiser
         #         if hasattr(denoiser, 'original_combine_denoised'):
         #                 self.unpatch_combine_denoised(denoiser)
         #         original_func = denoiser.combine_denoised
@@ -436,20 +488,50 @@ class PAGExtensionScript(UIWrapper):
                 return extra_axis_options
 
 
-# def wrap_combined_denoised_with_extra_cond(new_params):
-#         def combine_denoised_wrapped(x_out, conds_list, uncond, cond_scale):
-#                 denoised_uncond = x_out[-uncond.shape[0]:]
-#                 denoised_uncond_pag = new_params[0].pag_x_out[-uncond.shape[0]:]
-#                 denoised = torch.clone(denoised_uncond)
-# 
-#                 for i, conds in enumerate(conds_list):
-#                         for cond_index, weight in conds:
-#                                 denoised[i] += (x_out[cond_index] - denoised_uncond[i]) * (weight * cond_scale)
-#                                 denoised[i] += (x_out[cond_index] - denoised_uncond_pag[i]) * (weight * new_params[0].pag_scale)
-#                 print(f"wrapped combine_denoised - pag_scale:{new_params[0].pag_scale}")
-#                 del new_params[0].pag_x_out
-#                 return denoised
-#         return combine_denoised_wrapped 
+# The same but passes the conds list to new_params
+def combine_denoised_pass_conds_list(*args, **kwargs):
+        original_func = kwargs.get('original_func', None)
+
+        new_params = kwargs.get('pag_params', None)
+        if new_params is None:
+                logger.error("new_params is None")
+                return original_func(*args, **kwargs)
+        logger.debug(f"combine_denoised_pass_conds_list - pag_scale:{new_params.pag_scale}")
+
+        denoiser = kwargs.get('denoiser', None)
+        if denoiser is None:
+                logger.error("new_params is None")
+                return original_func(*args, **kwargs)
+
+        pag_scale = getattr(denoiser, "pag_scale", None)
+        if pag_scale is None:
+                logger.error("pag_scale is None")
+                return original_func(*args, **kwargs)
+        
+
+        def new_combine_denoised(x_out, conds_list, uncond, cond_scale):
+                denoised_uncond = x_out[-uncond.shape[0]:]
+                denoised = torch.clone(denoised_uncond)
+
+                for i, conds in enumerate(conds_list):
+                        for cond_index, weight in conds:
+                                denoised[i] += (x_out[cond_index] - denoised_uncond[i]) * (weight * cond_scale)
+                                denoised[i] += (x_out[cond_index] - new_params.pag_x_out[i]) * (weight * pag_scale)
+                                logger.debug(f"added PAG guidance to denoised - pag_scale:{pag_scale}")
+                return denoised
+        #def combine_denoised_wrapped(x_out, conds_list, uncond, cond_scale):
+        #        denoised_uncond = x_out[-uncond.shape[0]:]
+        #        denoised_uncond_pag = new_params[0].pag_x_out[-uncond.shape[0]:]
+        #        denoised = torch.clone(denoised_uncond)
+
+        #        for i, conds in enumerate(conds_list):
+        #                for cond_index, weight in conds:
+        #                        denoised[i] += (x_out[cond_index] - denoised_uncond[i]) * (weight * cond_scale)
+        #                        denoised[i] += (x_out[cond_index] - denoised_uncond_pag[i]) * (weight * new_params[0].pag_scale)
+        #        print(f"wrapped combine_denoised - pag_scale:{new_params[0].pag_scale}")
+        #        del new_params[0].pag_x_out
+        #        return denoised
+        return new_combine_denoised (*args)
 
 
 def catenate_conds(conds):
