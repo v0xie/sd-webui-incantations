@@ -173,7 +173,6 @@ class PAGExtensionScript(UIWrapper):
                         to_v = getattr(module, 'to_v', None)
                         to_out = getattr(module, 'to_out', None)
                         self.remove_field_cross_attn_modules(module, 'pag_enable')
-                        # self.remove_field_cross_attn_modules(module, 'pag_scale')
                         self.remove_field_cross_attn_modules(module, 'pag_last_to_v')
                         self.remove_field_cross_attn_modules(to_v, 'pag_parent_module')
                         self.remove_field_cross_attn_modules(to_out, 'pag_parent_module')
@@ -212,7 +211,6 @@ class PAGExtensionScript(UIWrapper):
                         to_v = getattr(module, 'to_v', None)
                         to_out = getattr(module, 'to_out', None)
                         self.add_field_cross_attn_modules(module, 'pag_enable', False)
-                        #self.add_field_cross_attn_modules(module, 'pag_scale', torch.tensor([pag_scale], dtype=torch.float16, device=shared.device))
                         self.add_field_cross_attn_modules(module, 'pag_last_to_v', None)
                         self.add_field_cross_attn_modules(to_v, 'pag_parent_module', [module])
                         self.add_field_cross_attn_modules(to_out, 'pag_parent_module', [module])
@@ -315,19 +313,8 @@ class PAGExtensionScript(UIWrapper):
                 pag_params.x_in = params.x.clone().detach()
                 pag_params.sigma = params.sigma.clone().detach()
                 pag_params.image_cond = params.image_cond.clone().detach()
-                # pag_params.text_uncond = text_cond.clone().detach()
-                # pag_params.text_uncond = text_cond.clone().detach()
                 pag_params.denoiser = params.denoiser
-
                 pag_params.make_condition_dict = get_make_condition_dict_fn(params.text_uncond)
-                ## assign callable lambda to make_condition_dict
-                #if shared.sd_model.model.conditioning_key == "crossattn-adm":
-                #        pag_params.make_condition_dict = lambda c_crossattn, c_adm: {"c_crossattn": [c_crossattn], "c_adm": c_adm}
-                #else:
-                #        if isinstance(pag_params.text_uncond, dict):
-                #                pag_params.make_condition_dict = lambda c_crossattn, c_concat: {**c_crossattn, "c_concat": [c_concat]}
-                #        else:
-                #                pag_params.make_condition_dict = lambda c_crossattn, c_concat: {"c_crossattn": [c_crossattn], "c_concat": [c_concat]}
 
 
         def on_cfg_denoised_callback(self, params: CFGDenoisedParams, pag_params: PAGStateParams):
@@ -371,15 +358,9 @@ class PAGExtensionScript(UIWrapper):
                 # "modules/sd_samplers_cfg_denoiser.py:237"
                 cond_in = catenate_conds([tensor, uncond])
                 make_condition_dict = get_make_condition_dict_fn(uncond)
-                #make_condition_dict = pag_params.make_condition_dict
                 conds = make_condition_dict(cond_in, image_cond_in)
-                # remove the vector field from the conds
-                # repositories/generative-models/sgm/modules/diffusionmodules/openaimodel.py:979
-                # if 'vector' in conds:
-                #         del conds['vector']
-                #setattr(conds, "pag_active", True)
                 
-                # set pag_enable to True
+                # set pag_enable to True for the hooked cross attention modules
                 for module in pag_params.crossattn_modules:
                         setattr(module, 'pag_enable', True)
 
