@@ -59,8 +59,11 @@ class ImmutableFloat:
         def __repr__(self):
                 return str(self.value)
 
+
 class PAGStateParams:
         def __init__(self):
+                self.pag_scale: int = -1      # PAG guidance scale
+
                 self.x_in = None
                 self.text_cond = None
                 self.image_cond = None
@@ -71,23 +74,11 @@ class PAGStateParams:
                 self.to_v_modules = []
                 self.to_out_modules = []
                 self.guidance_scale: int = -1 # CFG
-                self.pag_scale: int = -1      # PAG guidance scale
                 self.pag_x_out: None
                 self.batch_size : int = -1      # Batch size
                 self.denoiser: None # CFGDenoiser
                 self.patched_combine_denoised = None
 
-                self.attnreg: bool = False
-                self.ema_smoothing_factor: float = 2.0
-                self.step_end : int = 25
-                self.tokens: str = "" # [0, 20]
-                self.ctnms_alpha: float = 0.05 # [0., 1.] if abs value of difference between uncodition and concept-conditioned is less than this, then zero out the concept-conditioned values less than this
-                self.correction_threshold: float = 0.5 # [0., 1.]
-                self.correction_strength: float = 0.25 # [0., 1.) # larger bm is less volatile changes in momentum
-                self.strength = 1.0
-                self.width = None
-                self.height = None
-                self.dims = []
 
 class PAGExtensionScript(UIWrapper):
         def __init__(self):
@@ -108,87 +99,33 @@ class PAGExtensionScript(UIWrapper):
                         active = gr.Checkbox(value=False, default=False, label="Active", elem_id='pag_active')
                         with gr.Row():
                                 pag_scale = gr.Slider(value = 1.0, minimum = 0, maximum = 20.0, step = 0.5, label="PAG Scale", elem_id = 'pag_scale', info="")
-                        step_end = gr.Slider(value=25, minimum=0, maximum=150, default=1, step=1, label="Step End", elem_id='pag_step_end')
-                        with gr.Row():
-                                tokens = gr.Textbox(visible=False, value="", label="Tokens", elem_id='pag_tokens', info="Comma separated list of tokens to condition on")
-                        with gr.Row():
-                                correction_threshold = gr.Slider(visible=False, value = 0.0, minimum = 0., maximum = 1.0, step = 0.001, label="CbS Score Threshold", elem_id = 'pag_correction_threshold', info="Filter dimensions with similarity below this threshold")
-                                correction_strength = gr.Slider(visible=False, value = 0.0, minimum = 0.0, maximum = 0.999, step = 0.01, label="CbS Correction Strength", elem_id = 'pag_correction_strength', info="The strength of the correction, default 0.1")
-                        with gr.Row():
-                                attnreg = gr.Checkbox(visible=False, value=False, default=False, label="Use Attention Regulation", elem_id='pag_use_attnreg')
-                                ctnms_alpha = gr.Slider(visible=False, value = 0.1, minimum = 0.0, maximum = 1.0, step = 0.01, label="Alpha for Cross-Token Non-Maximum Suppression", elem_id = 'pag_ctnms_alpha', info="Contribution of the suppressed attention map, default 0.1")
-                                ema_factor = gr.Slider(visible=False, value=0.0, minimum=0.0, maximum=4.0, default=2.0, label="EMA Smoothing Factor", elem_id='pag_ema_factor')
                 active.do_not_save_to_config = True
                 pag_scale.do_not_save_to_config = True
-                attnreg.do_not_save_to_config = True
-                ema_factor.do_not_save_to_config = True
-                step_end.do_not_save_to_config = True
-                ctnms_alpha.do_not_save_to_config = True
-                correction_threshold.do_not_save_to_config = True
-                correction_strength.do_not_save_to_config = True
                 self.infotext_fields = [
                         (active, lambda d: gr.Checkbox.update(value='PAG Active' in d)),
                         (pag_scale, 'PAG Scale'),
-                        #(attnreg, lambda d: gr.Checkbox.update(value='PAG AttnReg' in d)),
-                        # (step_end, 'PAG Step End'),
-                        # (ctnms_alpha, 'PAG CTNMS Alpha'),
-                        # (correction_threshold, 'PAG CbS Score Threshold'),
-                        # (correction_strength, 'PAG CbS Correction Strength'),
-                        # (ema_factor, 'PAG CTNMS EMA Smoothing Factor'),
                 ]
                 self.paste_field_names = [
                         'pag_active',
                         'pag_scale',
-                        #'pag_attnreg',
-                        #'pag_ctnms_alpha',
-                        #'pag_correction_threshold',
-                        #'pag_correction_strength'
-                        #'pag_ema_factor',
-                        #'pag_step_end'
                 ]
-                return [active, attnreg, pag_scale, ctnms_alpha, correction_threshold, correction_strength, tokens, ema_factor, step_end]
+                return [active, pag_scale]
 
         def process_batch(self, p: StableDiffusionProcessing, *args, **kwargs):
                self.pag_process_batch(p, *args, **kwargs)
 
         def pag_process_batch(self, p: StableDiffusionProcessing, active, attnreg, pag_scale, ctnms_alpha, correction_threshold, correction_strength, tokens, ema_factor, step_end, *args, **kwargs):
-                #self.unhook_callbacks()
-
                 active = getattr(p, "pag_active", active)
-                use_attnreg = getattr(p, "pag_attnreg", attnreg)
-                ema_factor = getattr(p, "pag_ema_factor", ema_factor)
-                step_end = getattr(p, "pag_step_end", step_end)
                 if active is False:
                         return
                 pag_scale = getattr(p, "pag_scale", pag_scale)
-                ctnms_alpha = getattr(p, "pag_ctnms_alpha", ctnms_alpha)
-                correction_threshold = getattr(p, "pag_correction_threshold", correction_threshold)
-                correction_strength = getattr(p, "pag_correction_strength", correction_strength)
-                tokens = getattr(p, "pag_tokens", tokens)
                 p.extra_generation_params.update({
                         "PAG Active": active,
                         "PAG Scale": pag_scale,
                 })
+                self.create_hook(p, active, pag_scale)
 
-                self.create_hook(p, active, attnreg, pag_scale, ctnms_alpha, correction_threshold, correction_strength, tokens, ema_factor, step_end, p.width, p.height)
-
-        def parse_concept_prompt(self, prompt:str) -> list[str]:
-                """
-                Separate prompt by comma into a list of concepts
-                TODO: parse prompt into a list of concepts using A1111 functions
-                >>> g = lambda prompt: self.parse_concept_prompt(prompt)
-                >>> g("")
-                []
-                >>> g("apples")
-                ['apples']
-                >>> g("apple, banana, carrot")
-                ['apple', 'banana', 'carrot']
-                """
-                if len(prompt) == 0:
-                        return []
-                return [x.strip() for x in prompt.split(",")]
-
-        def create_hook(self, p: StableDiffusionProcessing, active, attnreg, pag_scale, ctnms_alpha, correction_threshold, correction_strength, tokens, ema_factor, step_end, width, height, *args, **kwargs):
+        def create_hook(self, p: StableDiffusionProcessing, active, pag_scale, *args, **kwargs):
                 # Create a list of parameters for each concept
                 pag_params = []
 
@@ -198,38 +135,22 @@ class PAGExtensionScript(UIWrapper):
                 params.pag_scale = pag_scale
                 params.batch_size = p.batch_size
 
-                params.attnreg = attnreg 
-                params.ema_smoothing_factor = ema_factor 
-                params.step_end = step_end 
-                params.ctnms_alpha = ctnms_alpha
-                params.correction_threshold = correction_threshold
-                params.correction_strength = correction_strength
-                params.strength = 1.0
-                params.width = width
-                params.height = height 
-                params.dims = [width, height]
-
                 # Get all the qv modules
                 cross_attn_modules = self.get_cross_attn_modules()
                 params.crossattn_modules = [m for m in cross_attn_modules if 'CrossAttention' in m.__class__.__name__]
                 pag_params.append(params)
 
-                # setattr(p, "pag_params", pag_params)
-
                 # Use lambda to call the callback function with the parameters to avoid global variables
                 y = lambda params: self.on_cfg_denoiser_callback(params, pag_params, ImmutableFloat(pag_scale))
                 z = lambda params: self.on_cfg_denoised_callback(params, pag_params)
-                # after_cfg_callback = lambda params: self.cfg_after_cfg_callback(params, pag_params)
                 un = lambda pag_params: self.unhook_callbacks(None)
 
-                self.ready_hijack_forward(params.crossattn_modules, pag_scale, width, height, ema_factor, step_end)
+                self.ready_hijack_forward(params.crossattn_modules, pag_scale)
 
                 logger.debug('Hooked callbacks')
                 script_callbacks.on_cfg_denoiser(y)
                 script_callbacks.on_cfg_denoised(z)
                 script_callbacks.on_script_unloaded(un)
-
-                # patch
 
         def postprocess_batch(self, p, *args, **kwargs):
                 self.pag_postprocess_batch(p, *args, **kwargs)
@@ -333,7 +254,6 @@ class PAGExtensionScript(UIWrapper):
                         to_v = getattr(module, 'to_v', None)
                         handle_to_v = to_v.register_forward_hook(to_v_pre_hook, with_kwargs=True)
 
-
         def get_middle_block_modules(self):
                 """ Get all attention modules from the middle block 
                 Refere to page 22 of the PAG paper, Appendix A.2
@@ -347,11 +267,6 @@ class PAGExtensionScript(UIWrapper):
         def get_cross_attn_modules(self):
                 """ Get all croos attention modules """
                 return self.get_middle_block_modules()
-                # m = shared.sd_model
-                # nlm = m.network_layer_mapping
-                # cross_attn_modules = [m for m in nlm.values() if 'Attention' in m.__class__.__name__]
-                # cross_attn_modules = [m for m in nlm.values() if 'attn' in m.__class__.__name__]
-                # return cross_attn_modules
 
         def add_field_cross_attn_modules(self, module, field, value):
                 """ Add a field to a module if it doesn't exist """
@@ -479,10 +394,6 @@ class PAGExtensionScript(UIWrapper):
                 # update pag_x_out
                 pag_params[0].pag_x_out = pag_x_out
 
-                # pag_x_out[-uncond.shape[0]:] = x_out[-uncond.shape[0]:] + (pag_scale/cfg_scale)*(x_out[-uncond.shape[0]:] - pag_x_out[-uncond.shape[0]:])
-
-                # update x_out
-                #x_out[-uncond.shape[0]:] = pag_x_out[-uncond.shape[0]:]
                 params.x = x_out
 
                 # set pag_enable to False
@@ -495,25 +406,25 @@ class PAGExtensionScript(UIWrapper):
         def cfg_after_cfg_callback(self, params, pag_params):
                 pass
 
-        def patch_combine_denoised(self, pag_params):
-                denoiser = pag_params[0].denoiser
-                if hasattr(denoiser, 'original_combine_denoised'):
-                        self.unpatch_combine_denoised(denoiser)
-                original_func = denoiser.combine_denoised
-                setattr(denoiser, 'original_combine_denoised', original_func)
-                setattr(denoiser, 'combine_denoised', wrap_combined_denoised_with_extra_cond(pag_params))
-                print("Patched combine_denoised")
+        # def patch_combine_denoised(self, pag_params):
+        #         denoiser = pag_params[0].denoiser
+        #         if hasattr(denoiser, 'original_combine_denoised'):
+        #                 self.unpatch_combine_denoised(denoiser)
+        #         original_func = denoiser.combine_denoised
+        #         setattr(denoiser, 'original_combine_denoised', original_func)
+        #         setattr(denoiser, 'combine_denoised', wrap_combined_denoised_with_extra_cond(pag_params))
+        #         print("Patched combine_denoised")
         
-        def unpatch_combine_denoised(self, denoiser):
-                if hasattr(denoiser, 'original_combine_denoised'):
-                        repl_func = denoiser.combine_denoised
-                        original_func = denoiser.original_combine_denoised
-                        setattr(denoiser, 'combine_denoised', original_func)
-                        delattr(denoiser, 'original_combine_denoised')
-                        del repl_func
-                else:
-                       setattr(denoiser, 'combine_denoised', CFGDenoiser.combine_denoised)
-                print("Unpatched combine_denoised")
+        # def unpatch_combine_denoised(self, denoiser):
+        #         if hasattr(denoiser, 'original_combine_denoised'):
+        #                 repl_func = denoiser.combine_denoised
+        #                 original_func = denoiser.original_combine_denoised
+        #                 setattr(denoiser, 'combine_denoised', original_func)
+        #                 delattr(denoiser, 'original_combine_denoised')
+        #                 del repl_func
+        #         else:
+        #                setattr(denoiser, 'combine_denoised', CFGDenoiser.combine_denoised)
+        #         print("Unpatched combine_denoised")
 
         def get_xyz_axis_options(self) -> dict:
                 xyz_grid = [x for x in scripts.scripts_data if x.script_class.__module__ == "xyz_grid.py"][0].module
@@ -523,6 +434,7 @@ class PAGExtensionScript(UIWrapper):
                         #xyz_grid.AxisOption("[PAG] ctnms_alpha", float, pag_apply_field("pag_ctnms_alpha")),
                 }
                 return extra_axis_options
+
 
 # def wrap_combined_denoised_with_extra_cond(new_params):
 #         def combine_denoised_wrapped(x_out, conds_list, uncond, cond_scale):
@@ -539,16 +451,6 @@ class PAGExtensionScript(UIWrapper):
 #                 return denoised
 #         return combine_denoised_wrapped 
 
-# class PAGDenoiser(sd_samplers_cfg_denoiser.CFGDenoiser):
-#         @property
-#         def inner_model(self):
-#                 if self.model_wrap is None:
-#                         denoiser = k_diffusion.external.CompVisVDenoiser if shared.sd_model.parameterization == "v" else k_diffusion.external.CompVisDenoiser
-#                         self.model_wrap = denoiser(shared.sd_model, quantize=shared.opts.enable_quantization)
-# 
-#                 return self.model_wrap
-
-# Hijacks
 
 def catenate_conds(conds):
     if not isinstance(conds[0], dict):
