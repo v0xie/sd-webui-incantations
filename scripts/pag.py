@@ -47,6 +47,8 @@ GitHub URL: https://github.com/v0xie/sd-webui-incantations
 """
 
 handles = []
+iteration_count = 0
+global_scale = 1
 
 class ImmutableFloat:
         """ A class to represent an immutable float """
@@ -63,7 +65,7 @@ class ImmutableFloat:
 class PAGStateParams:
         def __init__(self):
                 self.pag_scale: int = -1      # PAG guidance scale
-
+                self.iteration_count = 0 
                 self.x_in = None
                 self.text_cond = None
                 self.image_cond = None
@@ -117,13 +119,21 @@ class PAGExtensionScript(UIWrapper):
                self.pag_process_batch(p, *args, **kwargs)
 
         def pag_process_batch(self, p: StableDiffusionProcessing, active, pag_scale, *args, **kwargs):
+                global iteration_count, global_scale 
+                global_scale = pag_scale
+
                 self.remove_all_hooks()
 
                 active = getattr(p, "pag_active", active)
                 if active is False:
                         return
 
+                iteration_count += 1
+                setattr(p, "pag_iteration_count", iteration_count)
+
                 pag_scale = getattr(p, "pag_scale", pag_scale)
+                setattr(p, "pag_scale", pag_scale)
+
                 p.extra_generation_params.update({
                         "PAG Active": active,
                         "PAG Scale": pag_scale,
@@ -140,8 +150,7 @@ class PAGExtensionScript(UIWrapper):
                 params.guidance_scale = p.cfg_scale
                 params.batch_size = p.batch_size
                 params.denoiser = None
-
-                setattr(p, "pag_scale", pag_scale)
+                params.iteration_count = getattr(p, "pag_iteration_count", 0)
 
                 # Get all the qv modules
                 cross_attn_modules = self.get_cross_attn_modules()
@@ -161,6 +170,8 @@ class PAGExtensionScript(UIWrapper):
                 script_callbacks.on_cfg_denoised(cfg_denoised_lambda)
                 script_callbacks.on_cfg_after_cfg(after_cfg_lambda)
                 script_callbacks.on_script_unloaded(unhook_lambda)
+
+                logger.debug('Create Hook iteration count: ' + str(iteration_count))
 
         def postprocess_batch(self, p, *args, **kwargs):
                 self.pag_postprocess_batch(p, *args, **kwargs)
@@ -322,7 +333,9 @@ class PAGExtensionScript(UIWrapper):
                                         **kwargs,
                                         original_func = params.denoiser.combine_denoised_original,
                                         pag_params = pag_params,
-                                        denoiser = params.denoiser)
+                                        denoiser = params.denoiser,
+                                        scale = p)
+                                logger.debug(f'Patching combine_denoised with pag_scale:{p.pag_scale}')
                                 pag_params.patched_combine_denoised = patches.patch(__name__, params.denoiser, "combine_denoised", pass_conds_func)
 
                                 setattr(params.denoiser, 'combine_denoised_patched', True)
@@ -420,10 +433,6 @@ class PAGExtensionScript(UIWrapper):
                 # get the PAG guidance
                 pag_x_out = params.inner_model(x_in, sigma_in, cond=conds)
 
-                # combine CFG and PAG
-                pag_scale = pag_params.pag_scale
-                cfg_scale = pag_params.guidance_scale
-
                 # update pag_x_out
                 pag_params.pag_x_out = pag_x_out
 
@@ -490,6 +499,7 @@ class PAGExtensionScript(UIWrapper):
 
 # The same but passes the conds list to new_params
 def combine_denoised_pass_conds_list(*args, **kwargs):
+        global global_scale
         original_func = kwargs.get('original_func', None)
 
         new_params = kwargs.get('pag_params', None)
@@ -503,10 +513,13 @@ def combine_denoised_pass_conds_list(*args, **kwargs):
                 logger.error("new_params is None")
                 return original_func(*args, **kwargs)
 
-        pag_scale = getattr(denoiser, "pag_scale", None)
-        if pag_scale is None:
+        scale = kwargs.get("scale", None)
+        if scale is None:
                 logger.error("pag_scale is None")
                 return original_func(*args, **kwargs)
+        else:
+                scale = scale.pag_scale
+                pass
         
 
         def new_combine_denoised(x_out, conds_list, uncond, cond_scale):
@@ -516,8 +529,8 @@ def combine_denoised_pass_conds_list(*args, **kwargs):
                 for i, conds in enumerate(conds_list):
                         for cond_index, weight in conds:
                                 denoised[i] += (x_out[cond_index] - denoised_uncond[i]) * (weight * cond_scale)
-                                denoised[i] += (x_out[cond_index] - new_params.pag_x_out[i]) * (weight * pag_scale)
-                                logger.debug(f"added PAG guidance to denoised - pag_scale:{pag_scale}")
+                                denoised[i] += (x_out[cond_index] - new_params.pag_x_out[i]) * (weight * global_scale)
+                                logger.debug(f"added PAG guidance to denoised - pag_scale:{global_scale}")
                 return denoised
         #def combine_denoised_wrapped(x_out, conds_list, uncond, cond_scale):
         #        denoised_uncond = x_out[-uncond.shape[0]:]
