@@ -173,7 +173,7 @@ class PAGExtensionScript(UIWrapper):
                         to_v = getattr(module, 'to_v', None)
                         to_out = getattr(module, 'to_out', None)
                         self.remove_field_cross_attn_modules(module, 'pag_enable')
-                        self.remove_field_cross_attn_modules(module, 'pag_scale')
+                        # self.remove_field_cross_attn_modules(module, 'pag_scale')
                         self.remove_field_cross_attn_modules(module, 'pag_last_to_v')
                         self.remove_field_cross_attn_modules(to_v, 'pag_parent_module')
                         self.remove_field_cross_attn_modules(to_out, 'pag_parent_module')
@@ -212,7 +212,7 @@ class PAGExtensionScript(UIWrapper):
                         to_v = getattr(module, 'to_v', None)
                         to_out = getattr(module, 'to_out', None)
                         self.add_field_cross_attn_modules(module, 'pag_enable', False)
-                        self.add_field_cross_attn_modules(module, 'pag_scale', torch.tensor([pag_scale], dtype=torch.float16, device=shared.device))
+                        #self.add_field_cross_attn_modules(module, 'pag_scale', torch.tensor([pag_scale], dtype=torch.float16, device=shared.device))
                         self.add_field_cross_attn_modules(module, 'pag_last_to_v', None)
                         self.add_field_cross_attn_modules(to_v, 'pag_parent_module', [module])
                         self.add_field_cross_attn_modules(to_out, 'pag_parent_module', [module])
@@ -259,7 +259,7 @@ class PAGExtensionScript(UIWrapper):
                 return middle_block_modules
 
         def get_cross_attn_modules(self):
-                """ Get all croos attention modules """
+                """ Get all cross attention modules """
                 return self.get_middle_block_modules()
 
         def add_field_cross_attn_modules(self, module, field, value):
@@ -289,7 +289,6 @@ class PAGExtensionScript(UIWrapper):
                                         pag_params = pag_params,
                                         denoiser = params.denoiser,
                                         scale = p)
-                                logger.debug(f'Patching combine_denoised with pag_scale:{p.pag_scale}')
                                 pag_params.patched_combine_denoised = patches.patch(__name__, params.denoiser, "combine_denoised", pass_conds_func)
 
                                 setattr(params.denoiser, 'combine_denoised_patched', True)
@@ -303,24 +302,32 @@ class PAGExtensionScript(UIWrapper):
 
                 if isinstance(params.text_cond, dict):
                         text_cond = params.text_cond['crossattn'] # SD XL
+                        pag_params.text_cond = {}
+                        pag_params.text_uncond = {}
+                        for key, value in params.text_cond.items():
+                                pag_params.text_cond[key] = value.clone().detach()
+                                pag_params.text_uncond[key] = value.clone().detach()
                 else:
                         text_cond = params.text_cond # SD 1.5
+                        pag_params.text_cond = text_cond.clone().detach()
+                        pag_params.text_uncond = text_cond.clone().detach()
 
-                        pag_params.x_in = params.x.clone().detach()
-                        pag_params.text_cond = params.text_cond.clone().detach()
-                        pag_params.sigma = params.sigma.clone().detach()
-                        pag_params.image_cond = params.image_cond.clone().detach()
-                        pag_params.text_uncond = params.text_cond.clone().detach()
-                        pag_params.denoiser = params.denoiser
+                pag_params.x_in = params.x.clone().detach()
+                pag_params.sigma = params.sigma.clone().detach()
+                pag_params.image_cond = params.image_cond.clone().detach()
+                # pag_params.text_uncond = text_cond.clone().detach()
+                # pag_params.text_uncond = text_cond.clone().detach()
+                pag_params.denoiser = params.denoiser
 
-                # assign callable lambda to make_condition_dict
-                if shared.sd_model.model.conditioning_key == "crossattn-adm":
-                        pag_params.make_condition_dict = lambda c_crossattn, c_adm: {"c_crossattn": [c_crossattn], "c_adm": c_adm}
-                else:
-                        if isinstance(pag_params.text_uncond, dict):
-                                pag_params.make_condition_dict = lambda c_crossattn, c_concat: {**c_crossattn, "c_concat": [c_concat]}
-                        else:
-                                pag_params.make_condition_dict = lambda c_crossattn, c_concat: {"c_crossattn": [c_crossattn], "c_concat": [c_concat]}
+                pag_params.make_condition_dict = get_make_condition_dict_fn(params.text_uncond)
+                ## assign callable lambda to make_condition_dict
+                #if shared.sd_model.model.conditioning_key == "crossattn-adm":
+                #        pag_params.make_condition_dict = lambda c_crossattn, c_adm: {"c_crossattn": [c_crossattn], "c_adm": c_adm}
+                #else:
+                #        if isinstance(pag_params.text_uncond, dict):
+                #                pag_params.make_condition_dict = lambda c_crossattn, c_concat: {**c_crossattn, "c_concat": [c_concat]}
+                #        else:
+                #                pag_params.make_condition_dict = lambda c_crossattn, c_concat: {"c_crossattn": [c_crossattn], "c_concat": [c_concat]}
 
 
         def on_cfg_denoised_callback(self, params: CFGDenoisedParams, pag_params: PAGStateParams):
@@ -363,8 +370,13 @@ class PAGExtensionScript(UIWrapper):
                 # concatenate the conditions 
                 # "modules/sd_samplers_cfg_denoiser.py:237"
                 cond_in = catenate_conds([tensor, uncond])
-                make_condition_dict = pag_params.make_condition_dict
+                make_condition_dict = get_make_condition_dict_fn(uncond)
+                #make_condition_dict = pag_params.make_condition_dict
                 conds = make_condition_dict(cond_in, image_cond_in)
+                # remove the vector field from the conds
+                # repositories/generative-models/sgm/modules/diffusionmodules/openaimodel.py:979
+                # if 'vector' in conds:
+                #         del conds['vector']
                 #setattr(conds, "pag_active", True)
                 
                 # set pag_enable to True
@@ -412,13 +424,13 @@ def combine_denoised_pass_conds_list(*args, **kwargs):
                 logger.error("new_params is None")
                 return original_func(*args, **kwargs)
 
-        scale = kwargs.get("scale", None)
-        if scale is None:
-                logger.error("pag_scale is None")
-                return original_func(*args, **kwargs)
-        else:
-                scale = scale.pag_scale
-                pass
+        # scale = kwargs.get("scale", None)
+        # if scale is None:
+        #         logger.error("pag_scale is None")
+        #         return original_func(*args, **kwargs)
+        # else:
+        #         scale = scale.pag_scale
+        #         pass
         
         def new_combine_denoised(x_out, conds_list, uncond, cond_scale):
                 denoised_uncond = x_out[-uncond.shape[0]:]
@@ -438,6 +450,17 @@ def catenate_conds(conds):
         return torch.cat(conds)
 
     return {key: torch.cat([x[key] for x in conds]) for key in conds[0].keys()}
+
+
+def get_make_condition_dict_fn(text_uncond):
+        if shared.sd_model.model.conditioning_key == "crossattn-adm":
+                make_condition_dict = lambda c_crossattn, c_adm: {"c_crossattn": [c_crossattn], "c_adm": c_adm}
+        else:
+                if isinstance(text_uncond, dict):
+                        make_condition_dict = lambda c_crossattn, c_concat: {**c_crossattn, "c_concat": [c_concat]}
+                else:
+                        make_condition_dict = lambda c_crossattn, c_concat: {"c_crossattn": [c_crossattn], "c_concat": [c_concat]}
+        return make_condition_dict
 
 
 # XYZ Plot
