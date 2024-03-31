@@ -120,7 +120,6 @@ class PAGExtensionScript(UIWrapper):
 
         def pag_process_batch(self, p: StableDiffusionProcessing, active, pag_scale, *args, **kwargs):
                 global iteration_count, global_scale 
-                global_scale = pag_scale
 
                 self.remove_all_hooks()
 
@@ -133,6 +132,7 @@ class PAGExtensionScript(UIWrapper):
 
                 pag_scale = getattr(p, "pag_scale", pag_scale)
                 setattr(p, "pag_scale", pag_scale)
+                global_scale = pag_scale
 
                 p.extra_generation_params.update({
                         "PAG Active": active,
