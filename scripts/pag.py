@@ -276,9 +276,9 @@ class PAGExtensionScript(UIWrapper):
                         #print(f"Pag enabled")
 
                         batch_size, seq_len, inner_dim = output.shape
-                        identity = torch.eye(seq_len).expand(batch_size, -1, -1).to(output.device)
+                        identity = torch.eye(seq_len).expand(batch_size, -1, -1).to(shared.device)
 
-                        # get the last to_v output
+                        # get the last to_v output and save it
                         last_to_v = getattr(module, 'pag_last_to_v', None)
 
                         if last_to_v is not None:    
