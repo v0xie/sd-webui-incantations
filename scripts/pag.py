@@ -416,18 +416,18 @@ def combine_denoised_pass_conds_list(*args, **kwargs):
         new_params = kwargs.get('pag_params', None)
         if new_params is None:
                 logger.error("new_params is None")
-                return original_func(*args, **kwargs)
+                return original_func(*args)
         logger.debug(f"combine_denoised_pass_conds_list - pag_scale:{new_params.pag_scale}")
 
         denoiser = kwargs.get('denoiser', None)
         if denoiser is None:
                 logger.error("new_params is None")
-                return original_func(*args, **kwargs)
+                return original_func(*args)
 
         scale = global_scale
         if scale is None:
                 logger.error("pag_scale is None")
-                return original_func(*args, **kwargs)
+                return original_func(*args)
         #elif scale == 0:
         #        return original_func(*args, **kwargs)
         
@@ -441,7 +441,7 @@ def combine_denoised_pass_conds_list(*args, **kwargs):
                                 denoised[i] += (x_out[cond_index] - new_params.pag_x_out[i]) * (weight * global_scale)
                                 logger.debug(f"added PAG guidance to denoised - pag_scale:{global_scale}")
                 return denoised
-        return new_combine_denoised (*args)
+        return new_combine_denoised(*args)
 
 
 def catenate_conds(conds):
