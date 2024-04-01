@@ -31,8 +31,8 @@ class SubmoduleInfo:
 
 submodules: list[SubmoduleInfo] = [
         SubmoduleInfo(module=PAGExtensionScript()),
-        SubmoduleInfo(module=IncantExtensionScript()),
         SubmoduleInfo(module=T2I0ExtensionScript()),
+        SubmoduleInfo(module=IncantExtensionScript()),
 ]
                 
 class IncantBaseExtensionScript(scripts.Script):
@@ -51,7 +51,7 @@ class IncantBaseExtensionScript(scripts.Script):
         def ui(self, is_img2img):
                 # setup UI
                 out = []
-                with gr.Accordion('Incantations', open=True):
+                with gr.Accordion('Incantations', open=False):
                         for idx, module_info in enumerate(submodules):
                                 module_info.module_idx = idx
                                 module = module_info.module

@@ -90,7 +90,7 @@ class T2I0ExtensionScript(UIWrapper):
 
         # Setup menu ui detail
         def setup_ui(self, is_img2img) -> list:
-                with gr.Accordion('Multi-Concept T2I-Zero [arXiv:2310.07419v1]', open=False):
+                with gr.Accordion('Multi-Concept T2I-Zero', open=False):
                         active = gr.Checkbox(value=False, default=False, label="Active", elem_id='t2i0_active')
                         step_end = gr.Slider(value=25, minimum=0, maximum=150, default=1, step=1, label="Step End", elem_id='t2i0_step_end')
                         with gr.Row():
@@ -102,7 +102,7 @@ class T2I0ExtensionScript(UIWrapper):
                         with gr.Row():
                                 attnreg = gr.Checkbox(visible=False, value=False, default=False, label="Use Attention Regulation", elem_id='t2i0_use_attnreg')
                                 ctnms_alpha = gr.Slider(value = 0.1, minimum = 0.0, maximum = 1.0, step = 0.01, label="Alpha for Cross-Token Non-Maximum Suppression", elem_id = 't2i0_ctnms_alpha', info="Contribution of the suppressed attention map, default 0.1")
-                                ema_factor = gr.Slider(value=0.0, minimum=0.0, maximum=4.0, default=2.0, label="EMA Smoothing Factor", elem_id='t2i0_ema_factor')
+                                ema_factor = gr.Slider(value=0.0, minimum=0.0, maximum=4.0, default=2.0, label="EMA Smoothing Factor", elem_id='t2i0_ema_factor', info="Based on method from [arXiv:2403.06381]")
                 active.do_not_save_to_config = True
                 attnreg.do_not_save_to_config = True
                 ema_factor.do_not_save_to_config = True

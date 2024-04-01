@@ -87,7 +87,7 @@ class PAGExtensionScript(UIWrapper):
 
         # Setup menu ui detail
         def setup_ui(self, is_img2img) -> list:
-                with gr.Accordion('PAG', open=False):
+                with gr.Accordion('Perturbed Attention Guidance', open=False):
                         active = gr.Checkbox(value=False, default=False, label="Active", elem_id='pag_active')
                         with gr.Row():
                                 pag_scale = gr.Slider(value = 1.0, minimum = 0, maximum = 20.0, step = 0.5, label="PAG Scale", elem_id = 'pag_scale', info="")
