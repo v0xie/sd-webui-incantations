@@ -53,7 +53,7 @@ SD XL
 - https://github.com/YaNgZhAnG-V5/attention_regulation
 
 ---
-### "Seek for Incantations"
+### Seek for Incantations
 An incomplete implementation of a "prompt-upsampling" method from https://arxiv.org/abs/2401.06345  
 Generates an image following the prompt, then uses CLIP text/image similarity to add on to the prompt and generate a new image.  
 
