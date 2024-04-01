@@ -79,7 +79,7 @@ class PAGExtensionScript(UIWrapper):
 
         # Extension title in menu UI
         def title(self) -> str:
-                return "PAG"
+                return "Perturbed Attention Guidance"
 
         # Decide to show menu in txt2img or img2img
         def show(self, is_img2img):
