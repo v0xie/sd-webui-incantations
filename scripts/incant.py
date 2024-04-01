@@ -191,7 +191,7 @@ class IncantExtensionScript(UIWrapper):
                         inc_active = gr.Checkbox(value=False, default=False, label="Active", elem_id='incant_active')
                         inc_quality = gr.Checkbox(value=False, default=False, label="Append Generated Caption", elem_id='incant_append_prompt', info="Append interrogated caption to prompt. (Deepbooru is reversed, if disabled, will not append the masked original prompt)")
                         inc_deepbooru = gr.Checkbox(value=False, default=False, label="Deepbooru Interrogate", elem_id='incant_deepbooru')
-                        inc_coarse_step = gr.Slider(value = 10, minimum = 1, maximum = 120, step = 1, label="Coarse Step", elem_id = 'incant_coarse_step')
+                        inc_coarse_step = gr.Slider(visible=False, value = 10, minimum = 1, maximum = 120, step = 1, label="Coarse Step", elem_id = 'incant_coarse_step')
                         with gr.Row():
                                 inc_delim = gr.Textbox(value='BREAK', label="Delimiter", elem_id='incant_delim', info="Prompt DELIM Optimized Prompt. Try BREAK, AND, NOT, etc.")
                                 inc_word = gr.Textbox(value='-', label="Word Replacement", elem_id='incant_word', info="Replace masked words with this")
@@ -211,7 +211,7 @@ class IncantExtensionScript(UIWrapper):
                         (inc_delim, 'INCANT Delim'),
                         (inc_word, 'INCANT Word'),
                         (inc_gamma, 'INCANT Gamma'),
-                        (inc_coarse_step, 'INCANT Coarse'),
+#                        (inc_coarse_step, 'INCANT Coarse'),
                 ]
                 self.paste_field_names = [
                         'incant_active',
@@ -220,7 +220,7 @@ class IncantExtensionScript(UIWrapper):
                         'incant_delim',
                         'incant_word',
                         'incant_gamma',
-                        'incant_coarse',
+#                        'incant_coarse',
                 ]
                 return [inc_active, inc_quality, inc_deepbooru, inc_delim, inc_word, inc_gamma, inc_coarse_step]
 
