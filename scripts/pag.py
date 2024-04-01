@@ -12,7 +12,7 @@ from modules.script_callbacks import CFGDenoiserParams, CFGDenoisedParams, After
 from modules.prompt_parser import reconstruct_multicond_batch
 from modules.processing import StableDiffusionProcessing
 #from modules.shared import sd_model, opts
-from modules.sd_samplers_cfg_denoiser import pad_cond
+from modules.sd_samplers_cfg_denoiser import catenate_conds
 from modules.sd_samplers_cfg_denoiser import CFGDenoiser
 from modules import shared
 
@@ -54,6 +54,7 @@ global_scale = 1
 class PAGStateParams:
         def __init__(self):
                 self.pag_scale: int = -1      # PAG guidance scale
+                self.guidance_scale: int = -1 # CFG
                 self.x_in = None
                 self.text_cond = None
                 self.image_cond = None
@@ -63,7 +64,6 @@ class PAGStateParams:
                 self.crossattn_modules = [] # callable lambda
                 self.to_v_modules = []
                 self.to_out_modules = []
-                self.guidance_scale: int = -1 # CFG
                 self.pag_x_out = None
                 self.batch_size = -1      # Batch size
                 self.denoiser = None # CFGDenoiser
@@ -107,8 +107,6 @@ class PAGExtensionScript(UIWrapper):
                self.pag_process_batch(p, *args, **kwargs)
 
         def pag_process_batch(self, p: StableDiffusionProcessing, active, pag_scale, *args, **kwargs):
-                global global_scale 
-
                 # cleanup previous hooks always
                 script_callbacks.remove_current_script_callbacks()
                 self.remove_all_hooks()
@@ -116,9 +114,7 @@ class PAGExtensionScript(UIWrapper):
                 active = getattr(p, "pag_active", active)
                 if active is False:
                         return
-
                 pag_scale = getattr(p, "pag_scale", pag_scale)
-                global_scale = pag_scale
 
                 p.extra_generation_params.update({
                         "PAG Active": active,
@@ -128,32 +124,28 @@ class PAGExtensionScript(UIWrapper):
 
         def create_hook(self, p: StableDiffusionProcessing, active, pag_scale, *args, **kwargs):
                 # Create a list of parameters for each concept
-                pag_params = []
-
-                #for _, strength in concept_conds:
-                params = PAGStateParams()
-                params.pag_scale = pag_scale
-                params.guidance_scale = p.cfg_scale
-                params.batch_size = p.batch_size
-                params.denoiser = None
+                pag_params = PAGStateParams()
+                pag_params.pag_scale = pag_scale
+                pag_params.guidance_scale = p.cfg_scale
+                pag_params.batch_size = p.batch_size
+                pag_params.denoiser = None
 
                 # Get all the qv modules
                 cross_attn_modules = self.get_cross_attn_modules()
-                params.crossattn_modules = [m for m in cross_attn_modules if 'CrossAttention' in m.__class__.__name__]
-                pag_params.append(params)
+                pag_params.crossattn_modules = [m for m in cross_attn_modules if 'CrossAttention' in m.__class__.__name__]
 
                 # Use lambda to call the callback function with the parameters to avoid global variables
-                cfg_denoise_lambda = lambda x: self.on_cfg_denoiser_callback(x, params, p)
-                cfg_denoised_lambda = lambda x: self.on_cfg_denoised_callback(x, params)
-                after_cfg_lambda = lambda x: self.cfg_after_cfg_callback(x, params)
-                unhook_lambda = lambda x: self.unhook_callbacks(params)
+                cfg_denoise_lambda = lambda callback_params: self.on_cfg_denoiser_callback(callback_params, pag_params)
+                cfg_denoised_lambda = lambda callback_params: self.on_cfg_denoised_callback(callback_params, pag_params)
+                #after_cfg_lambda = lambda x: self.cfg_after_cfg_callback(x, params)
+                unhook_lambda = lambda _: self.unhook_callbacks(pag_params)
 
-                self.ready_hijack_forward(params.crossattn_modules, pag_scale)
+                self.ready_hijack_forward(pag_params.crossattn_modules, pag_scale)
 
                 logger.debug('Hooked callbacks')
                 script_callbacks.on_cfg_denoiser(cfg_denoise_lambda)
                 script_callbacks.on_cfg_denoised(cfg_denoised_lambda)
-                script_callbacks.on_cfg_after_cfg(after_cfg_lambda)
+                #script_callbacks.on_cfg_after_cfg(after_cfg_lambda)
                 script_callbacks.on_script_unloaded(unhook_lambda)
 
         def postprocess_batch(self, p, *args, **kwargs):
@@ -270,12 +262,13 @@ class PAGExtensionScript(UIWrapper):
                 if hasattr(module, field):
                         delattr(module, field)
 
-        def on_cfg_denoiser_callback(self, params: CFGDenoiserParams, pag_params: PAGStateParams, p: StableDiffusionProcessing):
+        def on_cfg_denoiser_callback(self, params: CFGDenoiserParams, pag_params: PAGStateParams):
+                # always unhook
                 self.unhook_callbacks(pag_params)
 
+                # patch combine_denoised
                 if pag_params.denoiser is None:
                         pag_params.denoiser = params.denoiser
-                # patch combine_denoised
                 if getattr(params.denoiser, 'combine_denoised_patched', False) is False:
                         try:
                                 setattr(params.denoiser, 'combine_denoised_original', params.denoiser.combine_denoised)
@@ -284,11 +277,8 @@ class PAGExtensionScript(UIWrapper):
                                         *args,
                                         **kwargs,
                                         original_func = params.denoiser.combine_denoised_original,
-                                        pag_params = pag_params,
-                                        denoiser = params.denoiser,
-                                        scale = p)
+                                        pag_params = pag_params)
                                 pag_params.patched_combine_denoised = patches.patch(__name__, params.denoiser, "combine_denoised", pass_conds_func)
-
                                 setattr(params.denoiser, 'combine_denoised_patched', True)
                                 setattr(params.denoiser, 'combine_denoised_original', patches.original(__name__, params.denoiser, "combine_denoised"))
                         except KeyError:
@@ -319,13 +309,9 @@ class PAGExtensionScript(UIWrapper):
 
         def on_cfg_denoised_callback(self, params: CFGDenoisedParams, pag_params: PAGStateParams):
                 """ Callback function for the CFGDenoisedParams 
-                This is where we combine CFG and PAG
                 Refer to pg.22 A.2 of the PAG paper for how CFG and PAG combine
                 
                 """
-                # original x_out
-                x_out = params.x
-
                 # passed from on_cfg_denoiser_callback
                 x_in = pag_params.x_in
                 tensor = pag_params.text_cond
@@ -343,12 +329,11 @@ class PAGExtensionScript(UIWrapper):
                 for module in pag_params.crossattn_modules:
                         setattr(module, 'pag_enable', True)
 
-                # get the PAG guidance
+                # get the PAG guidance (is there a way to optimize this so we don't have to calculate it twice?)
                 pag_x_out = params.inner_model(x_in, sigma_in, cond=conds)
 
                 # update pag_x_out
                 pag_params.pag_x_out = pag_x_out
-                params.x = x_out
 
                 # set pag_enable to False
                 for module in pag_params.crossattn_modules:
@@ -368,29 +353,15 @@ class PAGExtensionScript(UIWrapper):
                 return extra_axis_options
 
 
-# The same but passes the conds list to new_params
 def combine_denoised_pass_conds_list(*args, **kwargs):
-        global global_scale
+        """ Hijacked function for combine_denoised in CFGDenoiser """
         original_func = kwargs.get('original_func', None)
-
         new_params = kwargs.get('pag_params', None)
+
         if new_params is None:
                 logger.error("new_params is None")
                 return original_func(*args)
-        # logger.debug(f"combine_denoised_pass_conds_list - pag_scale:{new_params.pag_scale}")
 
-        denoiser = kwargs.get('denoiser', None)
-        if denoiser is None:
-                logger.error("new_params is None")
-                return original_func(*args)
-
-        scale = global_scale
-        if scale is None:
-                logger.error("pag_scale is None")
-                return original_func(*args)
-        #elif scale == 0:
-        #        return original_func(*args, **kwargs)
-        
         def new_combine_denoised(x_out, conds_list, uncond, cond_scale):
                 denoised_uncond = x_out[-uncond.shape[0]:]
                 denoised = torch.clone(denoised_uncond)
@@ -399,7 +370,7 @@ def combine_denoised_pass_conds_list(*args, **kwargs):
                         for cond_index, weight in conds:
                                 denoised[i] += (x_out[cond_index] - denoised_uncond[i]) * (weight * cond_scale)
                                 try:
-                                        denoised[i] += (x_out[cond_index] - new_params.pag_x_out[i]) * (weight * global_scale)
+                                        denoised[i] += (x_out[cond_index] - new_params.pag_x_out[i]) * (weight * new_params.pag_scale)
                                 except TypeError:
                                         logger.exception("TypeError in combine_denoised_pass_conds_list")
                                 except IndexError:
@@ -409,13 +380,7 @@ def combine_denoised_pass_conds_list(*args, **kwargs):
         return new_combine_denoised(*args)
 
 
-def catenate_conds(conds):
-    if not isinstance(conds[0], dict):
-        return torch.cat(conds)
-
-    return {key: torch.cat([x[key] for x in conds]) for key in conds[0].keys()}
-
-
+# from modules/sd_samplers_cfg_denoiser.py:187-195
 def get_make_condition_dict_fn(text_uncond):
         if shared.sd_model.model.conditioning_key == "crossattn-adm":
                 make_condition_dict = lambda c_crossattn, c_adm: {"c_crossattn": [c_crossattn], "c_adm": c_adm}
