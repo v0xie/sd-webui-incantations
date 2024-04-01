@@ -377,7 +377,7 @@ def combine_denoised_pass_conds_list(*args, **kwargs):
         if new_params is None:
                 logger.error("new_params is None")
                 return original_func(*args)
-        logger.debug(f"combine_denoised_pass_conds_list - pag_scale:{new_params.pag_scale}")
+        # logger.debug(f"combine_denoised_pass_conds_list - pag_scale:{new_params.pag_scale}")
 
         denoiser = kwargs.get('denoiser', None)
         if denoiser is None:
@@ -404,7 +404,7 @@ def combine_denoised_pass_conds_list(*args, **kwargs):
                                         logger.exception("TypeError in combine_denoised_pass_conds_list")
                                 except IndexError:
                                         logger.exception("IndexError in combine_denoised_pass_conds_list")
-                                logger.debug(f"added PAG guidance to denoised - pag_scale:{global_scale}")
+                                #logger.debug(f"added PAG guidance to denoised - pag_scale:{global_scale}")
                 return denoised
         return new_combine_denoised(*args)
 
