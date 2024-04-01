@@ -10,7 +10,7 @@ from modules.processing import StableDiffusionProcessing
 from scripts.ui_wrapper import UIWrapper
 from scripts.incant import IncantExtensionScript
 from scripts.t2i_zero import T2I0ExtensionScript
-from scripts.p2hp import P2HP
+from scripts.pag import PAGExtensionScript
 
 logger = logging.getLogger(__name__)
 logger.setLevel(environ.get("SD_WEBUI_LOG_LEVEL", logging.INFO))
@@ -30,9 +30,9 @@ class SubmoduleInfo:
                 self.arg_idx: int = arg_idx # where the list of args starts
 
 submodules: list[SubmoduleInfo] = [
-        SubmoduleInfo(module=IncantExtensionScript()),
+        SubmoduleInfo(module=PAGExtensionScript()),
         SubmoduleInfo(module=T2I0ExtensionScript()),
-        SubmoduleInfo(module=P2HP()),
+        SubmoduleInfo(module=IncantExtensionScript()),
 ]
                 
 class IncantBaseExtensionScript(scripts.Script):
@@ -51,7 +51,7 @@ class IncantBaseExtensionScript(scripts.Script):
         def ui(self, is_img2img):
                 # setup UI
                 out = []
-                with gr.Accordion('Incantations', open=True):
+                with gr.Accordion('Incantations', open=False):
                         for idx, module_info in enumerate(submodules):
                                 module_info.module_idx = idx
                                 module = module_info.module

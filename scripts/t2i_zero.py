@@ -30,7 +30,10 @@ logger.setLevel(environ.get("SD_WEBUI_LOG_LEVEL", logging.INFO))
 
 """
 
-Unofficial implementation of algorithms in Multi-Concept T2I-Zero: Tweaking Only The Text Embeddings and Nothing Else
+Unofficial implementation of algorithms in "Multi-Concept T2I-Zero: Tweaking Only The Text Embeddings and Nothing Else"
+
+Also implements some "Reduce distortion in generation" algorithms from "Enhancing Semantic Fidelity in Text-to-Image Synthesis: Attention Regulation in Diffusion Models"
+
 
 @misc{tunanyan2023multiconcept,
       title={Multi-Concept T2I-Zero: Tweaking Only The Text Embeddings and Nothing Else}, 
@@ -41,8 +44,17 @@ Unofficial implementation of algorithms in Multi-Concept T2I-Zero: Tweaking Only
       primaryClass={cs.CV}
 }
 
+@misc{zhang2024enhancing,
+    title={Enhancing Semantic Fidelity in Text-to-Image Synthesis: Attention Regulation in Diffusion Models},
+    author={Yang Zhang and Teoh Tze Tzun and Lim Wei Hern and Tiviatis Sim and Kenji Kawaguchi},
+    year={2024},
+    eprint={2403.06381},
+    archivePrefix={arXiv},
+    primaryClass={cs.CV}
+}
+
 Author: v0xie
-GitHub URL: https://github.com/v0xie/sd-webui-semantic-guidance
+GitHub URL: https://github.com/v0xie/sd-webui-incantations
 
 """
 
@@ -50,6 +62,10 @@ handles = []
 
 class T2I0StateParams:
         def __init__(self):
+                self.attnreg: bool = False
+                self.ema_smoothing_factor: float = 2.0
+                self.step_end : int = 25
+                self.tokens: str = "" # [0, 20]
                 self.window_size_period: int = 10 # [0, 20]
                 self.ctnms_alpha: float = 0.05 # [0., 1.] if abs value of difference between uncodition and concept-conditioned is less than this, then zero out the concept-conditioned values less than this
                 self.correction_threshold: float = 0.5 # [0., 1.]
@@ -74,55 +90,77 @@ class T2I0ExtensionScript(UIWrapper):
 
         # Setup menu ui detail
         def setup_ui(self, is_img2img) -> list:
-                with gr.Accordion('Multi-Concept T2I-Zero [arXiv:2310.07419v1]', open=True):
+                with gr.Accordion('Multi-Concept T2I-Zero', open=False):
                         active = gr.Checkbox(value=False, default=False, label="Active", elem_id='t2i0_active')
+                        step_end = gr.Slider(value=25, minimum=0, maximum=150, default=1, step=1, label="Step End", elem_id='t2i0_step_end')
                         with gr.Row():
-                                window_size = gr.Slider(value = 15, minimum = 0, maximum = 100, step = 1, label="Correction by Similarities Window Size", elem_id = 't2i0_window_size', info="Exclude contribution of tokens further than this from the current token")
-                                correction_threshold = gr.Slider(value = 0.5, minimum = 0.0, maximum = 1.0, step = 0.01, label="CbS Score Threshold", elem_id = 't2i0_correction_threshold', info="Filter dimensions with similarity below this threshold")
-                                correction_strength = gr.Slider(value = 0.25, minimum = 0.0, maximum = 0.999, step = 0.01, label="CbS Correction Strength", elem_id = 't2i0_correction_strength', info="The strength of the correction, default 0.25")
+                                tokens = gr.Textbox(visible=False, value="", label="Tokens", elem_id='t2i0_tokens', info="Comma separated list of tokens to condition on")
                         with gr.Row():
+                                window_size = gr.Slider(value = 3, minimum = 0, maximum = 100, step = 1, label="Correction by Similarities Window Size", elem_id = 't2i0_window_size', info="Exclude contribution of tokens further than this from the current token")
+                                correction_threshold = gr.Slider(value = 0.0, minimum = 0., maximum = 1.0, step = 0.001, label="CbS Score Threshold", elem_id = 't2i0_correction_threshold', info="Filter dimensions with similarity below this threshold")
+                                correction_strength = gr.Slider(value = 0.0, minimum = 0.0, maximum = 0.999, step = 0.01, label="CbS Correction Strength", elem_id = 't2i0_correction_strength', info="The strength of the correction, default 0.1")
+                        with gr.Row():
+                                attnreg = gr.Checkbox(visible=False, value=False, default=False, label="Use Attention Regulation", elem_id='t2i0_use_attnreg')
                                 ctnms_alpha = gr.Slider(value = 0.1, minimum = 0.0, maximum = 1.0, step = 0.01, label="Alpha for Cross-Token Non-Maximum Suppression", elem_id = 't2i0_ctnms_alpha', info="Contribution of the suppressed attention map, default 0.1")
+                                ema_factor = gr.Slider(value=0.0, minimum=0.0, maximum=4.0, default=2.0, label="EMA Smoothing Factor", elem_id='t2i0_ema_factor', info="Based on method from [arXiv:2403.06381]")
                 active.do_not_save_to_config = True
+                attnreg.do_not_save_to_config = True
+                ema_factor.do_not_save_to_config = True
+                step_end.do_not_save_to_config = True
                 window_size.do_not_save_to_config = True
                 ctnms_alpha.do_not_save_to_config = True
                 correction_threshold.do_not_save_to_config = True
                 correction_strength.do_not_save_to_config = True
                 self.infotext_fields = [
                         (active, lambda d: gr.Checkbox.update(value='T2I-0 Active' in d)),
+                        #(attnreg, lambda d: gr.Checkbox.update(value='T2I-0 AttnReg' in d)),
+                        (step_end, 'T2I-0 Step End'),
                         (window_size, 'T2I-0 Window Size'),
                         (ctnms_alpha, 'T2I-0 CTNMS Alpha'),
                         (correction_threshold, 'T2I-0 CbS Score Threshold'),
                         (correction_strength, 'T2I-0 CbS Correction Strength'),
+                        (ema_factor, 'T2I-0 CTNMS EMA Smoothing Factor'),
                 ]
                 self.paste_field_names = [
                         't2i0_active',
+                        't2i0_attnreg',
                         't2i0_window_size',
                         't2i0_ctnms_alpha',
                         't2i0_correction_threshold',
                         't2i0_correction_strength'
+                        't2i0_ema_factor',
+                        't2i0_step_end'
                 ]
-                return [active, window_size, ctnms_alpha, correction_threshold, correction_strength]
+                return [active, attnreg, window_size, ctnms_alpha, correction_threshold, correction_strength, tokens, ema_factor, step_end]
 
         def process_batch(self, p: StableDiffusionProcessing, *args, **kwargs):
                self.t2i0_process_batch(p, *args, **kwargs)
 
-        def t2i0_process_batch(self, p: StableDiffusionProcessing, active, window_size, ctnms_alpha, correction_threshold, correction_strength, *args, **kwargs):
+        def t2i0_process_batch(self, p: StableDiffusionProcessing, active, attnreg, window_size, ctnms_alpha, correction_threshold, correction_strength, tokens, ema_factor, step_end, *args, **kwargs):
                 active = getattr(p, "t2i0_active", active)
+                use_attnreg = getattr(p, "t2i0_attnreg", attnreg)
+                ema_factor = getattr(p, "t2i0_ema_factor", ema_factor)
+                step_end = getattr(p, "t2i0_step_end", step_end)
                 if active is False:
                         return
                 window_size = getattr(p, "t2i0_window_size", window_size)
                 ctnms_alpha = getattr(p, "t2i0_ctnms_alpha", ctnms_alpha)
                 correction_threshold = getattr(p, "t2i0_correction_threshold", correction_threshold)
                 correction_strength = getattr(p, "t2i0_correction_strength", correction_strength)
+                tokens = getattr(p, "t2i0_tokens", tokens)
                 p.extra_generation_params.update({
                         "T2I-0 Active": active,
+                        #"T2I-0 AttnReg": attnreg,
+                        #"T2I-0 Tokens": tokens,
                         "T2I-0 window_size Period": window_size,
-                        "T2I-0 CTNMS Alpha": ctnms_alpha,
                         "T2I-0 CbS Score Threshold": correction_threshold,
                         "T2I-0 CbS Correction Strength": correction_strength,
+                        "T2I-0 CTNMS Alpha": ctnms_alpha,
+                        "T2I-0 Step End": step_end,
+                        "T2I-0 EMA Smoothing Factor": ema_factor,
                 })
 
-                self.create_hook(p, active, window_size, ctnms_alpha, correction_threshold, correction_strength, p.width, p.height)
+                self.create_hook(p, active, attnreg, window_size, ctnms_alpha, correction_threshold, correction_strength, tokens, ema_factor, step_end, p.width, p.height)
 
         def parse_concept_prompt(self, prompt:str) -> list[str]:
                 """
@@ -140,12 +178,15 @@ class T2I0ExtensionScript(UIWrapper):
                         return []
                 return [x.strip() for x in prompt.split(",")]
 
-        def create_hook(self, p, active, window_size, ctnms_alpha, correction_threshold, correction_strength, width, height, *args, **kwargs):
+        def create_hook(self, p, active, attnreg, window_size, ctnms_alpha, correction_threshold, correction_strength, tokens, ema_factor, step_end, width, height, *args, **kwargs):
                 # Create a list of parameters for each concept
                 t2i0_params = []
 
                 #for _, strength in concept_conds:
                 params = T2I0StateParams()
+                params.attnreg = attnreg 
+                params.ema_smoothing_factor = ema_factor 
+                params.step_end = step_end 
                 params.window_size_period = window_size
                 params.ctnms_alpha = ctnms_alpha
                 params.correction_threshold = correction_threshold
@@ -162,7 +203,7 @@ class T2I0ExtensionScript(UIWrapper):
 
                 # Hook callbacks
                 if ctnms_alpha > 0:
-                        self.ready_hijack_forward(ctnms_alpha, width, height)
+                        self.ready_hijack_forward(ctnms_alpha, width, height, ema_factor, step_end)
 
                 logger.debug('Hooked callbacks')
                 script_callbacks.on_cfg_denoiser(y)
@@ -182,8 +223,35 @@ class T2I0ExtensionScript(UIWrapper):
                 logger.debug('Unhooked callbacks')
                 cross_attn_modules = self.get_cross_attn_modules()
                 for module in cross_attn_modules:
+                        self.remove_field_cross_attn_modules(module, 't2i0_last_attn_map')
+                        self.remove_field_cross_attn_modules(module, 't2i0_step')
+                        self.remove_field_cross_attn_modules(module, 't2i0_step_end')
+                        self.remove_field_cross_attn_modules(module, 't2i0_ema_factor')
+                        self.remove_field_cross_attn_modules(module, 't2i0_ema')
                         _remove_all_forward_hooks(module, 'cross_token_non_maximum_suppression')
                 script_callbacks.remove_current_script_callbacks()
+
+        def apply_attnreg(self, f, C, alpha, B, *args, **kwargs):
+                """
+                Apply attention regulation on an embedding.
+
+                Args:
+                f (Tensor): The embedding tensor of shape (n, d).
+                C (list): Indices of selected tokens.
+                alpha (float): Attnreg strength.
+                B (float): Lagrange multiplier B > 0
+                gamma (int): Window size for the windowing function.
+
+                Returns:
+                Tensor: The corrected embedding tensor.
+                """
+
+                n, d = f.shape
+                f_tilde = f.detach().clone()  # Copy the embedding tensor
+
+                for token_idx, c in enumerate(C):
+                        pass
+                return f_tilde
 
         def correction_by_similarities(self, f, C, percentile, gamma, alpha):
                 """
@@ -221,7 +289,10 @@ class T2I0ExtensionScript(UIWrapper):
                         # often there is a huge difference between the max and min values, so we use a log-like function instead
                         k = 10
                         e= 2.718281
-                        pct = min(0.999999999, max(0.000001, 1 - e**(-k * percentile)))
+                        pct_max = 1/(1+1e-10)
+                        pct_min = 1e-16
+                        # max of 0.999... to 0.0000...1
+                        pct = min(pct_max, max(pct_min, 1 - e**(-k * percentile)))
                         tau = torch.quantile(Sc_flat_positive, pct)
 
                         Sc_tilde = Sc * (Sc > tau)  # Apply threshold and filter
@@ -233,16 +304,36 @@ class T2I0ExtensionScript(UIWrapper):
                         f_tilde[c] = (1 - alpha) * f[c] + alpha * f_c_tilde  # Blend embeddings
                 return f_tilde
 
-        def ready_hijack_forward(self, alpha, width, height):
+        def ready_hijack_forward(self, alpha, width, height, ema_factor, step_end):
                 """ Create a hook to modify the output of the forward pass of the cross attention module 
+                Arguments:
+                        alpha: float - The strength of the CTNMS correction, default 0.1
+                        width: int - The width of the final output image map
+                        height: int - The height of the final output image map
+                        ema_factor: float - EMA smoothing factor, default 2.0
+                        step_end: int - The number of steps to apply the CTNMS correction, after which don't
+
                 Only modifies the output of the cross attention modules that get context (i.e. text embedding)
                 """
                 cross_attn_modules = self.get_cross_attn_modules()
+                # add field for last_attn_map
+                for module in cross_attn_modules:
+                        self.add_field_cross_attn_modules(module, 't2i0_last_attn_map', None)
+                        self.add_field_cross_attn_modules(module, 't2i0_step', torch.tensor([0]).to(device=shared.device))
+                        self.add_field_cross_attn_modules(module, 't2i0_step_end', torch.tensor([step_end]).to(device=shared.device))
+                        self.add_field_cross_attn_modules(module, 't2i0_ema', None)
+                        self.add_field_cross_attn_modules(module, 't2i0_ema_factor', torch.tensor([ema_factor]).to(device=shared.device, dtype=torch.float16))
 
                 def cross_token_non_maximum_suppression(module, input, kwargs, output):
                         context = kwargs.get('context', None)
                         if context is None:
                                 return
+
+                        current_step = module.t2i0_step
+                        end_step = module.t2i0_step_end
+                        if current_step > end_step and end_step > 0:
+                                return
+
                         batch_size, sequence_length, inner_dim = output.shape
 
                         max_dims = width*height
@@ -261,6 +352,9 @@ class T2I0ExtensionScript(UIWrapper):
                         # Reshape the attention map to batch_size, height, width
                         # FIXME: need to assert the height/width divides into the sequence length
                         attention_map = output.view(batch_size, downscale_height, downscale_width, inner_dim)
+
+                        if module.t2i0_ema is None:
+                                module.t2i0_ema = output.detach().clone()
 
                         # Select token indices (Assuming this is provided as t2i0_params or similar)
                         selected_tokens = torch.tensor(list(range(inner_dim)))  # Example: Replace with actual indices
@@ -287,7 +381,21 @@ class T2I0ExtensionScript(UIWrapper):
                         # Reshape back to original dimensions
                         suppressed_attention_map = suppressed_attention_map.view(batch_size, sequence_length, inner_dim)
 
-                        out_tensor = (1-alpha) * output + alpha * suppressed_attention_map
+                        # Calculate the EMA of the suppressed attention map
+                        if module.t2i0_ema_factor > 0:
+                                ema = module.t2i0_ema
+                                ema_factor = module.t2i0_ema_factor / (1 + current_step)
+                                # Add the suppressed attention map to the EMA
+                                ema = ema_factor * ema + (1 - ema_factor) * suppressed_attention_map
+                                module.t2i0_ema = ema
+                                out_tensor = (1 -alpha) * output + (alpha) * ema
+                                #out_tensor = (1-alpha) * ema + alpha * suppressed_attention_map
+                        else:
+                                out_tensor = (1-alpha) * output + alpha * suppressed_attention_map
+
+
+                        # increment step
+                        module.t2i0_step += 1
 
                         return out_tensor
                 # Hook
@@ -300,6 +408,16 @@ class T2I0ExtensionScript(UIWrapper):
                 nlm = m.network_layer_mapping
                 cross_attn_modules = [m for m in nlm.values() if 'CrossAttention' in m.__class__.__name__]
                 return cross_attn_modules
+
+        def add_field_cross_attn_modules(self, module, field, value):
+                """ Add a field to a module if it doesn't exist """
+                if not hasattr(module, field):
+                        setattr(module, field, value)
+        
+        def remove_field_cross_attn_modules(self, module, field):
+                """ Remove a field from a module if it exists """
+                if hasattr(module, field):
+                        delattr(module, field)
 
         def on_cfg_denoiser_callback(self, params: CFGDenoiserParams, t2i0_params: list[T2I0StateParams]):
                 if isinstance(params.text_cond, dict):
@@ -315,6 +433,12 @@ class T2I0ExtensionScript(UIWrapper):
                 height = sp.height
                 ctnms_alpha = sp.ctnms_alpha
 
+                step = params.sampling_step
+                step_end = sp.step_end
+
+                if step > step_end:
+                        return
+
                 for batch_idx, batch in enumerate(text_cond):
                         window = list(range(0, len(batch)))
                         f_bar = self.correction_by_similarities(batch, window, score_threshold, window_size, correction_strength)
@@ -329,9 +453,11 @@ class T2I0ExtensionScript(UIWrapper):
                 extra_axis_options = {
                         xyz_grid.AxisOption("[T2I-0] Active", str, t2i0_apply_override('t2i0_active', boolean=True), choices=xyz_grid.boolean_choice(reverse=True)),
                         xyz_grid.AxisOption("[T2I-0] ctnms_alpha", float, t2i0_apply_field("t2i0_ctnms_alpha")),
+                        xyz_grid.AxisOption("[T2I-0] Step End", float, t2i0_apply_field("t2i0_step_end")),
                         xyz_grid.AxisOption("[T2I-0] Window Size", int, t2i0_apply_field("t2i0_window_size")),
                         xyz_grid.AxisOption("[T2I-0] Correction Threshold", float, t2i0_apply_field("t2i0_correction_threshold")),
                         xyz_grid.AxisOption("[T2I-0] Correction Strength", float, t2i0_apply_field("t2i0_correction_strength")),
+                        xyz_grid.AxisOption("[T2I-0] CTNMS EMA Smoothing Factor", float, t2i0_apply_field("t2i0_ema_factor")),
                 }
                 return extra_axis_options
 
