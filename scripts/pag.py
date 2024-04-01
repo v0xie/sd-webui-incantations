@@ -419,7 +419,12 @@ def combine_denoised_pass_conds_list(*args, **kwargs):
                 for i, conds in enumerate(conds_list):
                         for cond_index, weight in conds:
                                 denoised[i] += (x_out[cond_index] - denoised_uncond[i]) * (weight * cond_scale)
-                                denoised[i] += (x_out[cond_index] - new_params.pag_x_out[i]) * (weight * global_scale)
+                                try:
+                                        denoised[i] += (x_out[cond_index] - new_params.pag_x_out[i]) * (weight * global_scale)
+                                except TypeError:
+                                        logger.exception("TypeError in combine_denoised_pass_conds_list")
+                                except IndexError:
+                                        logger.exception("IndexError in combine_denoised_pass_conds_list")
                                 logger.debug(f"added PAG guidance to denoised - pag_scale:{global_scale}")
                 return denoised
         return new_combine_denoised(*args)
