@@ -90,7 +90,7 @@ class T2I0ExtensionScript(UIWrapper):
 
         # Setup menu ui detail
         def setup_ui(self, is_img2img) -> list:
-                with gr.Accordion('Multi-Concept T2I-Zero [arXiv:2310.07419v1]', open=True):
+                with gr.Accordion('Multi-Concept T2I-Zero [arXiv:2310.07419v1]', open=False):
                         active = gr.Checkbox(value=False, default=False, label="Active", elem_id='t2i0_active')
                         step_end = gr.Slider(value=25, minimum=0, maximum=150, default=1, step=1, label="Step End", elem_id='t2i0_step_end')
                         with gr.Row():
