@@ -47,6 +47,17 @@ SD XL
 An incomplete implementation of a "prompt-upsampling" method from https://arxiv.org/abs/2401.06345  
 Generates an image following the prompt, then uses CLIP text/image similarity to add on to the prompt and generate a new image.  
 
+#### Controls:
+* **Append Generated Caption**: If true, will append an additional interrogated caption to the prompt. For Deepbooru Interrogate, recommend disabling.
+* **Deepbooru Interrogate**: Uses Deepbooru to interrogate instead of CLIP.
+* **Delimiter**: The word to separate the original prompt and the generated prompt. Recommend trying BREAK, AND, NOT, etc.
+* **Word Replacement**: The word/token to replace dissimilar words with.
+* **Gamma**: Replaces words below this level of similarity with the Word Replacement.
+
+For example, if your prompt is "a blue dog", delimiter is "BREAK", and word replacement is "-", and the level of similarity of the word "blue" in the generated image is below gamma, then the new prompt will be "a blue dog BREAK a - dog"
+
+A WIP implementation of the "prompt optimization" methods are available in branch ["s4a-dev2"](https://github.com/v0xie/sd-webui-incantations/tree/s4a-dev2)
+
 
 #### Results:
 SD XL  
