@@ -163,11 +163,9 @@ class PAGExtensionScript(UIWrapper):
                 cross_attn_modules = self.get_cross_attn_modules()
                 for module in cross_attn_modules:
                         to_v = getattr(module, 'to_v', None)
-                        to_out = getattr(module, 'to_out', None)
                         self.remove_field_cross_attn_modules(module, 'pag_enable')
                         self.remove_field_cross_attn_modules(module, 'pag_last_to_v')
                         self.remove_field_cross_attn_modules(to_v, 'pag_parent_module')
-                        self.remove_field_cross_attn_modules(to_out, 'pag_parent_module')
                         _remove_all_forward_hooks(module, 'pag_pre_hook')
                         _remove_all_forward_hooks(to_v, 'to_v_pre_hook')
 
@@ -201,11 +199,10 @@ class PAGExtensionScript(UIWrapper):
                 # add field for last_to_v
                 for module in crossattn_modules:
                         to_v = getattr(module, 'to_v', None)
-                        to_out = getattr(module, 'to_out', None)
                         self.add_field_cross_attn_modules(module, 'pag_enable', False)
                         self.add_field_cross_attn_modules(module, 'pag_last_to_v', None)
                         self.add_field_cross_attn_modules(to_v, 'pag_parent_module', [module])
-                        self.add_field_cross_attn_modules(to_out, 'pag_parent_module', [module])
+                        # self.add_field_cross_attn_modules(to_out, 'pag_parent_module', [module])
 
                 def to_v_pre_hook(module, input, kwargs, output):
                         """ Copy the output of the to_v module to the parent module """
