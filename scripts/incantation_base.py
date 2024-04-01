@@ -10,7 +10,6 @@ from modules.processing import StableDiffusionProcessing
 from scripts.ui_wrapper import UIWrapper
 from scripts.incant import IncantExtensionScript
 from scripts.t2i_zero import T2I0ExtensionScript
-from scripts.p2hp import P2HP
 from scripts.pag import PAGExtensionScript
 
 logger = logging.getLogger(__name__)
@@ -34,7 +33,6 @@ submodules: list[SubmoduleInfo] = [
         SubmoduleInfo(module=PAGExtensionScript()),
         SubmoduleInfo(module=IncantExtensionScript()),
         SubmoduleInfo(module=T2I0ExtensionScript()),
-        SubmoduleInfo(module=P2HP()),
 ]
                 
 class IncantBaseExtensionScript(scripts.Script):

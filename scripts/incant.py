@@ -15,7 +15,6 @@ from modules.sd_samplers_cfg_denoiser import pad_cond
 from modules import shared, devices, errors, deepbooru
 from modules.interrogate import InterrogateModels
 from scripts.ui_wrapper import UIWrapper, arg
-import scripts.prompt_optim_utils as pom
 # from scripts.t2i_zero import SegaExtensionScript
 
 import torch
