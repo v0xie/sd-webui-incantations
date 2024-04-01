@@ -2,7 +2,7 @@
 This extension implements multiple novel algorithms that enhance image quality, prompt following, and more.
 
 ---
-### "Perturbed Attention Guidance"
+## Perturbed Attention Guidance
 https://arxiv.org/abs/2403.17377  
 An alternative/complementary method to CFG (Classifier-Free Guidance) that increases sampling quality.
 
@@ -17,10 +17,11 @@ Prompt: "a puppy and a kitten on the moon"
 - SD XL  
 ![image](./images/xyz_grid-3041-1-a%20puppy%20and%20a%20kitten%20on%20the%20moon.jpg)
 
-Also check out the paper authors' official project page: https://ku-cvlab.github.io/Perturbed-Attention-Guidance/
+#### Also check out the paper authors' official project page:
+- https://ku-cvlab.github.io/Perturbed-Attention-Guidance/
 
 ---
-### "Multi-Concept T2I-Zero / Attention Regulation"
+## Multi-Concept T2I-Zero / Attention Regulation
 Implements Corrections by Similarities and Cross-Token Non-Maximum Suppression from https://arxiv.org/abs/2310.07419
 
 Also implements some methods from "Enhancing Semantic Fidelity in Text-to-Image Synthesis: Attention Regulation in Diffusion Models" https://arxiv.org/abs/2403.06381
@@ -39,12 +40,15 @@ Attempts to reduces the mixing of features of unrelated concepts.
 * **Alpha for Cross-Token Non-Maximum Suppression**: Controls how much effect the attention maps of CTNMS affects the image.
 * **EMA Smoothing Factor**: Smooths the results based on the average of the results of the previous steps. 0 is disabled.
 
+#### Known Issues:
+Can error out with image dimensions which are not a multiple of 64
+
 #### Results:
 Prompt: "A photo of a lion and a grizzly bear and a tiger in the woods"  
 SD XL  
 ![image](./images/xyz_grid-2660-1590472902-A%20photo%20of%20a%20lion%20and%20a%20grizzly%20bear%20and%20a%20tiger%20in%20the%20woods.jpg)  
 
-Also check out the paper authors' official project pages:
+#### Also check out the paper authors' official project pages:
 - https://multi-concept-t2i-zero.github.io/ 
 - https://github.com/YaNgZhAnG-V5/attention_regulation
 
@@ -78,15 +82,15 @@ SD XL
 
 ## Also check out:
 
-* Characteristic Guidance: Awesome enhancements for sampling at high CFG levels [https://github.com/scraed/CharacteristicGuidanceWebUI](https://github.com/scraed/CharacteristicGuidanceWebUI) 
+* **Characteristic Guidance**: Awesome enhancements for sampling at high CFG levels [https://github.com/scraed/CharacteristicGuidanceWebUI](https://github.com/scraed/CharacteristicGuidanceWebUI) 
 
-* A1111-SD-WebUI-DTG: Awesome prompt upsampling method for booru trained anime models [https://github.com/KohakuBlueleaf/z-a1111-sd-webui-dtg](https://github.com/KohakuBlueleaf/z-a1111-sd-webui-dtg)
+* **A1111-SD-WebUI-DTG**: Awesome prompt upsampling method for booru trained anime models [https://github.com/KohakuBlueleaf/z-a1111-sd-webui-dtg](https://github.com/KohakuBlueleaf/z-a1111-sd-webui-dtg)
 
-* CADS: Diversify your generated images [https://github.com/v0xie/sd-webui-cads](https://github.com/v0xie/sd-webui-cads)  
+* **CADS**: Diversify your generated images [https://github.com/v0xie/sd-webui-cads](https://github.com/v0xie/sd-webui-cads)  
 
-* Semantic Guidance:  [https://github.com/v0xie/sd-webui-semantic-guidance](https://github.com/v0xie/sd-webui-semantic-guidance)  
+* **Semantic Guidance**:  [https://github.com/v0xie/sd-webui-semantic-guidance](https://github.com/v0xie/sd-webui-semantic-guidance)  
 
-* Agent Attention: Faster image generation and improved image quality with Agent Attention [https://github.com/v0xie/sd-webui-agentattention](https://github.com/v0xie/sd-webui-agentattention)
+* **Agent Attention**: Faster image generation and improved image quality with Agent Attention [https://github.com/v0xie/sd-webui-agentattention](https://github.com/v0xie/sd-webui-agentattention)
 
 --- 
 
