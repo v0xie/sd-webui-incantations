@@ -4,7 +4,7 @@ This extension implements a number of novel algorithms that aim to enhance image
 ---
 ### "Perturbed Attention Guidance"
 https://arxiv.org/abs/2403.17377  
-Alternative to CFG that increases sampling quality.
+An alternative/complementary method to CFG (Classifier-Free Guidance) that increases sampling quality.
 
 #### Controls
 * **PAG Scale**: Controls the intensity of effect of PAG on the generated image.  
@@ -18,46 +18,51 @@ Prompt: "a puppy and a kitten on the moon"
 ![image](./images/xyz_grid-3041-1-a%20puppy%20and%20a%20kitten%20on%20the%20moon.jpg)
 
 ---
-### "Seek for Incantations"
-https://arxiv.org/abs/2401.06345  
-Generates an image following the prompt, then uses CLIP text/image similarity to add on to the prompt and generate a new image.  
+### "Multi-Concept T2I-Zero / Attention Regulation"
+Implements Corrections by Similarities and Cross-Token Non-Maximum Suppression from https://arxiv.org/abs/2310.07419
 
-* Original Prompt: cinematic 4K photo of a dog riding a bus and eating cake and wearing headphones  
-* Modified Prompt: cinematic 4K photo of a dog riding a bus and eating cake and wearing headphones BREAK - - - - - dog - - bus - - - - - -
-![image](./images/xyz_grid-2652-1419902843-cinematic%204K%20photo%20of%20a%20dog%20riding%20a%20bus%20and%20eating%20cake%20and%20wearing%20headphones.png)
-
----
-### "Multi-Concept T2I-Zero"
-https://arxiv.org/abs/2310.07419
+Also implements some methods from "Enhancing Semantic Fidelity in Text-to-Image Synthesis: Attention Regulation in Diffusion Models" https://arxiv.org/abs/2403.06381
 
 #### Corrections by Similarities
 Reduces the contribution of tokens on far away or conceptually unrelated tokens.
 
 #### Cross-Token Non-Maximum Suppression
-Reduces the mixing of features of unrelated concepts.
-The implementation of Cross-Token Non-Maximum Suppression is most likely wrong since it's working with the output of the cross-attention modules after attention has been calculated; It produces interesting output despite this.  
+Attempts to reduces the mixing of features of unrelated concepts.
 
+#### Controls:
+* **Step End**: After this step, the effect of both CbS and CTNMS ends.
+* **Correction by Similarities Window Size**: The number of adjacent tokens on both sides that can influence each token
+* **CbS Score Threshold**: Tokens with similarity below this threshold have their effect reduced
+* **CbS Correction Strength**: How much the Correction by Similarities effects the image.
+* **Alpha for Cross-Token Non-Maximum Suppression**: Controls how much effect the attention maps of CTNMS affects the image.
+* **EMA Smoothing Factor**: Smooths the results based on the average of the results of the previous steps. 0 is disabled.
+
+#### Results:
 Prompt: "A photo of a lion and a grizzly bear and a tiger in the woods"  
+SD XL  
 ![image](./images/xyz_grid-2660-1590472902-A%20photo%20of%20a%20lion%20and%20a%20grizzly%20bear%20and%20a%20tiger%20in%20the%20woods.jpg)  
 
 ---
-### CADS
-https://arxiv.org/abs/2310.17347
+### "Seek for Incantations"
+An incomplete implementation of a "prompt-upsampling" method from https://arxiv.org/abs/2401.06345  
+Generates an image following the prompt, then uses CLIP text/image similarity to add on to the prompt and generate a new image.  
 
-[https://github.com/v0xie/sd-webui-cads](https://github.com/v0xie/sd-webui-cads)  
 
-todo...
+#### Results:
+SD XL  
+* Original Prompt: cinematic 4K photo of a dog riding a bus and eating cake and wearing headphones  
+* Modified Prompt: cinematic 4K photo of a dog riding a bus and eating cake and wearing headphones BREAK - - - - - dog - - bus - - - - - -
+![image](./images/xyz_grid-2652-1419902843-cinematic%204K%20photo%20of%20a%20dog%20riding%20a%20bus%20and%20eating%20cake%20and%20wearing%20headphones.png)
 
----
-### Semantic Guidance
-https://arxiv.org/abs/2301.12247
-
-[https://github.com/v0xie/sd-webui-semantic-guidance](https://github.com/v0xie/sd-webui-semantic-guidance)  
-
-todo...
 
 ---
 
+Also check out:
+
+CADS [https://github.com/v0xie/sd-webui-cads](https://github.com/v0xie/sd-webui-cads)  
+Semantic Guidance [https://github.com/v0xie/sd-webui-semantic-guidance](https://github.com/v0xie/sd-webui-semantic-guidance)  
+
+--- 
 ### Issues / Pull Requests are welcome!
 ---
 
@@ -91,23 +96,15 @@ todo...
        primaryClass={cs.CV}
       }
 
-      @misc{sadat2023cads,
-       title={CADS: Unleashing the Diversity of Diffusion Models through Condition-Annealed Sampling},
-       author={Seyedmorteza Sadat and Jakob Buhmann and Derek Bradely and Otmar Hilliges and Romann M. Weber},
-       year={2023},
-       eprint={2310.17347},
-       archivePrefix={arXiv},
-       primaryClass={cs.CV}
+      @misc{zhang2024enhancing,
+      title={Enhancing Semantic Fidelity in Text-to-Image Synthesis: Attention Regulation in Diffusion Models},
+      author={Yang Zhang and Teoh Tze Tzun and Lim Wei Hern and Tiviatis Sim and Kenji Kawaguchi},
+      year={2024},
+      eprint={2403.06381},
+      archivePrefix={arXiv},
+      primaryClass={cs.CV}
       }
 
-      @misc{brack2023sega,
-       title={SEGA: Instructing Text-to-Image Models using Semantic Guidance}, 
-       author={Manuel Brack and Felix Friedrich and Dominik Hintersdorf and Lukas Struppek and Patrick Schramowski and Kristian Kersting},
-       year={2023},
-       eprint={2301.12247},
-       archivePrefix={arXiv},
-       primaryClass={cs.CV}
-      }
 
 - Hard Prompts Made Easy (https://github.com/YuxinWenRick/hard-prompts-made-easy)
 
