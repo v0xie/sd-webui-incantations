@@ -1,5 +1,5 @@
 # sd-webui-incantations
-This extension implements a number of novel algorithms that aim to enhance image quality, prompt following, and more.
+This extension implements multiple novel algorithms that enhance image quality, prompt following, and more.
 
 ---
 ### "Perturbed Attention Guidance"
@@ -16,6 +16,8 @@ Prompt: "a puppy and a kitten on the moon"
 
 - SD XL  
 ![image](./images/xyz_grid-3041-1-a%20puppy%20and%20a%20kitten%20on%20the%20moon.jpg)
+
+Also check out the paper authors' official project page: https://ku-cvlab.github.io/Perturbed-Attention-Guidance/
 
 ---
 ### "Multi-Concept T2I-Zero / Attention Regulation"
@@ -42,6 +44,10 @@ Prompt: "A photo of a lion and a grizzly bear and a tiger in the woods"
 SD XL  
 ![image](./images/xyz_grid-2660-1590472902-A%20photo%20of%20a%20lion%20and%20a%20grizzly%20bear%20and%20a%20tiger%20in%20the%20woods.jpg)  
 
+Also check out the paper authors' official project pages:
+- https://multi-concept-t2i-zero.github.io/ 
+- https://github.com/YaNgZhAnG-V5/attention_regulation
+
 ---
 ### "Seek for Incantations"
 An incomplete implementation of a "prompt-upsampling" method from https://arxiv.org/abs/2401.06345  
@@ -65,17 +71,24 @@ SD XL
 * Modified Prompt: cinematic 4K photo of a dog riding a bus and eating cake and wearing headphones BREAK - - - - - dog - - bus - - - - - -
 ![image](./images/xyz_grid-2652-1419902843-cinematic%204K%20photo%20of%20a%20dog%20riding%20a%20bus%20and%20eating%20cake%20and%20wearing%20headphones.png)
 
-
 ---
 
-Also check out:
-
-CADS [https://github.com/v0xie/sd-webui-cads](https://github.com/v0xie/sd-webui-cads)  
-Semantic Guidance [https://github.com/v0xie/sd-webui-semantic-guidance](https://github.com/v0xie/sd-webui-semantic-guidance)  
-
---- 
 ### Issues / Pull Requests are welcome!
 ---
+
+## Also check out:
+
+* Characteristic Guidance: Awesome enhancements for sampling at high CFG levels [https://github.com/scraed/CharacteristicGuidanceWebUI](https://github.com/scraed/CharacteristicGuidanceWebUI) 
+
+* A1111-SD-WebUI-DTG: Awesome prompt upsampling method for booru trained anime models [https://github.com/KohakuBlueleaf/z-a1111-sd-webui-dtg](https://github.com/KohakuBlueleaf/z-a1111-sd-webui-dtg)
+
+* CADS: Diversify your generated images [https://github.com/v0xie/sd-webui-cads](https://github.com/v0xie/sd-webui-cads)  
+
+* Semantic Guidance:  [https://github.com/v0xie/sd-webui-semantic-guidance](https://github.com/v0xie/sd-webui-semantic-guidance)  
+
+* Agent Attention: Faster image generation and improved image quality with Agent Attention [https://github.com/v0xie/sd-webui-agentattention](https://github.com/v0xie/sd-webui-agentattention)
+
+--- 
 
 ### Credits
 - The authors of the papers for their methods:  
@@ -121,3 +134,4 @@ Semantic Guidance [https://github.com/v0xie/sd-webui-semantic-guidance](https://
 
 - @udon-universe's extension templates (https://github.com/udon-universe/stable-diffusion-webui-extension-templates)
 ---
+
