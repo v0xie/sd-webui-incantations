@@ -321,27 +321,6 @@ class PAGExtensionScript(UIWrapper):
                 """ Callback function for the CFGDenoisedParams 
                 This is where we combine CFG and PAG
                 Refer to pg.22 A.2 of the PAG paper for how CFG and PAG combine
-
-                s: PAG guidance scale, w: CFG guidance scale
-
-
-                Normal CFG calculation (in combined_denoised() in modules/sd_samplers_cfg_denoiser.py)
-                        CFG = w(ϵθ (xt, c) − ϵθ (xt, ϕ))
-                
-                PAG guidance calculation (in on_cfg_denoiser_callback)
-                        PAG = s(ϵθ (xt, c) − ˆϵθ (xt, c))
-
-                To work around the issue of CFG guidance being applied to the PAG guidance, 
-                we can use the following formulation:
-
-                ϵθ (xt, c) = x_out[0]
-                ϵθ (xt, ϕ) = x_out[1]
-                ˆϵθ (xt, c) = pag_x_out[1]
-
-                ~ϵθ (xt, c) = ϵθ (xt, c) + CFG + PAG
-                ~ϵθ (xt, c) = ϵθ (xt, c) + w(ϵθ (xt, c) − ϵθ (xt, ϕ)) + s(ϵθ (xt, c) − ˆϵθ (xt, c))  
-                ~ϵθ (xt, c) = ϵθ (xt, c) + w(CFG) + s(PAG)  
-                ~ϵθ (xt, c) = ϵθ (xt, c) + w(CFG + s/w(PAG))
                 
                 """
                 # original x_out
