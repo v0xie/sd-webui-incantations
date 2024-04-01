@@ -10,7 +10,6 @@ from modules.processing import StableDiffusionProcessing
 from scripts.ui_wrapper import UIWrapper
 from scripts.incant import IncantExtensionScript
 from scripts.t2i_zero import T2I0ExtensionScript
-from scripts.p2hp import P2HP
 
 logger = logging.getLogger(__name__)
 logger.setLevel(environ.get("SD_WEBUI_LOG_LEVEL", logging.INFO))
@@ -32,7 +31,6 @@ class SubmoduleInfo:
 submodules: list[SubmoduleInfo] = [
         SubmoduleInfo(module=IncantExtensionScript()),
         SubmoduleInfo(module=T2I0ExtensionScript()),
-        SubmoduleInfo(module=P2HP()),
 ]
                 
 class IncantBaseExtensionScript(scripts.Script):
