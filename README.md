@@ -1,6 +1,10 @@
 # sd-webui-incantations
 This extension implements multiple novel algorithms that enhance image quality, prompt following, and more.
 
+## COMPATIBILITY NOTICE:
+####  Currently incompatible with stable-diffusion-webui-forge https://github.com/lllyasviel/stable-diffusion-webui-forge
+May conflict with extensions that modify the CFGDenoiser
+
 ---
 ## Perturbed Attention Guidance
 https://arxiv.org/abs/2403.17377  
