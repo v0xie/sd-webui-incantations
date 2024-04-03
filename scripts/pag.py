@@ -132,6 +132,9 @@ class PAGExtensionScript(UIWrapper):
 
                 # Get all the qv modules
                 cross_attn_modules = self.get_cross_attn_modules()
+                if len(cross_attn_modules) == 0:
+                        logger.error("No cross attention modules found, cannot proceed with PAG")
+                        return
                 pag_params.crossattn_modules = [m for m in cross_attn_modules if 'CrossAttention' in m.__class__.__name__]
 
                 # Use lambda to call the callback function with the parameters to avoid global variables
