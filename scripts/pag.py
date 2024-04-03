@@ -132,6 +132,9 @@ class PAGExtensionScript(UIWrapper):
 
                 # Get all the qv modules
                 cross_attn_modules = self.get_cross_attn_modules()
+                if len(cross_attn_modules) == 0:
+                        logger.error("No cross attention modules found, cannot proceed with PAG")
+                        return
                 pag_params.crossattn_modules = [m for m in cross_attn_modules if 'CrossAttention' in m.__class__.__name__]
 
                 # Use lambda to call the callback function with the parameters to avoid global variables
@@ -240,10 +243,17 @@ class PAGExtensionScript(UIWrapper):
                 Refere to page 22 of the PAG paper, Appendix A.2
                 
                 """
-                m = shared.sd_model
-                nlm = m.network_layer_mapping
-                middle_block_modules = [m for m in nlm.values() if 'middle_block_1_transformer_blocks_0_attn1' in m.network_layer_name and 'CrossAttention' in m.__class__.__name__]
-                return middle_block_modules
+                try:
+                        m = shared.sd_model
+                        nlm = m.network_layer_mapping
+                        middle_block_modules = [m for m in nlm.values() if 'middle_block_1_transformer_blocks_0_attn1' in m.network_layer_name and 'CrossAttention' in m.__class__.__name__]
+                        return middle_block_modules
+                except AttributeError:
+                        logger.exception("AttributeError in get_middle_block_modules", stack_info=True)
+                        return []
+                except Exception:
+                        logger.exception("Exception in get_middle_block_modules", stack_info=True)
+                        return []
 
         def get_cross_attn_modules(self):
                 """ Get all cross attention modules """

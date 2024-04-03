@@ -179,6 +179,11 @@ class T2I0ExtensionScript(UIWrapper):
                 return [x.strip() for x in prompt.split(",")]
 
         def create_hook(self, p, active, attnreg, window_size, ctnms_alpha, correction_threshold, correction_strength, tokens, ema_factor, step_end, width, height, *args, **kwargs):
+                # Sanity check
+                cross_attn_modules = self.get_cross_attn_modules()
+                if len(cross_attn_modules) == 0:
+                        logger.error("No cross attention modules found, cannot run T2I-0")
+                        return
                 # Create a list of parameters for each concept
                 t2i0_params = []
 
@@ -316,6 +321,9 @@ class T2I0ExtensionScript(UIWrapper):
                 Only modifies the output of the cross attention modules that get context (i.e. text embedding)
                 """
                 cross_attn_modules = self.get_cross_attn_modules()
+                if len(cross_attn_modules) == 0:
+                        logger.error("No cross attention modules found, cannot run T2I-0")
+                        return
                 # add field for last_attn_map
                 for module in cross_attn_modules:
                         self.add_field_cross_attn_modules(module, 't2i0_last_attn_map', None)
@@ -404,10 +412,17 @@ class T2I0ExtensionScript(UIWrapper):
 
         def get_cross_attn_modules(self):
                 """ Get all cross attention modules """
-                m = shared.sd_model
-                nlm = m.network_layer_mapping
-                cross_attn_modules = [m for m in nlm.values() if 'CrossAttention' in m.__class__.__name__]
-                return cross_attn_modules
+                try:
+                        m = shared.sd_model
+                        nlm = m.network_layer_mapping
+                        cross_attn_modules = [m for m in nlm.values() if 'CrossAttention' in m.__class__.__name__]
+                        return cross_attn_modules
+                except AttributeError:
+                        logger.exception("AttributeError while getting cross attention modules")
+                        return []
+                except Exception:
+                        logger.exception("Error while getting cross attention modules")
+                        return []
 
         def add_field_cross_attn_modules(self, module, field, value):
                 """ Add a field to a module if it doesn't exist """
