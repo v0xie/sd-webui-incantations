@@ -38,6 +38,11 @@ Constrains the usage of CFG to within a specified noise interval. Allows usage o
 * **CFG Noise Interval Start**: Minimum noise level to use CFG with. SDXL recommended value: 0.28.
 * **CFG Noise Interval End**: Maximum noise level to use CFG with. SDXL recommended value: >5.42.
 
+#### Results
+Prompt: "A pointillist painting of a raccoon looking at the sea."
+- SD XL  
+![image](./images/xyz_grid-3192-1-A%20pointillist%20painting%20of%20a%20raccoon%20looking%20at%20the%20sea.jpg)
+
 ---
 ## Multi-Concept T2I-Zero / Attention Regulation
 Implements Corrections by Similarities and Cross-Token Non-Maximum Suppression from https://arxiv.org/abs/2310.07419
