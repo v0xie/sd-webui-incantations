@@ -114,9 +114,9 @@ class PAGExtensionScript(UIWrapper):
                                 start_step = gr.Slider(value = 0, minimum = 0, maximum = 150, step = 1, label="Start Step", elem_id = 'pag_start_step', info="")
                                 end_step = gr.Slider(value = 150, minimum = 0, maximum = 150, step = 1, label="End Step", elem_id = 'pag_end_step', info="")
                         with gr.Row():
-                                cfg_interval_enable = gr.Checkbox(value=False, default=False, label="Enable CFG Interval", elem_id='cfg_interval_enable', info="Apply CFG only within noise interval")
-                                cfg_interval_low = gr.Slider(value = 0, minimum = 0, maximum = 100, step = 1, label="CFG interval Low", elem_id = 'cfg_interval_low', info="")
-                                cfg_interval_high = gr.Slider(value = 100, minimum = 0, maximum = 100, step = 1, label="CFG interval High", elem_id = 'cfg_interval_high', info="")
+                                cfg_interval_enable = gr.Checkbox(value=False, default=False, label="Enable CFG Interval", elem_id='cfg_interval_enable', info="Apply CFG only within noise interval. SDXL recommend CFG=15; CFG interval (0.28, 5.42]")
+                                cfg_interval_low = gr.Slider(value = 0, minimum = 0, maximum = 100, step = 0.01, label="CFG Noise Interval Low", elem_id = 'cfg_interval_low', info="")
+                                cfg_interval_high = gr.Slider(value = 100, minimum = 0, maximum = 100, step = 0.01, label="CFG Noise Interval High", elem_id = 'cfg_interval_high', info="")
                 active.do_not_save_to_config = True
                 pag_scale.do_not_save_to_config = True
                 start_step.do_not_save_to_config = True
@@ -190,8 +190,10 @@ class PAGExtensionScript(UIWrapper):
                        # Refer to 3.1 Practice in the paper
                        # We want to round high and low noise levels to the nearest integer index
                        logger.debug(f"Before: CFG Interval Low: {pag_params.cfg_interval_low}, CFG Interval High: {pag_params.cfg_interval_high}")
-                       pag_params.cfg_interval_low = calculate_noise_level(cfg_interval_low, pag_params.max_sampling_step)
-                       pag_params.cfg_interval_high = calculate_noise_level(cfg_interval_high, pag_params.max_sampling_step)
+                       low_index = find_closest_index(cfg_interval_low, pag_params.max_sampling_step)
+                       high_index = find_closest_index(cfg_interval_high, pag_params.max_sampling_step)
+                       pag_params.cfg_interval_low = calculate_noise_level(low_index, pag_params.max_sampling_step)
+                       pag_params.cfg_interval_high = calculate_noise_level(high_index, pag_params.max_sampling_step)
                        logger.debug(f"After:  CFG Interval Low: {pag_params.cfg_interval_low}, CFG Interval High: {pag_params.cfg_interval_high}")
 
                 # Get all the qv modules
@@ -431,6 +433,9 @@ class PAGExtensionScript(UIWrapper):
                         xyz_grid.AxisOption("[PAG] PAG Scale", float, pag_apply_field("pag_scale")),
                         xyz_grid.AxisOption("[PAG] PAG Start Step", int, pag_apply_field("pag_start_step")),
                         xyz_grid.AxisOption("[PAG] PAG End Step", int, pag_apply_field("pag_end_step")),
+                        xyz_grid.AxisOption("[PAG] CFG Interval Enable", str, pag_apply_override('cfg_interval_enable', boolean=True), choices=xyz_grid.boolean_choice(reverse=True)),
+                        xyz_grid.AxisOption("[PAG] CFG Interval Low", float, pag_apply_field("cfg_interval_low")),
+                        xyz_grid.AxisOption("[PAG] CFG Interval High", float, pag_apply_field("cfg_interval_high")),
                         #xyz_grid.AxisOption("[PAG] ctnms_alpha", float, pag_apply_field("pag_ctnms_alpha")),
                 }
                 return extra_axis_options
@@ -455,7 +460,7 @@ def combine_denoised_pass_conds_list(*args, **kwargs):
                 if new_params.cfg_interval_enable:
                         start = new_params.cfg_interval_low
                         end = new_params.cfg_interval_high
-                        cfg_scale = cfg_scale if end <= noise_level <= start else 1.0
+                        cfg_scale = cfg_scale if start <= noise_level <= end else 1.0
 
                 logger.debug(f"Noise_level: {noise_level}, CFG Scale: {cfg_scale}")
 
