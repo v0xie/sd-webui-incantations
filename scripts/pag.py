@@ -41,6 +41,18 @@ An unofficial implementation of "Self-Rectifying Diffusion Sampling with Perturb
       primaryClass={cs.CV}
 }
 
+Include noise interval for CFG and PAG guidance in the sampling process from "Applying Guidance in a Limited Interval Improves
+Sample and Distribution Quality in Diffusion Models"
+
+@misc{kynkäänniemi2024applying,
+      title={Applying Guidance in a Limited Interval Improves Sample and Distribution Quality in Diffusion Models}, 
+      author={Tuomas Kynkäänniemi and Miika Aittala and Tero Karras and Samuli Laine and Timo Aila and Jaakko Lehtinen},
+      year={2024},
+      eprint={2404.07724},
+      archivePrefix={arXiv},
+      primaryClass={cs.CV}
+}
+
 Author: v0xie
 GitHub URL: https://github.com/v0xie/sd-webui-incantations
 
@@ -56,6 +68,11 @@ class PAGStateParams:
                 self.pag_scale: int = -1      # PAG guidance scale
                 self.pag_start_step: int = 0
                 self.pag_end_step: int = 150 
+                self.cfg_interval_enable: bool = False
+                self.cfg_interval_low: float = 0
+                self.cfg_interval_high: float = 50.0
+                self.step : int = 0 
+                self.max_sampling_step : int = 1 
                 self.guidance_scale: int = -1 # CFG
                 self.x_in = None
                 self.text_cond = None
@@ -96,28 +113,41 @@ class PAGExtensionScript(UIWrapper):
                         with gr.Row():
                                 start_step = gr.Slider(value = 0, minimum = 0, maximum = 150, step = 1, label="Start Step", elem_id = 'pag_start_step', info="")
                                 end_step = gr.Slider(value = 150, minimum = 0, maximum = 150, step = 1, label="End Step", elem_id = 'pag_end_step', info="")
+                        with gr.Row():
+                                cfg_interval_enable = gr.Checkbox(value=False, default=False, label="Enable CFG Interval", elem_id='cfg_interval_enable', info="Apply CFG only within noise interval")
+                                cfg_interval_low = gr.Slider(value = 0, minimum = 0, maximum = 100.0, step = 0.01, label="CFG interval Low", elem_id = 'cfg_interval_low', info="")
+                                cfg_interval_high = gr.Slider(value = 100.0, minimum = 0, maximum = 100.0, step = 0.01, label="CFG interval High", elem_id = 'cfg_interval_high', info="")
                 active.do_not_save_to_config = True
                 pag_scale.do_not_save_to_config = True
                 start_step.do_not_save_to_config = True
                 end_step.do_not_save_to_config = True
+                cfg_interval_enable.do_not_save_to_config = True
+                cfg_interval_low.do_not_save_to_config = True
+                cfg_interval_high.do_not_save_to_config = True
                 self.infotext_fields = [
                         (active, lambda d: gr.Checkbox.update(value='PAG Active' in d)),
                         (pag_scale, 'PAG Scale'),
                         (start_step, 'PAG Start Step'),
                         (end_step, 'PAG End Step'),
+                        (cfg_interval_enable, 'CFG Interval Enable'),
+                        (cfg_interval_low, 'CFG Interval Low'),
+                        (cfg_interval_high, 'CFG Interval High')
                 ]
                 self.paste_field_names = [
                         'pag_active',
                         'pag_scale',
                         'pag_start_step',
                         'pag_end_step',
+                        'cfg_interval_enable',
+                        'cfg_interval_low',
+                        'cfg_interval_high',
                 ]
-                return [active, pag_scale, start_step, end_step]
+                return [active, pag_scale, start_step, end_step, cfg_interval_enable, cfg_interval_low, cfg_interval_high]
 
         def process_batch(self, p: StableDiffusionProcessing, *args, **kwargs):
                self.pag_process_batch(p, *args, **kwargs)
 
-        def pag_process_batch(self, p: StableDiffusionProcessing, active, pag_scale, start_step, end_step, *args, **kwargs):
+        def pag_process_batch(self, p: StableDiffusionProcessing, active, pag_scale, start_step, end_step, cfg_interval_enable, cfg_interval_low, cfg_interval_high, *args, **kwargs):
                 # cleanup previous hooks always
                 script_callbacks.remove_current_script_callbacks()
                 self.remove_all_hooks()
@@ -129,23 +159,44 @@ class PAGExtensionScript(UIWrapper):
                 start_step = getattr(p, "pag_start_step", start_step)
                 end_step = getattr(p, "pag_end_step", end_step)
 
+                cfg_interval_enable = getattr(p, "cfg_interval_enable", cfg_interval_enable)
+                cfg_interval_low = getattr(p, "cfg_interval_low", cfg_interval_low)
+                cfg_interval_high = getattr(p, "cfg_interval_high", cfg_interval_high)
+
                 p.extra_generation_params.update({
                         "PAG Active": active,
                         "PAG Scale": pag_scale,
                         "PAG Start Step": start_step,
                         "PAG End Step": end_step,
+                        "CFG Interval Enable": cfg_interval_enable,
+                        "CFG Interval Low": cfg_interval_low,
+                        "CFG Interval High": cfg_interval_high
                 })
-                self.create_hook(p, active, pag_scale, start_step, end_step)
+                self.create_hook(p, active, pag_scale, start_step, end_step, cfg_interval_enable, cfg_interval_low, cfg_interval_high)
 
-        def create_hook(self, p: StableDiffusionProcessing, active, pag_scale, start_step, end_step, *args, **kwargs):
+        def create_hook(self, p: StableDiffusionProcessing, active, pag_scale, start_step, end_step, cfg_interval_enable, cfg_interval_low, cfg_interval_high, *args, **kwargs):
                 # Create a list of parameters for each concept
                 pag_params = PAGStateParams()
                 pag_params.pag_scale = pag_scale
                 pag_params.pag_start_step = start_step
                 pag_params.pag_end_step = end_step
+                pag_params.cfg_interval_enable = cfg_interval_enable
+                pag_params.cfg_interval_low = cfg_interval_low
+                pag_params.cfg_interval_high = cfg_interval_high
+                pag_params.max_sampling_step = p.steps
                 pag_params.guidance_scale = p.cfg_scale
                 pag_params.batch_size = p.batch_size
                 pag_params.denoiser = None
+
+                if pag_params.cfg_interval_enable:
+                       # Refer to 3.1 Practice in the paper
+                       # We want to round high and low noise levels to the nearest integer index
+                       logger.debug(f"Before: CFG Interval Low: {pag_params.cfg_interval_low}, CFG Interval High: {pag_params.cfg_interval_high}")
+                       low_index = find_closest_index(pag_params.cfg_interval_low, pag_params.max_sampling_step)
+                       high_index = find_closest_index(pag_params.cfg_interval_high, pag_params.max_sampling_step)
+                       pag_params.cfg_interval_low = calculate_noise_level(high_index, pag_params.max_sampling_step)
+                       pag_params.cfg_interval_high = calculate_noise_level(low_index, pag_params.max_sampling_step)
+                       logger.debug(f"After:  CFG Interval Low: {pag_params.cfg_interval_low}, CFG Interval High: {pag_params.cfg_interval_high}")
 
                 # Get all the qv modules
                 cross_attn_modules = self.get_cross_attn_modules()
@@ -290,9 +341,7 @@ class PAGExtensionScript(UIWrapper):
                 # always unhook
                 self.unhook_callbacks(pag_params)
 
-                # Run only within interval
-                if not pag_params.pag_start_step <= params.sampling_step <= pag_params.pag_end_step:
-                        return
+                pag_params.step = params.sampling_step
 
                 # patch combine_denoised
                 if pag_params.denoiser is None:
@@ -315,6 +364,10 @@ class PAGExtensionScript(UIWrapper):
                         except RuntimeError:
                                 logger.exception("RuntimeError patching combine_denoised")
                                 pass
+
+                # Run only within interval
+                if not pag_params.pag_start_step <= params.sampling_step <= pag_params.pag_end_step or pag_params.pag_scale <= 0:
+                        return
 
                 if isinstance(params.text_cond, dict):
                         text_cond = params.text_cond['crossattn'] # SD XL
@@ -341,7 +394,7 @@ class PAGExtensionScript(UIWrapper):
                 
                 """
                 # Run only within interval
-                if not pag_params.pag_start_step <= params.sampling_step <= pag_params.pag_end_step:
+                if not pag_params.pag_start_step <= params.sampling_step <= pag_params.pag_end_step or pag_params.pag_scale <= 0:
                         return
 
                 # passed from on_cfg_denoiser_callback
@@ -400,16 +453,34 @@ def combine_denoised_pass_conds_list(*args, **kwargs):
                 denoised_uncond = x_out[-uncond.shape[0]:]
                 denoised = torch.clone(denoised_uncond)
 
+                cfg_scale = cond_scale
+                noise_level = calculate_noise_level(new_params.step, new_params.max_sampling_step)
+
+                logger.debug(f"Noise_level: {noise_level}, CFG Scale: {cfg_scale}")
+
+                if new_params.cfg_interval_enable:
+                        start = new_params.cfg_interval_low
+                        end = new_params.cfg_interval_high
+                        cfg_scale = cfg_scale if start <= noise_level <= end else 1.0
+
                 for i, conds in enumerate(conds_list):
                         for cond_index, weight in conds:
-                                denoised[i] += (x_out[cond_index] - denoised_uncond[i]) * (weight * cond_scale)
-                                try:
-                                        denoised[i] += (x_out[cond_index] - new_params.pag_x_out[i]) * (weight * new_params.pag_scale)
-                                except TypeError:
-                                        logger.exception("TypeError in combine_denoised_pass_conds_list")
-                                except IndexError:
-                                        logger.exception("IndexError in combine_denoised_pass_conds_list")
-                                #logger.debug(f"added PAG guidance to denoised - pag_scale:{global_scale}")
+                                if not new_params.cfg_interval_enable:
+                                        denoised[i] += (x_out[cond_index] - denoised_uncond[i]) * (weight * cfg_scale)
+                                else:
+                                        denoised[i] += (x_out[cond_index] - denoised_uncond[i]) * (weight * cfg_scale)
+
+                                # Apply PAG guidance only within interval
+                                if not new_params.pag_start_step <= new_params.step <= new_params.pag_end_step or new_params.pag_scale <= 0:
+                                        continue
+                                else:
+                                        try:
+                                                denoised[i] += (x_out[cond_index] - new_params.pag_x_out[i]) * (weight * new_params.pag_scale)
+                                        except TypeError:
+                                                logger.exception("TypeError in combine_denoised_pass_conds_list")
+                                        except IndexError:
+                                                logger.exception("IndexError in combine_denoised_pass_conds_list")
+                                        #logger.debug(f"added PAG guidance to denoised - pag_scale:{global_scale}")
                 return denoised
         return new_combine_denoised(*args)
 
@@ -424,6 +495,63 @@ def get_make_condition_dict_fn(text_uncond):
                 else:
                         make_condition_dict = lambda c_crossattn, c_concat: {"c_crossattn": [c_crossattn], "c_concat": [c_concat]}
         return make_condition_dict
+
+
+def calculate_noise_level(i, N, sigma_min=0.002, sigma_max=80.0, rho=3):
+    """
+    Calculate the noise level for a given sampling step index.
+
+    Parameters:
+    i (int): Index of the current sampling step (0-based index).
+    N (int): Total number of sampling steps.
+    sigma_min (float): Minimum sigma value for min noise level, default 0.002.
+    sigma_max (float): Maximum sigma value for max noise level, default 80.0.
+    rho (int): Discretization parameter, default 3 for SD-XL, 7 for EDM2.
+
+    Returns:
+    float: Calculated noise level for the given step.
+    """
+    sigma_max_p = sigma_max ** (1/rho)
+    sigma_min_p = sigma_min ** (1/rho)
+    inner_term = sigma_max_p + (i / (N - 1)) * (sigma_min_p - sigma_max_p)
+    noise_level = inner_term ** rho
+
+    return noise_level
+
+
+def find_closest_index(noise_level: float, N: int, sigma_min=0.002, sigma_max=80.0, rho=3, tol=1e-6):
+    """
+    Given a noise level, find the closest integer index in the range [0, N-1] that corresponds to the noise level.
+
+    Parameters:
+    noise_level (float): Target noise level to find the closest index for.
+    N (int): Total number of sampling steps.
+    sigma_min (float): Minimum sigma value for min noise level, default 0.002.
+    sigma_max (float): Maximum sigma value for max noise level, default 80.0.
+    rho (int): Discretization parameter, default 3 for SD-XL, 7 for EDM2.
+
+    Returns:
+    int: The closest index to the specified noise level.
+    """
+    # Min/max noise levels for the given range
+    if noise_level <= 0:
+        return 0
+    if noise_level >= sigma_max:
+        return N - 1
+    
+    low, high = 0, N - 1
+    while low <= high:
+        mid = (low + high) // 2
+        mid_nl = calculate_noise_level(mid, N)
+        if abs(mid_nl - noise_level) < tol:
+            return mid
+        elif mid_nl < noise_level:
+            high = mid - 1
+        else:
+            low = mid + 1
+    
+    # If exact match not found, return the index with noise level closest to the target
+    return low if abs(calculate_noise_level(low, N) - noise_level) < abs(calculate_noise_level(high, N) - noise_level) else high
 
 
 # XYZ Plot
