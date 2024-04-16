@@ -54,6 +54,8 @@ global_scale = 1
 class PAGStateParams:
         def __init__(self):
                 self.pag_scale: int = -1      # PAG guidance scale
+                self.pag_start_step: int = 0
+                self.pag_end_step: int = 150 
                 self.guidance_scale: int = -1 # CFG
                 self.x_in = None
                 self.text_cond = None
@@ -91,22 +93,31 @@ class PAGExtensionScript(UIWrapper):
                         active = gr.Checkbox(value=False, default=False, label="Active", elem_id='pag_active')
                         with gr.Row():
                                 pag_scale = gr.Slider(value = 1.0, minimum = 0, maximum = 20.0, step = 0.5, label="PAG Scale", elem_id = 'pag_scale', info="")
+                        with gr.Row():
+                                start_step = gr.Slider(value = 0, minimum = 0, maximum = 150, step = 1, label="Start Step", elem_id = 'pag_start_step', info="")
+                                end_step = gr.Slider(value = 150, minimum = 0, maximum = 150, step = 1, label="End Step", elem_id = 'pag_end_step', info="")
                 active.do_not_save_to_config = True
                 pag_scale.do_not_save_to_config = True
+                start_step.do_not_save_to_config = True
+                end_step.do_not_save_to_config = True
                 self.infotext_fields = [
                         (active, lambda d: gr.Checkbox.update(value='PAG Active' in d)),
                         (pag_scale, 'PAG Scale'),
+                        (start_step, 'PAG Start Step'),
+                        (end_step, 'PAG End Step'),
                 ]
                 self.paste_field_names = [
                         'pag_active',
                         'pag_scale',
+                        'pag_start_step',
+                        'pag_end_step',
                 ]
-                return [active, pag_scale]
+                return [active, pag_scale, start_step, end_step]
 
         def process_batch(self, p: StableDiffusionProcessing, *args, **kwargs):
                self.pag_process_batch(p, *args, **kwargs)
 
-        def pag_process_batch(self, p: StableDiffusionProcessing, active, pag_scale, *args, **kwargs):
+        def pag_process_batch(self, p: StableDiffusionProcessing, active, pag_scale, start_step, end_step, *args, **kwargs):
                 # cleanup previous hooks always
                 script_callbacks.remove_current_script_callbacks()
                 self.remove_all_hooks()
@@ -115,17 +126,23 @@ class PAGExtensionScript(UIWrapper):
                 if active is False:
                         return
                 pag_scale = getattr(p, "pag_scale", pag_scale)
+                start_step = getattr(p, "pag_start_step", start_step)
+                end_step = getattr(p, "pag_end_step", end_step)
 
                 p.extra_generation_params.update({
                         "PAG Active": active,
                         "PAG Scale": pag_scale,
+                        "PAG Start Step": start_step,
+                        "PAG End Step": end_step,
                 })
-                self.create_hook(p, active, pag_scale)
+                self.create_hook(p, active, pag_scale, start_step, end_step)
 
-        def create_hook(self, p: StableDiffusionProcessing, active, pag_scale, *args, **kwargs):
+        def create_hook(self, p: StableDiffusionProcessing, active, pag_scale, start_step, end_step, *args, **kwargs):
                 # Create a list of parameters for each concept
                 pag_params = PAGStateParams()
                 pag_params.pag_scale = pag_scale
+                pag_params.pag_start_step = start_step
+                pag_params.pag_end_step = end_step
                 pag_params.guidance_scale = p.cfg_scale
                 pag_params.batch_size = p.batch_size
                 pag_params.denoiser = None
@@ -273,6 +290,10 @@ class PAGExtensionScript(UIWrapper):
                 # always unhook
                 self.unhook_callbacks(pag_params)
 
+                # Run only within interval
+                if not pag_params.pag_start_step <= params.sampling_step <= pag_params.pag_end_step:
+                        return
+
                 # patch combine_denoised
                 if pag_params.denoiser is None:
                         pag_params.denoiser = params.denoiser
@@ -319,6 +340,10 @@ class PAGExtensionScript(UIWrapper):
                 Refer to pg.22 A.2 of the PAG paper for how CFG and PAG combine
                 
                 """
+                # Run only within interval
+                if not pag_params.pag_start_step <= params.sampling_step <= pag_params.pag_end_step:
+                        return
+
                 # passed from on_cfg_denoiser_callback
                 x_in = pag_params.x_in
                 tensor = pag_params.text_cond
@@ -355,6 +380,8 @@ class PAGExtensionScript(UIWrapper):
                 extra_axis_options = {
                         xyz_grid.AxisOption("[PAG] Active", str, pag_apply_override('pag_active', boolean=True), choices=xyz_grid.boolean_choice(reverse=True)),
                         xyz_grid.AxisOption("[PAG] PAG Scale", float, pag_apply_field("pag_scale")),
+                        xyz_grid.AxisOption("[PAG] PAG Start Step", int, pag_apply_field("pag_start_step")),
+                        xyz_grid.AxisOption("[PAG] PAG End Step", int, pag_apply_field("pag_end_step")),
                         #xyz_grid.AxisOption("[PAG] ctnms_alpha", float, pag_apply_field("pag_ctnms_alpha")),
                 }
                 return extra_axis_options
