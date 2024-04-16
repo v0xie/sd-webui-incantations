@@ -14,6 +14,8 @@ An alternative/complementary method to CFG (Classifier-Free Guidance) that incre
 
 #### Controls
 * **PAG Scale**: Controls the intensity of effect of PAG on the generated image.  
+* **PAG Start Step**: Step to start using PAG.
+* **PAG End Step**: Step to stop using PAG. 
 
 #### Results
 Prompt: "a puppy and a kitten on the moon"
@@ -25,6 +27,16 @@ Prompt: "a puppy and a kitten on the moon"
 
 #### Also check out the paper authors' official project page:
 - https://ku-cvlab.github.io/Perturbed-Attention-Guidance/
+
+---
+## CFG Interval
+https://arxiv.org/abs/2404.07724  
+Constrains the usage of CFG to within a specified noise interval. Allows usage of high CFG levels (>15) without drastic alteration of composition
+
+#### Controls
+* **Enable CFG Interval**: Enables the CFG Interval (PAG must be active! PAG scale can be set to 0.)
+* **CFG Noise Interval Start**: Minimum noise level to use CFG with. SDXL recommended value: 0.28.
+* **CFG Noise Interval End**: Maximum noise level to use CFG with. SDXL recommended value: >5.42.
 
 ---
 ## Multi-Concept T2I-Zero / Attention Regulation
@@ -137,12 +149,21 @@ SD XL
       }
 
       @misc{zhang2024enhancing,
-      title={Enhancing Semantic Fidelity in Text-to-Image Synthesis: Attention Regulation in Diffusion Models},
-      author={Yang Zhang and Teoh Tze Tzun and Lim Wei Hern and Tiviatis Sim and Kenji Kawaguchi},
-      year={2024},
-      eprint={2403.06381},
-      archivePrefix={arXiv},
-      primaryClass={cs.CV}
+       title={Enhancing Semantic Fidelity in Text-to-Image Synthesis: Attention Regulation in Diffusion Models},
+       author={Yang Zhang and Teoh Tze Tzun and Lim Wei Hern and Tiviatis Sim and Kenji Kawaguchi},
+       year={2024},
+       eprint={2403.06381},
+       archivePrefix={arXiv},
+       primaryClass={cs.CV}
+      }
+
+      @misc{kynkäänniemi2024applying,
+       title={Applying Guidance in a Limited Interval Improves Sample and Distribution Quality in Diffusion Models}, 
+       author={Tuomas Kynkäänniemi and Miika Aittala and Tero Karras and Samuli Laine and Timo Aila and Jaakko Lehtinen},
+       year={2024},
+       eprint={2404.07724},
+       archivePrefix={arXiv},
+       primaryClass={cs.CV}
       }
 
 
