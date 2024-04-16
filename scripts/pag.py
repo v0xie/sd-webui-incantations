@@ -115,8 +115,8 @@ class PAGExtensionScript(UIWrapper):
                                 end_step = gr.Slider(value = 150, minimum = 0, maximum = 150, step = 1, label="End Step", elem_id = 'pag_end_step', info="")
                         with gr.Row():
                                 cfg_interval_enable = gr.Checkbox(value=False, default=False, label="Enable CFG Interval", elem_id='cfg_interval_enable', info="Apply CFG only within noise interval")
-                                cfg_interval_low = gr.Slider(value = 0, minimum = 0, maximum = 100.0, step = 0.01, label="CFG interval Low", elem_id = 'cfg_interval_low', info="")
-                                cfg_interval_high = gr.Slider(value = 100.0, minimum = 0, maximum = 100.0, step = 0.01, label="CFG interval High", elem_id = 'cfg_interval_high', info="")
+                                cfg_interval_low = gr.Slider(value = 0, minimum = 0, maximum = 100, step = 1, label="CFG interval Low", elem_id = 'cfg_interval_low', info="")
+                                cfg_interval_high = gr.Slider(value = 100, minimum = 0, maximum = 100, step = 1, label="CFG interval High", elem_id = 'cfg_interval_high', info="")
                 active.do_not_save_to_config = True
                 pag_scale.do_not_save_to_config = True
                 start_step.do_not_save_to_config = True
@@ -181,8 +181,6 @@ class PAGExtensionScript(UIWrapper):
                 pag_params.pag_start_step = start_step
                 pag_params.pag_end_step = end_step
                 pag_params.cfg_interval_enable = cfg_interval_enable
-                pag_params.cfg_interval_low = cfg_interval_low
-                pag_params.cfg_interval_high = cfg_interval_high
                 pag_params.max_sampling_step = p.steps
                 pag_params.guidance_scale = p.cfg_scale
                 pag_params.batch_size = p.batch_size
@@ -192,10 +190,8 @@ class PAGExtensionScript(UIWrapper):
                        # Refer to 3.1 Practice in the paper
                        # We want to round high and low noise levels to the nearest integer index
                        logger.debug(f"Before: CFG Interval Low: {pag_params.cfg_interval_low}, CFG Interval High: {pag_params.cfg_interval_high}")
-                       low_index = find_closest_index(pag_params.cfg_interval_low, pag_params.max_sampling_step)
-                       high_index = find_closest_index(pag_params.cfg_interval_high, pag_params.max_sampling_step)
-                       pag_params.cfg_interval_low = calculate_noise_level(high_index, pag_params.max_sampling_step)
-                       pag_params.cfg_interval_high = calculate_noise_level(low_index, pag_params.max_sampling_step)
+                       pag_params.cfg_interval_low = calculate_noise_level(cfg_interval_low, pag_params.max_sampling_step)
+                       pag_params.cfg_interval_high = calculate_noise_level(cfg_interval_high, pag_params.max_sampling_step)
                        logger.debug(f"After:  CFG Interval Low: {pag_params.cfg_interval_low}, CFG Interval High: {pag_params.cfg_interval_high}")
 
                 # Get all the qv modules
@@ -452,16 +448,16 @@ def combine_denoised_pass_conds_list(*args, **kwargs):
         def new_combine_denoised(x_out, conds_list, uncond, cond_scale):
                 denoised_uncond = x_out[-uncond.shape[0]:]
                 denoised = torch.clone(denoised_uncond)
-
                 cfg_scale = cond_scale
-                noise_level = calculate_noise_level(new_params.step, new_params.max_sampling_step)
 
-                logger.debug(f"Noise_level: {noise_level}, CFG Scale: {cfg_scale}")
+                noise_level = calculate_noise_level(new_params.step, new_params.max_sampling_step)
 
                 if new_params.cfg_interval_enable:
                         start = new_params.cfg_interval_low
                         end = new_params.cfg_interval_high
-                        cfg_scale = cfg_scale if start <= noise_level <= end else 1.0
+                        cfg_scale = cfg_scale if end <= noise_level <= start else 1.0
+
+                logger.debug(f"Noise_level: {noise_level}, CFG Scale: {cfg_scale}")
 
                 for i, conds in enumerate(conds_list):
                         for cond_index, weight in conds:
@@ -511,6 +507,8 @@ def calculate_noise_level(i, N, sigma_min=0.002, sigma_max=80.0, rho=3):
     Returns:
     float: Calculated noise level for the given step.
     """
+    if i >= N:
+        return 0.0
     sigma_max_p = sigma_max ** (1/rho)
     sigma_min_p = sigma_min ** (1/rho)
     inner_term = sigma_max_p + (i / (N - 1)) * (sigma_min_p - sigma_max_p)
@@ -534,7 +532,7 @@ def find_closest_index(noise_level: float, N: int, sigma_min=0.002, sigma_max=80
     int: The closest index to the specified noise level.
     """
     # Min/max noise levels for the given range
-    if noise_level <= 0:
+    if noise_level <= sigma_min:
         return 0
     if noise_level >= sigma_max:
         return N - 1
