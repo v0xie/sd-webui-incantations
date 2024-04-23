@@ -79,11 +79,13 @@ SCHEDULES = [
         'Constant',
         'Clamp-Linear (c=4.0)',
         'Clamp-Linear (c=2.0)',
+        'Clamp-Linear (c=1.0)',
         'Linear',
         'Inverse-Linear',
         'Cosine',
         'Clamp-Cosine (c=4.0)',
         'Clamp-Cosine (c=2.0)',
+        'Clamp-Cosine (c=1.0)',
         'Sine',
         'Interval',
         'PCS (s=0.01)',
@@ -638,6 +640,8 @@ def cfg_scheduler(schedule: str, step: int, max_steps: int, w0: float) -> float:
                         return clamp_linear_schedule(step, max_steps, w0, 4.0)
                 case 'Clamp-Linear (c=2.0)':
                         return clamp_linear_schedule(step, max_steps, w0, 2.0)
+                case 'Clamp-Linear (c=1.0)':
+                        return clamp_linear_schedule(step, max_steps, w0, 1.0)
                 case 'Inverse-Linear':
                         return invlinear_schedule(step, max_steps, w0)
                 case 'PCS (s=0.01)':
@@ -654,6 +658,8 @@ def cfg_scheduler(schedule: str, step: int, max_steps: int, w0: float) -> float:
                         return clamp_cosine_schedule(step, max_steps, w0, 4.0)
                 case 'Clamp-Cosine (c=2.0)':
                         return clamp_cosine_schedule(step, max_steps, w0, 2.0)
+                case 'Clamp-Cosine (c=1.0)':
+                        return clamp_cosine_schedule(step, max_steps, w0, 1.0)
                 case 'Cosine':
                         return cosine_schedule(step, max_steps, w0)
                 case 'Sine':
