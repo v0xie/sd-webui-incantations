@@ -29,6 +29,8 @@ import torch
 logger = logging.getLogger(__name__)
 logger.setLevel(environ.get("SD_WEBUI_LOG_LEVEL", logging.INFO))
 
+incantations_debug = environ.get("INCANTAIONS_DEBUG", False)
+
 """
 An unofficial implementation of "Self-Rectifying Diffusion Sampling with Perturbed-Attention Guidance" for Automatic1111 WebUI.
 
@@ -78,9 +80,13 @@ SCHEDULES = [
         'Clamp-Linear (c=4.0)',
         'Clamp-Linear (c=2.0)',
         'Linear',
+        'Inverse-Linear',
         'Cosine',
+        'Clamp-Cosine (c=4.0)',
+        'Clamp-Cosine (c=2.0)',
         'Sine',
-        'Interval'
+        'Interval',
+        'PCS (s=0.01)',
         'PCS (s=0.1)',
         'PCS (s=1.0)',
         'PCS (s=2.0)',
@@ -476,7 +482,7 @@ class PAGExtensionScript(UIWrapper):
                         xyz_grid.AxisOption("[PAG] CFG Interval Enable", str, pag_apply_override('cfg_interval_enable', boolean=True), choices=xyz_grid.boolean_choice(reverse=True)),
                         xyz_grid.AxisOption("[PAG] CFG Interval Low", float, pag_apply_field("cfg_interval_low")),
                         xyz_grid.AxisOption("[PAG] CFG Interval High", float, pag_apply_field("cfg_interval_high")),
-                        xyz_grid.AxisOption("[PAG] CFG Schedule", str, pag_apply_override('cfg_interval_schedule', boolean=False), choices=SCHEDULES),
+                        xyz_grid.AxisOption("[PAG] CFG Schedule", str, pag_apply_override('cfg_interval_schedule', boolean=False), choices=lambda: SCHEDULES),
                         #xyz_grid.AxisOption("[PAG] ctnms_alpha", float, pag_apply_field("pag_ctnms_alpha")),
                 }
                 return extra_axis_options
@@ -505,10 +511,11 @@ def combine_denoised_pass_conds_list(*args, **kwargs):
                                 begin_range = start if start <= end else end
                                 end_range = end if start <= end else start
                                 cfg_scale = cfg_scale if begin_range <= noise_level <= end_range else 1.0
-                        else:
-                                cfg_scale = cfg_scheduler(new_params.cfg_interval_schedule, new_params.step, new_params.max_sampling_step, cond_scale)
+                else:
+                        cfg_scale = cfg_scheduler(new_params.cfg_interval_schedule, new_params.step, new_params.max_sampling_step, cond_scale)
 
-                logger.debug(f"Schedule: {new_params.cfg_interval_schedule}, Noise_level: {noise_level}, CFG Scale: {cfg_scale}")
+                if incantations_debug:
+                        logger.debug(f"Schedule: {new_params.cfg_interval_schedule}, CFG Scale: {cfg_scale}, Noise_level: {round(noise_level,3)}")
 
                 for i, conds in enumerate(conds_list):
                         for cond_index, weight in conds:
@@ -609,6 +616,7 @@ def find_closest_index(noise_level: float, N: int, sigma_min=0.002, sigma_max=80
 ### CFG Schedulers
 
 
+# TODO: Refactor this into something cleaner
 def cfg_scheduler(schedule: str, step: int, max_steps: int, w0: float) -> float:
         """
         Constant scheduler for CFG guidance weight.
@@ -632,14 +640,20 @@ def cfg_scheduler(schedule: str, step: int, max_steps: int, w0: float) -> float:
                         return clamp_linear_schedule(step, max_steps, w0, 2.0)
                 case 'Inverse-Linear':
                         return invlinear_schedule(step, max_steps, w0)
-                case 'Powered-Cosine (s=0.1)':
+                case 'PCS (s=0.01)':
+                        return powered_cosine_schedule(step, max_steps, w0, 0.01)
+                case 'PCS (s=0.1)':
                         return powered_cosine_schedule(step, max_steps, w0, 0.1)
-                case 'Powered-Cosine (s=1.0)':
+                case 'PCS (s=1.0)':
                         return powered_cosine_schedule(step, max_steps, w0, 1.0)
-                case 'Powered-Cosine (s=2.0)':
+                case 'PCS (s=2.0)':
                         return powered_cosine_schedule(step, max_steps, w0, 2.0)
-                case 'Powered-Cosine (s=4.0)':
+                case 'PCS (s=4.0)':
                         return powered_cosine_schedule(step, max_steps, w0, 4.0)
+                case 'Clamp-Cosine (c=4.0)':
+                        return clamp_cosine_schedule(step, max_steps, w0, 4.0)
+                case 'Clamp-Cosine (c=2.0)':
+                        return clamp_cosine_schedule(step, max_steps, w0, 2.0)
                 case 'Cosine':
                         return cosine_schedule(step, max_steps, w0)
                 case 'Sine':
@@ -676,6 +690,13 @@ def clamp_linear_schedule(step: int, max_steps: int, w0: float, c: float):
         Normalized clamp-linear scheduler for CFG guidance weight.
         """
         return max(c, linear_schedule(step, max_steps, w0))
+
+
+def clamp_cosine_schedule(step: int, max_steps: int, w0: float, c: float):
+        """
+        Normalized clamp-cosine scheduler for CFG guidance weight.
+        """
+        return max(c, cosine_schedule(step, max_steps, w0))
 
 
 def invlinear_schedule(step: int, max_steps: int, w0: float):
