@@ -5,7 +5,7 @@ This extension implements multiple novel algorithms that enhance image quality, 
 ####  Currently incompatible with stable-diffusion-webui-forge 
 Use this extension with Forge: https://github.com/pamparamm/sd-perturbed-attention
 
-* Reported incompatible with Adetailer #21
+* Reported incompatible with Adetailer: https://github.com/v0xie/sd-webui-incantations/issues/21
 
 * May conflict with extensions that modify the CFGDenoiser
 
