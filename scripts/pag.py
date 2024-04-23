@@ -216,7 +216,7 @@ class PAGExtensionScript(UIWrapper):
                         "PAG Start Step": start_step,
                         "PAG End Step": end_step,
                         "CFG Interval Enable": cfg_interval_enable,
-                        "CFG Interval Schedule": cfg_interval_enable,
+                        "CFG Interval Schedule": cfg_schedule,
                         "CFG Interval Low": cfg_interval_low,
                         "CFG Interval High": cfg_interval_high
                 })
