@@ -29,14 +29,22 @@ Prompt: "a puppy and a kitten on the moon"
 - https://ku-cvlab.github.io/Perturbed-Attention-Guidance/
 
 ---
-## CFG Interval
-https://arxiv.org/abs/2404.07724  
-Constrains the usage of CFG to within a specified noise interval. Allows usage of high CFG levels (>15) without drastic alteration of composition
+## CFG Interval / CFG Scheduler
+https://arxiv.org/abs/2404.07724 and https://arxiv.org/abs/2404.13040 
+
+Constrains the usage of CFG to within a specified noise interval. Allows usage of high CFG levels (>15) without drastic alteration of composition.  
+
+Adds controllable CFG schedules. For Clamp-Linear, use (c=2.0) for SD1.5 and (c=4.0) for SDXL. For PCS, use (s=1.0) for SD1.5 and (s=0.1) for SDXL.
 
 #### Controls
 * **Enable CFG Interval**: Enables the CFG Interval (PAG must be active! PAG scale can be set to 0.)
 * **CFG Noise Interval Start**: Minimum noise level to use CFG with. SDXL recommended value: 0.28.
 * **CFG Noise Interval End**: Maximum noise level to use CFG with. SDXL recommended value: >5.42.
+* **CFG Scheduler**: Sets the schedule type to apply CFG.
+    - Constant: The default CFG method (constant value over all timesteps)
+    - Clamp-Linear: Clamps the CFG to the maximum of (c, Linear)
+    - Clamp-Cosine: Clamps the CFG to the maximum of (c, Cosine)
+    - PCS: Powered Cosine, lower values are better
 
 #### Results
 Prompt: "A pointillist painting of a raccoon looking at the sea."
@@ -167,6 +175,15 @@ SD XL
        author={Tuomas Kynkäänniemi and Miika Aittala and Tero Karras and Samuli Laine and Timo Aila and Jaakko Lehtinen},
        year={2024},
        eprint={2404.07724},
+       archivePrefix={arXiv},
+       primaryClass={cs.CV}
+      }
+
+      @misc{wang2024analysis,
+       title={Analysis of Classifier-Free Guidance Weight Schedulers}, 
+       author={Xi Wang and Nicolas Dufour and Nefeli Andreou and Marie-Paule Cani and Victoria Fernandez Abrevaya and David Picard and Vicky Kalogeiton},
+       year={2024},
+       eprint={2404.13040},
        archivePrefix={arXiv},
        primaryClass={cs.CV}
       }
