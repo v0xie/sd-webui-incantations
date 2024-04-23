@@ -53,6 +53,17 @@ Sample and Distribution Quality in Diffusion Models"
       primaryClass={cs.CV}
 }
 
+Include CFG schedulers from "Analysis of Classifier-Free Guidance Weight Schedulers"
+
+@misc{wang2024analysis,
+      title={Analysis of Classifier-Free Guidance Weight Schedulers}, 
+      author={Xi Wang and Nicolas Dufour and Nefeli Andreou and Marie-Paule Cani and Victoria Fernandez Abrevaya and David Picard and Vicky Kalogeiton},
+      year={2024},
+      eprint={2404.13040},
+      archivePrefix={arXiv},
+      primaryClass={cs.CV}
+}
+
 Author: v0xie
 GitHub URL: https://github.com/v0xie/sd-webui-incantations
 
@@ -62,6 +73,20 @@ GitHub URL: https://github.com/v0xie/sd-webui-incantations
 handles = []
 global_scale = 1
 
+SCHEDULES = [
+        'Constant',
+        'Clamp-Linear (c=4.0)',
+        'Clamp-Linear (c=2.0)',
+        'Linear',
+        'Cosine',
+        'Sine',
+        'Interval'
+        'PCS (s=0.1)',
+        'PCS (s=1.0)',
+        'PCS (s=2.0)',
+        'PCS (s=4.0)',
+]
+
 
 class PAGStateParams:
         def __init__(self):
@@ -69,6 +94,7 @@ class PAGStateParams:
                 self.pag_start_step: int = 0
                 self.pag_end_step: int = 150 
                 self.cfg_interval_enable: bool = False
+                self.cfg_interval_schedule: str = 'Constant'
                 self.cfg_interval_low: float = 0
                 self.cfg_interval_high: float = 50.0
                 self.step : int = 0 
@@ -115,13 +141,23 @@ class PAGExtensionScript(UIWrapper):
                                 end_step = gr.Slider(value = 150, minimum = 0, maximum = 150, step = 1, label="End Step", elem_id = 'pag_end_step', info="")
                         with gr.Row():
                                 cfg_interval_enable = gr.Checkbox(value=False, default=False, label="Enable CFG Interval", elem_id='cfg_interval_enable', info="Apply CFG only within noise interval. PAG must be enabled (scale can be 0). SDXL recommend CFG=15; CFG interval (0.28, 5.42]")
-                                cfg_interval_low = gr.Slider(value = 0, minimum = 0, maximum = 100, step = 0.01, label="CFG Noise Interval Low", elem_id = 'cfg_interval_low', info="")
-                                cfg_interval_high = gr.Slider(value = 100, minimum = 0, maximum = 100, step = 0.01, label="CFG Noise Interval High", elem_id = 'cfg_interval_high', info="")
+                                cfg_schedule = gr.Dropdown(
+                                        value='Constant',
+                                        choices= SCHEDULES,
+                                        label="CFG Interval Schedule", 
+                                        elem_id='cfg_interval_schedule', 
+                                        info="Select the CFG schedule"
+                                )
+                                with gr.Row():
+                                        cfg_interval_low = gr.Slider(value = 0, minimum = 0, maximum = 100, step = 0.01, label="CFG Noise Interval Low", elem_id = 'cfg_interval_low', info="")
+                                        cfg_interval_high = gr.Slider(value = 100, minimum = 0, maximum = 100, step = 0.01, label="CFG Noise Interval High", elem_id = 'cfg_interval_high', info="")
+                                
                 active.do_not_save_to_config = True
                 pag_scale.do_not_save_to_config = True
                 start_step.do_not_save_to_config = True
                 end_step.do_not_save_to_config = True
                 cfg_interval_enable.do_not_save_to_config = True
+                cfg_schedule.do_not_save_to_config = True
                 cfg_interval_low.do_not_save_to_config = True
                 cfg_interval_high.do_not_save_to_config = True
                 self.infotext_fields = [
@@ -130,6 +166,7 @@ class PAGExtensionScript(UIWrapper):
                         (start_step, 'PAG Start Step'),
                         (end_step, 'PAG End Step'),
                         (cfg_interval_enable, 'CFG Interval Enable'),
+                        (cfg_schedule, 'CFG Interval Schedule'),
                         (cfg_interval_low, 'CFG Interval Low'),
                         (cfg_interval_high, 'CFG Interval High')
                 ]
@@ -139,15 +176,16 @@ class PAGExtensionScript(UIWrapper):
                         'pag_start_step',
                         'pag_end_step',
                         'cfg_interval_enable',
+                        'cfg_interval_schedule',
                         'cfg_interval_low',
                         'cfg_interval_high',
                 ]
-                return [active, pag_scale, start_step, end_step, cfg_interval_enable, cfg_interval_low, cfg_interval_high]
+                return [active, pag_scale, start_step, end_step, cfg_interval_enable, cfg_schedule, cfg_interval_low, cfg_interval_high]
 
         def process_batch(self, p: StableDiffusionProcessing, *args, **kwargs):
                self.pag_process_batch(p, *args, **kwargs)
 
-        def pag_process_batch(self, p: StableDiffusionProcessing, active, pag_scale, start_step, end_step, cfg_interval_enable, cfg_interval_low, cfg_interval_high, *args, **kwargs):
+        def pag_process_batch(self, p: StableDiffusionProcessing, active, pag_scale, start_step, end_step, cfg_interval_enable, cfg_schedule, cfg_interval_low, cfg_interval_high, *args, **kwargs):
                 # cleanup previous hooks always
                 script_callbacks.remove_current_script_callbacks()
                 self.remove_all_hooks()
@@ -160,6 +198,7 @@ class PAGExtensionScript(UIWrapper):
                 end_step = getattr(p, "pag_end_step", end_step)
 
                 cfg_interval_enable = getattr(p, "cfg_interval_enable", cfg_interval_enable)
+                cfg_schedule = getattr(p, "cfg_interval_schedule", cfg_schedule)
                 cfg_interval_low = getattr(p, "cfg_interval_low", cfg_interval_low)
                 cfg_interval_high = getattr(p, "cfg_interval_high", cfg_interval_high)
 
@@ -169,18 +208,20 @@ class PAGExtensionScript(UIWrapper):
                         "PAG Start Step": start_step,
                         "PAG End Step": end_step,
                         "CFG Interval Enable": cfg_interval_enable,
+                        "CFG Interval Schedule": cfg_interval_enable,
                         "CFG Interval Low": cfg_interval_low,
                         "CFG Interval High": cfg_interval_high
                 })
-                self.create_hook(p, active, pag_scale, start_step, end_step, cfg_interval_enable, cfg_interval_low, cfg_interval_high)
+                self.create_hook(p, active, pag_scale, start_step, end_step, cfg_interval_enable, cfg_schedule, cfg_interval_low, cfg_interval_high)
 
-        def create_hook(self, p: StableDiffusionProcessing, active, pag_scale, start_step, end_step, cfg_interval_enable, cfg_interval_low, cfg_interval_high, *args, **kwargs):
+        def create_hook(self, p: StableDiffusionProcessing, active, pag_scale, start_step, end_step, cfg_interval_enable, cfg_schedule, cfg_interval_low, cfg_interval_high, *args, **kwargs):
                 # Create a list of parameters for each concept
                 pag_params = PAGStateParams()
                 pag_params.pag_scale = pag_scale
                 pag_params.pag_start_step = start_step
                 pag_params.pag_end_step = end_step
                 pag_params.cfg_interval_enable = cfg_interval_enable
+                pag_params.cfg_interval_schedule = cfg_schedule
                 pag_params.max_sampling_step = p.steps
                 pag_params.guidance_scale = p.cfg_scale
                 pag_params.batch_size = p.batch_size
@@ -435,6 +476,7 @@ class PAGExtensionScript(UIWrapper):
                         xyz_grid.AxisOption("[PAG] CFG Interval Enable", str, pag_apply_override('cfg_interval_enable', boolean=True), choices=xyz_grid.boolean_choice(reverse=True)),
                         xyz_grid.AxisOption("[PAG] CFG Interval Low", float, pag_apply_field("cfg_interval_low")),
                         xyz_grid.AxisOption("[PAG] CFG Interval High", float, pag_apply_field("cfg_interval_high")),
+                        xyz_grid.AxisOption("[PAG] CFG Schedule", str, pag_apply_override('cfg_interval_schedule', boolean=False), choices=SCHEDULES),
                         #xyz_grid.AxisOption("[PAG] ctnms_alpha", float, pag_apply_field("pag_ctnms_alpha")),
                 }
                 return extra_axis_options
@@ -457,13 +499,16 @@ def combine_denoised_pass_conds_list(*args, **kwargs):
                 noise_level = calculate_noise_level(new_params.step, new_params.max_sampling_step)
 
                 if new_params.cfg_interval_enable:
-                        start = new_params.cfg_interval_low
-                        end = new_params.cfg_interval_high
-                        begin_range = start if start <= end else end
-                        end_range = end if start <= end else start
-                        cfg_scale = cfg_scale if begin_range <= noise_level <= end_range else 1.0
+                        if new_params.cfg_schedule == 'Interval':
+                                start = new_params.cfg_interval_low
+                                end = new_params.cfg_interval_high
+                                begin_range = start if start <= end else end
+                                end_range = end if start <= end else start
+                                cfg_scale = cfg_scale if begin_range <= noise_level <= end_range else 1.0
+                        else:
+                                cfg_scale = cfg_scheduler(new_params.cfg_interval_schedule, new_params.step, new_params.max_sampling_step, cond_scale)
 
-                # logger.debug(f"Noise_level: {noise_level}, CFG Scale: {cfg_scale}")
+                logger.debug(f"Schedule: {new_params.cfg_interval_schedule}, Noise_level: {noise_level}, CFG Scale: {cfg_scale}")
 
                 for i, conds in enumerate(conds_list):
                         for cond_index, weight in conds:
@@ -559,6 +604,135 @@ def find_closest_index(noise_level: float, N: int, sigma_min=0.002, sigma_max=80
     
     # If exact match not found, return the index with noise level closest to the target
     return low if abs(calculate_noise_level(low, N) - noise_level) < abs(calculate_noise_level(high, N) - noise_level) else high
+
+
+### CFG Schedulers
+
+
+def cfg_scheduler(schedule: str, step: int, max_steps: int, w0: float) -> float:
+        """
+        Constant scheduler for CFG guidance weight.
+
+        Parameters:
+        step (int): Current sampling step.
+        max_steps (int): Total number of sampling steps.
+        w0 (float): Constant value for the guidance weight.
+
+        Returns:
+        float: Scheduled guidance weight value.
+        """
+        match schedule:
+                case 'Constant':
+                        return constant_schedule(step, max_steps, w0)
+                case 'Linear':
+                        return linear_schedule(step, max_steps, w0)
+                case 'Clamp-Linear (c=4.0)':
+                        return clamp_linear_schedule(step, max_steps, w0, 4.0)
+                case 'Clamp-Linear (c=2.0)':
+                        return clamp_linear_schedule(step, max_steps, w0, 2.0)
+                case 'Inverse-Linear':
+                        return invlinear_schedule(step, max_steps, w0)
+                case 'Powered-Cosine (s=0.1)':
+                        return powered_cosine_schedule(step, max_steps, w0, 0.1)
+                case 'Powered-Cosine (s=1.0)':
+                        return powered_cosine_schedule(step, max_steps, w0, 1.0)
+                case 'Powered-Cosine (s=2.0)':
+                        return powered_cosine_schedule(step, max_steps, w0, 2.0)
+                case 'Powered-Cosine (s=4.0)':
+                        return powered_cosine_schedule(step, max_steps, w0, 4.0)
+                case 'Cosine':
+                        return cosine_schedule(step, max_steps, w0)
+                case 'Sine':
+                        return sine_schedule(step, max_steps, w0)
+                case 'V-Shape':
+                        return v_shape_schedule(step, max_steps, w0)
+                case 'A-Shape':
+                        return a_shape_schedule(step, max_steps, w0)
+                case 'Interval':
+                        return interval_schedule(step, max_steps, w0, 0.25, 5.42)
+                case _:
+                        logger.error(f"Invalid CFG schedule: {schedule}")
+                        return constant_schedule(step, max_steps, w0)
+
+
+def constant_schedule(step: int, max_steps: int, w0: float):
+        """
+        Constant scheduler for CFG guidance weight.
+        """
+        return w0
+
+
+def linear_schedule(step: int, max_steps: int, w0: float):
+        """
+        Normalized linear scheduler for CFG guidance weight.
+        Such that integral 0-> T ~ w(t) dt  = w*T
+        """
+        # return w0 * (1 - step / max_steps)
+        return w0 * 2 * (1 - step / max_steps)
+
+
+def clamp_linear_schedule(step: int, max_steps: int, w0: float, c: float):
+        """
+        Normalized clamp-linear scheduler for CFG guidance weight.
+        """
+        return max(c, linear_schedule(step, max_steps, w0))
+
+
+def invlinear_schedule(step: int, max_steps: int, w0: float):
+        """ 
+        Normalized inverse linear scheduler for CFG guidance weight.
+        """
+        # return w0 * (step / max_steps)
+        return w0 * 2 * (step / max_steps)
+
+
+def powered_cosine_schedule(step: int, max_steps: int, w0: float, s: float):
+        """
+        Normalized cosine scheduler for CFG guidance weight.
+        """
+        return w0 * ((1 - math.cos(math.pi * ((max_steps - step) / max_steps)**s))/2.0)
+
+
+def cosine_schedule(step: int, max_steps: int, w0: float):
+        """
+        Normalized cosine scheduler for CFG guidance weight.
+        """
+        return w0 * (1 + math.cos(math.pi * step / max_steps))
+
+
+def sine_schedule(step: int, max_steps: int, w0: float):
+        """
+        Normalized sine scheduler for CFG guidance weight.
+        """
+        return w0 * (math.sin((math.pi * step / max_steps) - (math.pi / 2)) + 1) 
+
+
+def v_shape_schedule(step: int, max_steps: int, w0: float):
+        """
+        Normalized V-shape scheduler for CFG guidance weight.
+        """
+        if step < max_steps / 2:
+                return invlinear_schedule(step, max_steps, w0)
+        return linear_schedule(step, max_steps, w0)
+
+
+def a_shape_schedule(step: int, max_steps: int, w0: float):
+        """
+        Normalized A-shape scheduler for CFG guidance weight.
+        """
+        if step < max_steps / 2:
+                return linear_schedule(step, max_steps, w0)
+        return invlinear_schedule(step, max_steps, w0)
+
+
+def interval_schedule(step: int, max_steps: int, w0: float, low: float, high: float):
+        """
+        Normalized interval scheduler for CFG guidance weight.
+        """
+        if low <= step <= high:
+                return w0
+        return 1.0
+
 
 
 # XYZ Plot
