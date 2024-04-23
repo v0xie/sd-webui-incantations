@@ -499,7 +499,7 @@ def combine_denoised_pass_conds_list(*args, **kwargs):
                 noise_level = calculate_noise_level(new_params.step, new_params.max_sampling_step)
 
                 if new_params.cfg_interval_enable:
-                        if new_params.cfg_schedule == 'Interval':
+                        if new_params.cfg_interval_schedule == 'Interval':
                                 start = new_params.cfg_interval_low
                                 end = new_params.cfg_interval_high
                                 begin_range = start if start <= end else end
