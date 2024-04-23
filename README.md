@@ -2,10 +2,12 @@
 This extension implements multiple novel algorithms that enhance image quality, prompt following, and more.
 
 ## COMPATIBILITY NOTICES:
-####  Currently incompatible with stable-diffusion-webui-forge https://github.com/lllyasviel/stable-diffusion-webui-forge
+####  Currently incompatible with stable-diffusion-webui-forge 
 Use this extension with Forge: https://github.com/pamparamm/sd-perturbed-attention
 
-May conflict with extensions that modify the CFGDenoiser
+* Reported incompatible with Adetailer #21
+
+* May conflict with extensions that modify the CFGDenoiser
 
 ---
 ## Perturbed Attention Guidance
