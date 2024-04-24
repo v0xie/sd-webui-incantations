@@ -349,6 +349,8 @@ class T2I0ExtensionScript(UIWrapper):
                         if context is None:
                                 return
                         
+                        in_map = input[0]
+                        
                         current_step = module.t2i0_step
                         end_step = module.t2i0_step_end
                         if current_step > end_step and end_step > 0:
@@ -383,6 +385,13 @@ class T2I0ExtensionScript(UIWrapper):
                         attention_map = output.view(batch_size, downscale_height, downscale_width, inner_dim)
 
                         if print_plot:
+                                in_map = in_map.view(batch_size, downscale_height, downscale_width, inner_dim)
+                                ogmap = plot_attention_map(
+                                        in_map[0],
+                                        f"Step {step}, Plot {plot_num}, Input",
+                                        x_label="Width", y_label="Height",
+                                        save_path=f"{outdir}\\step_000{step}_plot0000{plot_num}_in00.png"
+                                )
                                 ogmap = plot_attention_map(
                                         attention_map[0],
                                         f"Step {step}, Plot {plot_num}, Old",
@@ -422,7 +431,8 @@ class T2I0ExtensionScript(UIWrapper):
                                         M[0],
                                         f"Step {step}, Plot {plot_num}, ArgMax Map",
                                         x_label="Width", y_label="Height",
-                                        save_path=f"{outdir}\\step_000{step}_plot0000{plot_num}_old02.png"
+                                        save_path=f"{outdir}\\step_000{step}_plot0000{plot_num}_old02.png",
+                                        plot_type="num"
                                 )
 
                         # Create one-hot vectors for suppression
@@ -549,7 +559,7 @@ class T2I0ExtensionScript(UIWrapper):
                 return extra_axis_options
 
 
-def plot_attention_map(attention_map: torch.Tensor, title, x_label="X", y_label="Y", save_path=None):
+def plot_attention_map(attention_map: torch.Tensor, title, x_label="X", y_label="Y", save_path=None, plot_type="default"):
         """ Plots an attention map using matplotlib.pyplot 
                 Arguments:
                         attention_map: Tensor - The attention map to plot
@@ -572,7 +582,16 @@ def plot_attention_map(attention_map: torch.Tensor, title, x_label="X", y_label=
         fig, ax = plt.subplots()
 
         # Plot the attention map
-        ax.imshow(attention_map, cmap='viridis', interpolation='nearest')
+        if plot_type=='default':
+                ax.imshow(attention_map, cmap='viridis', interpolation='nearest')
+        elif plot_type == 'num':
+                ax.imshow(attention_map, cmap='tab20c', interpolation='nearest')
+                #for x in range(attention_map.shape[0]):
+                #        for y in range(attention_map.shape[1]):
+                #                fig.text(x, y, f"{attention_map[x, y]:.2f}", ha="center", va="center")
+                elements = list(set(attention_map.flatten()))
+                labels = [f"{x}" for x in elements]
+                fig.legend(elements, labels, loc='lower left')
 
         # Set title and labels
         ax.set_title(title)
