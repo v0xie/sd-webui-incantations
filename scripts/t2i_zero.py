@@ -3,6 +3,8 @@ from os import environ
 import modules.scripts as scripts
 import gradio as gr
 import scipy.stats as stats
+import matplotlib.pyplot as plt
+from PIL import Image
 
 from scripts.ui_wrapper import UIWrapper, arg
 from modules import script_callbacks
@@ -24,6 +26,7 @@ from warnings import warn
 from typing import Callable, Dict, Optional
 from collections import OrderedDict
 import torch
+import numpy as np
 
 logger = logging.getLogger(__name__)
 logger.setLevel(environ.get("SD_WEBUI_LOG_LEVEL", logging.INFO))
@@ -59,13 +62,14 @@ GitHub URL: https://github.com/v0xie/sd-webui-incantations
 """
 
 handles = []
+token_indices = [0]
 
 class T2I0StateParams:
         def __init__(self):
                 self.attnreg: bool = False
                 self.ema_smoothing_factor: float = 2.0
                 self.step_end : int = 25
-                self.tokens: str = "" # [0, 20]
+                self.tokens: list[int] = [] # [0, 20]
                 self.window_size_period: int = 10 # [0, 20]
                 self.ctnms_alpha: float = 0.05 # [0., 1.] if abs value of difference between uncodition and concept-conditioned is less than this, then zero out the concept-conditioned values less than this
                 self.correction_threshold: float = 0.5 # [0., 1.]
@@ -94,7 +98,7 @@ class T2I0ExtensionScript(UIWrapper):
                         active = gr.Checkbox(value=False, default=False, label="Active", elem_id='t2i0_active')
                         step_end = gr.Slider(value=25, minimum=0, maximum=150, default=1, step=1, label="Step End", elem_id='t2i0_step_end')
                         with gr.Row():
-                                tokens = gr.Textbox(visible=False, value="", label="Tokens", elem_id='t2i0_tokens', info="Comma separated list of tokens to condition on")
+                                tokens = gr.Textbox(visible=True, value="", label="Tokens", elem_id='t2i0_tokens', info="Comma separated list of tokens to condition on")
                         with gr.Row():
                                 window_size = gr.Slider(value = 3, minimum = 0, maximum = 100, step = 1, label="Correction by Similarities Window Size", elem_id = 't2i0_window_size', info="Exclude contribution of tokens further than this from the current token")
                                 correction_threshold = gr.Slider(value = 0.0, minimum = 0., maximum = 1.0, step = 0.001, label="CbS Score Threshold", elem_id = 't2i0_correction_threshold', info="Filter dimensions with similarity below this threshold")
@@ -233,6 +237,8 @@ class T2I0ExtensionScript(UIWrapper):
                         self.remove_field_cross_attn_modules(module, 't2i0_step_end')
                         self.remove_field_cross_attn_modules(module, 't2i0_ema_factor')
                         self.remove_field_cross_attn_modules(module, 't2i0_ema')
+                        self.remove_field_cross_attn_modules(module, 'plot_num')
+                        self.remove_field_cross_attn_modules(module, 't2i0_tokens')
                         _remove_all_forward_hooks(module, 'cross_token_non_maximum_suppression')
                 script_callbacks.remove_current_script_callbacks()
 
@@ -320,23 +326,29 @@ class T2I0ExtensionScript(UIWrapper):
 
                 Only modifies the output of the cross attention modules that get context (i.e. text embedding)
                 """
+                global token_indices
+
                 cross_attn_modules = self.get_cross_attn_modules()
                 if len(cross_attn_modules) == 0:
                         logger.error("No cross attention modules found, cannot run T2I-0")
                         return
                 # add field for last_attn_map
+                plot_num = 0
                 for module in cross_attn_modules:
                         self.add_field_cross_attn_modules(module, 't2i0_last_attn_map', None)
                         self.add_field_cross_attn_modules(module, 't2i0_step', torch.tensor([0]).to(device=shared.device))
                         self.add_field_cross_attn_modules(module, 't2i0_step_end', torch.tensor([step_end]).to(device=shared.device))
                         self.add_field_cross_attn_modules(module, 't2i0_ema', None)
                         self.add_field_cross_attn_modules(module, 't2i0_ema_factor', torch.tensor([ema_factor]).to(device=shared.device, dtype=torch.float16))
+                        self.add_field_cross_attn_modules(module, 't2i0_tokens', torch.tensor(token_indices).to(device=shared.device))
+                        self.add_field_cross_attn_modules(module, 'plot_num', torch.tensor([plot_num]).to(device=shared.device))
+                        plot_num += 1
 
                 def cross_token_non_maximum_suppression(module, input, kwargs, output):
                         context = kwargs.get('context', None)
                         if context is None:
                                 return
-
+                        
                         current_step = module.t2i0_step
                         end_step = module.t2i0_step_end
                         if current_step > end_step and end_step > 0:
@@ -357,14 +369,33 @@ class T2I0ExtensionScript(UIWrapper):
                         dtype = output.dtype
                         device = output.device
 
+                        print_plot = downscale_width == 64
+
+                        # Plot the attention maps
+                        outdir = f"F:\\temp\\incant"
+                        ogmap_savepath= f"{outdir}\\plot{current_step}_old.png"
+                        map_savepath= f"{outdir}\\plot{current_step}_old.png"
+                        step = current_step.to('cpu').item()
+                        plot_num = module.plot_num.to('cpu').item()
+
                         # Reshape the attention map to batch_size, height, width
                         # FIXME: need to assert the height/width divides into the sequence length
                         attention_map = output.view(batch_size, downscale_height, downscale_width, inner_dim)
+
+                        if print_plot:
+                                ogmap = plot_attention_map(
+                                        attention_map[0],
+                                        f"Step {step}, Plot {plot_num}, Old",
+                                        x_label="Width", y_label="Height",
+                                        save_path=f"{outdir}\\step_000{step}_plot0000{plot_num}_old00.png"
+                                )
+
 
                         if module.t2i0_ema is None:
                                 module.t2i0_ema = output.detach().clone()
 
                         # Select token indices (Assuming this is provided as t2i0_params or similar)
+                        # selected_tokens = module.t2i0_tokens  # Example: Replace with actual indices
                         selected_tokens = torch.tensor(list(range(inner_dim)))  # Example: Replace with actual indices
 
                         # Extract and process the selected attention maps
@@ -375,16 +406,41 @@ class T2I0ExtensionScript(UIWrapper):
                         AC = gaussian_blur(AC)  # Applying Gaussian smoothing
                         AC = AC.permute(0, 2, 3, 1)
 
+                        if print_plot:
+                                ogmap = plot_attention_map(
+                                        AC[0],
+                                        f"Step {step}, Plot {plot_num}, After Blur",
+                                        x_label="Width", y_label="Height",
+                                        save_path=f"{outdir}\\step_000{step}_plot0000{plot_num}_old01.png"
+                                )
+
                         # Find the maximum contributing token for each pixel
                         M = torch.argmax(AC, dim=-1)
+
+                        if print_plot:
+                                ogmap = plot_attention_map(
+                                        M[0],
+                                        f"Step {step}, Plot {plot_num}, ArgMax Map",
+                                        x_label="Width", y_label="Height",
+                                        save_path=f"{outdir}\\step_000{step}_plot0000{plot_num}_old02.png"
+                                )
 
                         # Create one-hot vectors for suppression
                         t = attention_map.size(-1)
                         one_hot_M = F.one_hot(M, num_classes=t).to(dtype=dtype, device=device)
 
+
                         # Apply the suppression mask
                         #suppressed_attention_map = one_hot_M.unsqueeze(2) * attention_map
                         suppressed_attention_map = one_hot_M * attention_map
+
+                        if print_plot:
+                                ogmap = plot_attention_map(
+                                        suppressed_attention_map[0],
+                                        f"Step {step}, Plot {plot_num}, One Hot * Attention Map",
+                                        x_label="Width", y_label="Height",
+                                        save_path=f"{outdir}\\step_000{step}_plot0000{plot_num}_old03.png"
+                                )
 
                         # Reshape back to original dimensions
                         suppressed_attention_map = suppressed_attention_map.view(batch_size, sequence_length, inner_dim)
@@ -404,6 +460,22 @@ class T2I0ExtensionScript(UIWrapper):
 
                         # increment step
                         module.t2i0_step += 1
+
+
+
+                        if print_plot:
+                                #ogmap = plot_attention_map(
+                                #        attention_map[0],
+                                #        f"Step {step}, Plot {plot_num}, Old",
+                                #        x_label="Width", y_label="Height",
+                                #        save_path=f"{outdir}\\step_000{step}_plot0000{plot_num}_old.png"
+                                #)
+                                newmap = plot_attention_map(
+                                        out_tensor.view(batch_size, downscale_height, downscale_width, inner_dim)[0],
+                                        f"Step {step}, Plot {plot_num}, Suppressed",
+                                        x_label="Width", y_label="Height",
+                                        save_path=f"{outdir}\\step_000{step}_plot0000{plot_num}_new.png"
+                                )
 
                         return out_tensor
                 # Hook
@@ -475,6 +547,54 @@ class T2I0ExtensionScript(UIWrapper):
                         xyz_grid.AxisOption("[T2I-0] CTNMS EMA Smoothing Factor", float, t2i0_apply_field("t2i0_ema_factor")),
                 }
                 return extra_axis_options
+
+
+def plot_attention_map(attention_map: torch.Tensor, title, x_label="X", y_label="Y", save_path=None):
+        """ Plots an attention map using matplotlib.pyplot 
+                Arguments:
+                        attention_map: Tensor - The attention map to plot
+                        title: str - The title of the plot
+                        x_label: str (optional) - The x-axis label
+                        y_label: str (optional) - The y-axis label
+                        save_path: str (optional) - The path to save the plot
+                Returns:
+                        PIL.Image: The plot as a PIL image
+        """
+
+        if attention_map.dim() == 3:
+               attention_map = attention_map.squeeze(0).mean(2)
+
+        # Convert attention map to numpy array
+        attention_map = attention_map.detach().cpu().numpy()
+
+
+        # Create figure and axis
+        fig, ax = plt.subplots()
+
+        # Plot the attention map
+        ax.imshow(attention_map, cmap='viridis', interpolation='nearest')
+
+        # Set title and labels
+        ax.set_title(title)
+        ax.set_xlabel(x_label)
+        ax.set_ylabel(y_label)
+
+        # Save the plot if save_path is provided
+        if save_path:
+                plt.savefig(save_path)
+        
+        plt.close(fig)
+
+        # Show the plot
+        # plt.show()
+
+        # Convert the plot to PIL image
+        #image = Image.fromarray(np.uint8(fig.canvas.tostring_rgb()))
+
+        #return image
+
+
+
 
 # XYZ Plot
 # Based on @mcmonkey4eva's XYZ Plot implementation here: https://github.com/mcmonkeyprojects/sd-dynamic-thresholding/blob/master/scripts/dynamic_thresholding.py
