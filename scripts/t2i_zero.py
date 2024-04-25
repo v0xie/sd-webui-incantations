@@ -68,6 +68,7 @@ class T2I0StateParams:
         def __init__(self):
                 self.attnreg: bool = False
                 self.ema_smoothing_factor: float = 2.0
+                self.step_start : int = 0
                 self.step_end : int = 25
                 self.tokens: list[int] = [] # [0, 20]
                 self.window_size_period: int = 10 # [0, 20]
@@ -96,6 +97,7 @@ class T2I0ExtensionScript(UIWrapper):
         def setup_ui(self, is_img2img) -> list:
                 with gr.Accordion('Multi-Concept T2I-Zero', open=False):
                         active = gr.Checkbox(value=False, default=False, label="Active", elem_id='t2i0_active')
+                        step_start = gr.Slider(value=0, minimum=0, maximum=150, default=1, step=1, label="Step Start", elem_id='t2i0_step_start')
                         step_end = gr.Slider(value=25, minimum=0, maximum=150, default=1, step=1, label="Step End", elem_id='t2i0_step_end')
                         with gr.Row():
                                 tokens = gr.Textbox(visible=True, value="", label="Tokens", elem_id='t2i0_tokens', info="Comma separated list of tokens to condition on")
@@ -110,6 +112,7 @@ class T2I0ExtensionScript(UIWrapper):
                 active.do_not_save_to_config = True
                 attnreg.do_not_save_to_config = True
                 ema_factor.do_not_save_to_config = True
+                step_start.do_not_save_to_config = True
                 step_end.do_not_save_to_config = True
                 window_size.do_not_save_to_config = True
                 ctnms_alpha.do_not_save_to_config = True
@@ -118,6 +121,7 @@ class T2I0ExtensionScript(UIWrapper):
                 self.infotext_fields = [
                         (active, lambda d: gr.Checkbox.update(value='T2I-0 Active' in d)),
                         #(attnreg, lambda d: gr.Checkbox.update(value='T2I-0 AttnReg' in d)),
+                        (step_start, 'T2I-0 Step Start'),
                         (step_end, 'T2I-0 Step End'),
                         (window_size, 'T2I-0 Window Size'),
                         (ctnms_alpha, 'T2I-0 CTNMS Alpha'),
@@ -133,17 +137,19 @@ class T2I0ExtensionScript(UIWrapper):
                         't2i0_correction_threshold',
                         't2i0_correction_strength'
                         't2i0_ema_factor',
+                        't2i0_step_start',
                         't2i0_step_end'
                 ]
-                return [active, attnreg, window_size, ctnms_alpha, correction_threshold, correction_strength, tokens, ema_factor, step_end]
+                return [active, attnreg, window_size, ctnms_alpha, correction_threshold, correction_strength, tokens, ema_factor, step_end, step_start]
 
         def process_batch(self, p: StableDiffusionProcessing, *args, **kwargs):
                self.t2i0_process_batch(p, *args, **kwargs)
 
-        def t2i0_process_batch(self, p: StableDiffusionProcessing, active, attnreg, window_size, ctnms_alpha, correction_threshold, correction_strength, tokens, ema_factor, step_end, *args, **kwargs):
+        def t2i0_process_batch(self, p: StableDiffusionProcessing, active, attnreg, window_size, ctnms_alpha, correction_threshold, correction_strength, tokens, ema_factor, step_end, step_start, *args, **kwargs):
                 active = getattr(p, "t2i0_active", active)
                 use_attnreg = getattr(p, "t2i0_attnreg", attnreg)
                 ema_factor = getattr(p, "t2i0_ema_factor", ema_factor)
+                step_start = getattr(p, "t2i0_step_start", step_start)
                 step_end = getattr(p, "t2i0_step_end", step_end)
                 if active is False:
                         return
@@ -160,11 +166,12 @@ class T2I0ExtensionScript(UIWrapper):
                         "T2I-0 CbS Score Threshold": correction_threshold,
                         "T2I-0 CbS Correction Strength": correction_strength,
                         "T2I-0 CTNMS Alpha": ctnms_alpha,
+                        "T2I-0 Step Start": step_start,
                         "T2I-0 Step End": step_end,
                         "T2I-0 EMA Smoothing Factor": ema_factor,
                 })
 
-                self.create_hook(p, active, attnreg, window_size, ctnms_alpha, correction_threshold, correction_strength, tokens, ema_factor, step_end, p.width, p.height)
+                self.create_hook(p, active, attnreg, window_size, ctnms_alpha, correction_threshold, correction_strength, tokens, ema_factor, step_end, step_start, p.width, p.height)
 
         def parse_concept_prompt(self, prompt:str) -> list[str]:
                 """
@@ -182,7 +189,7 @@ class T2I0ExtensionScript(UIWrapper):
                         return []
                 return [x.strip() for x in prompt.split(",")]
 
-        def create_hook(self, p, active, attnreg, window_size, ctnms_alpha, correction_threshold, correction_strength, tokens, ema_factor, step_end, width, height, *args, **kwargs):
+        def create_hook(self, p, active, attnreg, window_size, ctnms_alpha, correction_threshold, correction_strength, tokens, ema_factor, step_end, step_start, width, height, *args, **kwargs):
                 # Sanity check
                 cross_attn_modules = self.get_cross_attn_modules()
                 if len(cross_attn_modules) == 0:
@@ -195,6 +202,7 @@ class T2I0ExtensionScript(UIWrapper):
                 params = T2I0StateParams()
                 params.attnreg = attnreg 
                 params.ema_smoothing_factor = ema_factor 
+                params.step_start = step_end 
                 params.step_end = step_end 
                 params.window_size_period = window_size
                 params.ctnms_alpha = ctnms_alpha
@@ -212,7 +220,7 @@ class T2I0ExtensionScript(UIWrapper):
 
                 # Hook callbacks
                 if ctnms_alpha > 0:
-                        self.ready_hijack_forward(ctnms_alpha, width, height, ema_factor, step_end)
+                        self.ready_hijack_forward(ctnms_alpha, width, height, ema_factor, step_start, step_end)
 
                 logger.debug('Hooked callbacks')
                 script_callbacks.on_cfg_denoiser(y)
@@ -239,7 +247,13 @@ class T2I0ExtensionScript(UIWrapper):
                         self.remove_field_cross_attn_modules(module, 't2i0_ema')
                         self.remove_field_cross_attn_modules(module, 'plot_num')
                         self.remove_field_cross_attn_modules(module, 't2i0_tokens')
+                        self.remove_field_cross_attn_modules(module, 't2i0_to_v_map')
+                        self.remove_field_cross_attn_modules(module.to_k, 't2i0_parent_module')
+                        self.remove_field_cross_attn_modules(module.to_v, 't2i0_parent_module')
                         _remove_all_forward_hooks(module, 'cross_token_non_maximum_suppression')
+                        _remove_all_forward_hooks(module, 'cross_token_non_maximum_suppression_pre')
+                        _remove_all_forward_hooks(module.to_k, 't2i0_to_k_hook')
+                        _remove_all_forward_hooks(module.to_v, 't2i0_to_v_hook')
                 script_callbacks.remove_current_script_callbacks()
 
         def apply_attnreg(self, f, C, alpha, B, *args, **kwargs):
@@ -315,13 +329,14 @@ class T2I0ExtensionScript(UIWrapper):
                         f_tilde[c] = (1 - alpha) * f[c] + alpha * f_c_tilde  # Blend embeddings
                 return f_tilde
 
-        def ready_hijack_forward(self, alpha, width, height, ema_factor, step_end):
+        def ready_hijack_forward(self, alpha, width, height, ema_factor, step_start, step_end):
                 """ Create a hook to modify the output of the forward pass of the cross attention module 
                 Arguments:
                         alpha: float - The strength of the CTNMS correction, default 0.1
                         width: int - The width of the final output image map
                         height: int - The height of the final output image map
                         ema_factor: float - EMA smoothing factor, default 2.0
+                        step_start: int - Wait to apply CTNMS until this step
                         step_end: int - The number of steps to apply the CTNMS correction, after which don't
 
                 Only modifies the output of the cross attention modules that get context (i.e. text embedding)
@@ -336,25 +351,41 @@ class T2I0ExtensionScript(UIWrapper):
                 plot_num = 0
                 for module in cross_attn_modules:
                         self.add_field_cross_attn_modules(module, 't2i0_last_attn_map', None)
-                        self.add_field_cross_attn_modules(module, 't2i0_step', torch.tensor([0]).to(device=shared.device))
+                        self.add_field_cross_attn_modules(module, 't2i0_step', torch.tensor([-1]).to(device=shared.device))
+                        self.add_field_cross_attn_modules(module, 't2i0_step_start', torch.tensor([step_start]).to(device=shared.device))
                         self.add_field_cross_attn_modules(module, 't2i0_step_end', torch.tensor([step_end]).to(device=shared.device))
                         self.add_field_cross_attn_modules(module, 't2i0_ema', None)
                         self.add_field_cross_attn_modules(module, 't2i0_ema_factor', torch.tensor([ema_factor]).to(device=shared.device, dtype=torch.float16))
                         self.add_field_cross_attn_modules(module, 't2i0_tokens', torch.tensor(token_indices).to(device=shared.device))
                         self.add_field_cross_attn_modules(module, 'plot_num', torch.tensor([plot_num]).to(device=shared.device))
+                        self.add_field_cross_attn_modules(module, 't2i0_to_v_map', None)
+                        self.add_field_cross_attn_modules(module.to_v, 't2i0_parent_module', [module])
                         plot_num += 1
 
+                def cross_token_non_maximum_suppression_pre(module, args, kwargs):
+                        pass
+                        pass
+
                 def cross_token_non_maximum_suppression(module, input, kwargs, output):
+                        module.t2i0_step += 1
+
                         context = kwargs.get('context', None)
                         if context is None:
                                 return
-                        
-                        in_map = input[0]
+                        if context.shape[1] % 77 != 0:
+                                logger.error("Context shape is not divisible by 77, cannot run T2I-0")
+                                return
                         
                         current_step = module.t2i0_step
+                        start_step = module.t2i0_step_start
                         end_step = module.t2i0_step_end
+
                         if current_step > end_step and end_step > 0:
                                 return
+                        if current_step < start_step:
+                                return
+
+                        in_map = input[0]
 
                         batch_size, sequence_length, inner_dim = output.shape
 
@@ -371,7 +402,8 @@ class T2I0ExtensionScript(UIWrapper):
                         dtype = output.dtype
                         device = output.device
 
-                        print_plot = downscale_width == 64
+                        print_plot = False
+                        #print_plot = downscale_width == 64
 
                         # Plot the attention maps
                         outdir = f"F:\\temp\\incant"
@@ -382,6 +414,14 @@ class T2I0ExtensionScript(UIWrapper):
 
                         # Reshape the attention map to batch_size, height, width
                         # FIXME: need to assert the height/width divides into the sequence length
+
+                        # Multiply text embeddings into visual embeddings
+                        to_v_map = module.t2i0_to_v_map.detach().clone()
+                        # to_v_map = to_v_map.view(batch_size, -1, h, head_dim).transpose(1, 2)
+                        to_v_inner_dim = to_v_map.size(-2)
+                        to_v_map = (to_v_map @ output.transpose(1, 2)).transpose(1, 2)
+                        to_v_attention_map = to_v_map.view(batch_size, downscale_height, downscale_width, to_v_inner_dim)
+
                         attention_map = output.view(batch_size, downscale_height, downscale_width, inner_dim)
 
                         if print_plot:
@@ -391,6 +431,12 @@ class T2I0ExtensionScript(UIWrapper):
                                         f"Step {step}, Plot {plot_num}, Input",
                                         x_label="Width", y_label="Height",
                                         save_path=f"{outdir}\\step_000{step}_plot0000{plot_num}_in00.png"
+                                )
+                                ogmap = plot_attention_map(
+                                        to_v_attention_map[0],
+                                        f"Step {step}, Plot {plot_num}, Output * To V",
+                                        x_label="Width", y_label="Height",
+                                        save_path=f"{outdir}\\step_000{step}_plot0000{plot_num}_in01.png"
                                 )
                                 ogmap = plot_attention_map(
                                         attention_map[0],
@@ -405,12 +451,13 @@ class T2I0ExtensionScript(UIWrapper):
 
                         # Select token indices (Assuming this is provided as t2i0_params or similar)
                         # selected_tokens = module.t2i0_tokens  # Example: Replace with actual indices
-                        selected_tokens = torch.tensor(list(range(inner_dim)))  # Example: Replace with actual indices
+                        selected_tokens = torch.tensor(list(range(to_v_inner_dim)))  # Example: Replace with actual indices
+
 
                         # Extract and process the selected attention maps
                         # GaussianBlur expects the input [..., C, H, W]
                         gaussian_blur = GaussianBlur(kernel_size=3, sigma=1)
-                        AC = attention_map[:, :, :, selected_tokens]  # Extracting relevant attention maps
+                        AC = to_v_attention_map[:, :, :, selected_tokens]  # Extracting relevant attention maps
                         AC = AC.permute(0, 3, 1, 2)
                         AC = gaussian_blur(AC)  # Applying Gaussian smoothing
                         AC = AC.permute(0, 2, 3, 1)
@@ -436,20 +483,35 @@ class T2I0ExtensionScript(UIWrapper):
                                 )
 
                         # Create one-hot vectors for suppression
-                        t = attention_map.size(-1)
-                        one_hot_M = F.one_hot(M, num_classes=t).to(dtype=dtype, device=device)
+                        t = to_v_attention_map.size(-1)
+                        one_hot_M = F.one_hot(M, num_classes=inner_dim).to(dtype=dtype, device=device)
 
+                        # dimensions [batch_size, height, width, t]
+                        #one_hot_M_mult = one_hot_M * to_v_attention_map
+
+                        # how do we multiply the one hot map with the attention map?
+                        # the attention map is of shape [batch_size, height, width, inner_dim]
+
+                        # one_hot_M = one_hot_M.view(batch_size, sequence_length, t)
 
                         # Apply the suppression mask
                         #suppressed_attention_map = one_hot_M.unsqueeze(2) * attention_map
+                        #suppressed_attention_map = attention_map
+                        #suppressed_attention_map = one_hot_M * to_v_attention_map 
                         suppressed_attention_map = one_hot_M * attention_map
 
                         if print_plot:
+                                # ogmap = plot_attention_map(
+                                #         one_hot_M_mult[0],
+                                #         f"Step {step}, Plot {plot_num}, One Hot Map",
+                                #         x_label="Width", y_label="Height",
+                                #         save_path=f"{outdir}\\step_000{step}_plot0000{plot_num}_old03.png"
+                                # )
                                 ogmap = plot_attention_map(
                                         suppressed_attention_map[0],
                                         f"Step {step}, Plot {plot_num}, One Hot * Attention Map",
                                         x_label="Width", y_label="Height",
-                                        save_path=f"{outdir}\\step_000{step}_plot0000{plot_num}_old03.png"
+                                        save_path=f"{outdir}\\step_000{step}_plot0000{plot_num}_old04.png"
                                 )
 
                         # Reshape back to original dimensions
@@ -468,8 +530,8 @@ class T2I0ExtensionScript(UIWrapper):
                                 out_tensor = (1-alpha) * output + alpha * suppressed_attention_map
 
 
-                        # increment step
-                        module.t2i0_step += 1
+                        # # increment step
+                        # module.t2i0_step += 1
 
 
 
@@ -486,18 +548,28 @@ class T2I0ExtensionScript(UIWrapper):
                                         x_label="Width", y_label="Height",
                                         save_path=f"{outdir}\\step_000{step}_plot0000{plot_num}_new.png"
                                 )
-
                         return out_tensor
+
+                def t2i0_to_k_hook(module, input, kwargs, output):
+                        pass
+                        pass
+
+                def t2i0_to_v_hook(module, input, kwargs, output):
+                        setattr(module.t2i0_parent_module[0], 't2i0_to_v_map', output)
+
                 # Hook
                 for module in cross_attn_modules:
+                        handle = module.to_k.register_forward_hook(t2i0_to_k_hook, with_kwargs=True)
+                        handle = module.to_v.register_forward_hook(t2i0_to_v_hook, with_kwargs=True)
                         handle = module.register_forward_hook(cross_token_non_maximum_suppression, with_kwargs=True)
+                        handle = module.register_forward_pre_hook(cross_token_non_maximum_suppression_pre, with_kwargs=True)
 
         def get_cross_attn_modules(self):
                 """ Get all cross attention modules """
                 try:
                         m = shared.sd_model
                         nlm = m.network_layer_mapping
-                        cross_attn_modules = [m for m in nlm.values() if 'CrossAttention' in m.__class__.__name__]
+                        cross_attn_modules = [m for m in nlm.values() if 'CrossAttention' in m.__class__.__name__ and 'attn2' in m.network_layer_name]
                         return cross_attn_modules
                 except AttributeError:
                         logger.exception("AttributeError while getting cross attention modules")
