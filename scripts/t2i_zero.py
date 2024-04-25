@@ -3,7 +3,10 @@ from os import environ
 import modules.scripts as scripts
 import gradio as gr
 import scipy.stats as stats
-import matplotlib.pyplot as plt
+
+from scripts.utils import plot_tools
+#import matplotlib.pyplot as plt
+
 from PIL import Image
 
 from scripts.ui_wrapper import UIWrapper, arg
@@ -646,43 +649,43 @@ def plot_attention_map(attention_map: torch.Tensor, title, x_label="X", y_label=
         if attention_map.dim() == 3:
                attention_map = attention_map.squeeze(0).mean(2)
 
-        # Convert attention map to numpy array
-        attention_map = attention_map.detach().cpu().numpy()
+        plot_tools.plot_attention_map(attention_map, title, x_label, y_label, save_path, plot_type)
 
 
-        # Create figure and axis
-        fig, ax = plt.subplots()
 
-        # Plot the attention map
-        if plot_type=='default':
-                ax.imshow(attention_map, cmap='viridis', interpolation='nearest')
-        elif plot_type == 'num':
-                ax.imshow(attention_map, cmap='tab20c', interpolation='nearest')
-                #for x in range(attention_map.shape[0]):
-                #        for y in range(attention_map.shape[1]):
-                #                fig.text(x, y, f"{attention_map[x, y]:.2f}", ha="center", va="center")
-                elements = list(set(attention_map.flatten()))
-                labels = [f"{x}" for x in elements]
-                fig.legend(elements, labels, loc='lower left')
-
-        # Set title and labels
-        ax.set_title(title)
-        ax.set_xlabel(x_label)
-        ax.set_ylabel(y_label)
-
-        # Save the plot if save_path is provided
-        if save_path:
-                plt.savefig(save_path)
-        
-        plt.close(fig)
-
-        # Show the plot
-        # plt.show()
-
-        # Convert the plot to PIL image
-        #image = Image.fromarray(np.uint8(fig.canvas.tostring_rgb()))
-
-        #return image
+#        # Create figure and axis
+#        fig, ax = plt.subplots()
+#
+#        # Plot the attention map
+#        if plot_type=='default':
+#                ax.imshow(attention_map, cmap='viridis', interpolation='nearest')
+#        elif plot_type == 'num':
+#                ax.imshow(attention_map, cmap='tab20c', interpolation='nearest')
+#                #for x in range(attention_map.shape[0]):
+#                #        for y in range(attention_map.shape[1]):
+#                #                fig.text(x, y, f"{attention_map[x, y]:.2f}", ha="center", va="center")
+#                elements = list(set(attention_map.flatten()))
+#                labels = [f"{x}" for x in elements]
+#                fig.legend(elements, labels, loc='lower left')
+#
+#        # Set title and labels
+#        ax.set_title(title)
+#        ax.set_xlabel(x_label)
+#        ax.set_ylabel(y_label)
+#
+#        # Save the plot if save_path is provided
+#        if save_path:
+#                plt.savefig(save_path)
+#        
+#        plt.close(fig)
+#
+#        # Show the plot
+#        # plt.show()
+#
+#        # Convert the plot to PIL image
+#        #image = Image.fromarray(np.uint8(fig.canvas.tostring_rgb()))
+#
+#        #return image
 
 
 
