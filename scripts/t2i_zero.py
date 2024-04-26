@@ -4,13 +4,18 @@ import modules.scripts as scripts
 import gradio as gr
 import scipy.stats as stats
 
-from scripts.utils import plot_tools
+from functools import reduce
+
+from scripts.incant_utils import plot_tools
 #import matplotlib.pyplot as plt
 
 from PIL import Image
 
 from scripts.ui_wrapper import UIWrapper, arg
 from modules import script_callbacks
+from modules import extra_networks
+from modules import prompt_parser
+from modules import sd_hijack
 from modules.hypernetworks import hypernetwork
 #import modules.sd_hijack_optimizations
 from modules.script_callbacks import CFGDenoiserParams
@@ -73,6 +78,7 @@ class T2I0StateParams:
                 self.ema_smoothing_factor: float = 2.0
                 self.step_start : int = 0
                 self.step_end : int = 25
+                self.token_count: int = 0
                 self.tokens: list[int] = [] # [0, 20]
                 self.window_size_period: int = 10 # [0, 20]
                 self.ctnms_alpha: float = 0.05 # [0., 1.] if abs value of difference between uncodition and concept-conditioned is less than this, then zero out the concept-conditioned values less than this
@@ -198,6 +204,17 @@ class T2I0ExtensionScript(UIWrapper):
                 if len(cross_attn_modules) == 0:
                         logger.error("No cross attention modules found, cannot run T2I-0")
                         return
+
+                if len(tokens) > 0:
+                        try:
+                                token_indices = [int(x) for x in tokens.split(",")]
+                        except ValueError:
+                                logger.error("Invalid token indices, must be comma separated integers")
+                                raise
+                else:
+                       token_indices = None
+
+        
                 # Create a list of parameters for each concept
                 t2i0_params = []
 
@@ -205,7 +222,7 @@ class T2I0ExtensionScript(UIWrapper):
                 params = T2I0StateParams()
                 params.attnreg = attnreg 
                 params.ema_smoothing_factor = ema_factor 
-                params.step_start = step_end 
+                params.step_start = step_start
                 params.step_end = step_end 
                 params.window_size_period = window_size
                 params.ctnms_alpha = ctnms_alpha
@@ -215,6 +232,8 @@ class T2I0ExtensionScript(UIWrapper):
                 params.width = width
                 params.height = height 
                 params.dims = [width, height]
+                params.tokens = token_indices
+                params.token_count, _ = get_token_count(p.prompt, p.steps, True)
                 t2i0_params.append(params)
 
                 # Use lambda to call the callback function with the parameters to avoid global variables
@@ -223,7 +242,7 @@ class T2I0ExtensionScript(UIWrapper):
 
                 # Hook callbacks
                 if ctnms_alpha > 0:
-                        self.ready_hijack_forward(ctnms_alpha, width, height, ema_factor, step_start, step_end)
+                        self.ready_hijack_forward(ctnms_alpha, width, height, ema_factor, step_start, step_end, token_indices, params.token_count)
 
                 logger.debug('Hooked callbacks')
                 script_callbacks.on_cfg_denoiser(y)
@@ -245,11 +264,13 @@ class T2I0ExtensionScript(UIWrapper):
                 for module in cross_attn_modules:
                         self.remove_field_cross_attn_modules(module, 't2i0_last_attn_map')
                         self.remove_field_cross_attn_modules(module, 't2i0_step')
+                        self.remove_field_cross_attn_modules(module, 't2i0_step_start')
                         self.remove_field_cross_attn_modules(module, 't2i0_step_end')
                         self.remove_field_cross_attn_modules(module, 't2i0_ema_factor')
                         self.remove_field_cross_attn_modules(module, 't2i0_ema')
                         self.remove_field_cross_attn_modules(module, 'plot_num')
                         self.remove_field_cross_attn_modules(module, 't2i0_tokens')
+                        self.remove_field_cross_attn_modules(module, 't2i0_token_count')
                         self.remove_field_cross_attn_modules(module, 't2i0_to_v_map')
                         self.remove_field_cross_attn_modules(module.to_k, 't2i0_parent_module')
                         self.remove_field_cross_attn_modules(module.to_v, 't2i0_parent_module')
@@ -332,7 +353,7 @@ class T2I0ExtensionScript(UIWrapper):
                         f_tilde[c] = (1 - alpha) * f[c] + alpha * f_c_tilde  # Blend embeddings
                 return f_tilde
 
-        def ready_hijack_forward(self, alpha, width, height, ema_factor, step_start, step_end):
+        def ready_hijack_forward(self, alpha, width, height, ema_factor, step_start, step_end, tokens, token_count):
                 """ Create a hook to modify the output of the forward pass of the cross attention module 
                 Arguments:
                         alpha: float - The strength of the CTNMS correction, default 0.1
@@ -344,8 +365,6 @@ class T2I0ExtensionScript(UIWrapper):
 
                 Only modifies the output of the cross attention modules that get context (i.e. text embedding)
                 """
-                global token_indices
-
                 cross_attn_modules = self.get_cross_attn_modules()
                 if len(cross_attn_modules) == 0:
                         logger.error("No cross attention modules found, cannot run T2I-0")
@@ -359,10 +378,16 @@ class T2I0ExtensionScript(UIWrapper):
                         self.add_field_cross_attn_modules(module, 't2i0_step_end', torch.tensor([step_end]).to(device=shared.device))
                         self.add_field_cross_attn_modules(module, 't2i0_ema', None)
                         self.add_field_cross_attn_modules(module, 't2i0_ema_factor', torch.tensor([ema_factor]).to(device=shared.device, dtype=torch.float16))
-                        self.add_field_cross_attn_modules(module, 't2i0_tokens', torch.tensor(token_indices).to(device=shared.device))
                         self.add_field_cross_attn_modules(module, 'plot_num', torch.tensor([plot_num]).to(device=shared.device))
                         self.add_field_cross_attn_modules(module, 't2i0_to_v_map', None)
                         self.add_field_cross_attn_modules(module.to_v, 't2i0_parent_module', [module])
+
+                        self.add_field_cross_attn_modules(module, 't2i0_token_count', torch.tensor(token_count).to(device=shared.device, dtype=torch.int64))
+                        if tokens is not None:
+                                self.add_field_cross_attn_modules(module, 't2i0_tokens', torch.tensor(tokens).to(device=shared.device, dtype=torch.int64))
+                        else:
+                                self.add_field_cross_attn_modules(module, 't2i0_tokens', None)
+
                         plot_num += 1
 
                 def cross_token_non_maximum_suppression_pre(module, args, kwargs):
@@ -382,6 +407,10 @@ class T2I0ExtensionScript(UIWrapper):
                         current_step = module.t2i0_step
                         start_step = module.t2i0_step_start
                         end_step = module.t2i0_step_end
+
+                        # Select token indices, default is ALL tokens
+                        token_count = module.t2i0_token_count
+                        token_indices = module.t2i0_tokens
 
                         if current_step > end_step and end_step > 0:
                                 return
@@ -405,8 +434,7 @@ class T2I0ExtensionScript(UIWrapper):
                         dtype = output.dtype
                         device = output.device
 
-                        print_plot = False
-                        #print_plot = downscale_width == 64
+                        #print_plot = False
 
                         # Plot the attention maps
                         outdir = f"F:\\temp\\incant"
@@ -415,8 +443,11 @@ class T2I0ExtensionScript(UIWrapper):
                         step = current_step.to('cpu').item()
                         plot_num = module.plot_num.to('cpu').item()
 
+                        print_plot = plot_num in [0]
+                        #print_plot = downscale_width == 64
                         # Reshape the attention map to batch_size, height, width
                         # FIXME: need to assert the height/width divides into the sequence length
+
 
                         # Multiply text embeddings into visual embeddings
                         to_v_map = module.t2i0_to_v_map.detach().clone()
@@ -424,38 +455,53 @@ class T2I0ExtensionScript(UIWrapper):
                         to_v_inner_dim = to_v_map.size(-2)
                         to_v_map = (to_v_map @ output.transpose(1, 2)).transpose(1, 2)
                         to_v_attention_map = to_v_map.view(batch_size, downscale_height, downscale_width, to_v_inner_dim)
-
                         attention_map = output.view(batch_size, downscale_height, downscale_width, inner_dim)
+
+
+                        if token_indices is None:
+                                selected_tokens = torch.tensor(list(range(token_count.item())))
+                        else:
+                                selected_tokens = module.t2i0_tokens
+
+                        # Permute to [batch_size, inner_dim, height, width]
+                        if module.t2i0_tokens is not None and print_plot:
+                                to_v_attention_map = to_v_attention_map.permute(0, 3, 1, 2)
+                                for idx in selected_tokens:
+                                        plot_attention_map(
+                                                to_v_attention_map[:, idx, :, :][0],
+                                                f"Step {step}, Plot {plot_num}, Token Index {idx}",
+                                                x_label="Width", y_label="Height",
+                                                save_path=f"{outdir}\\plot_0000{plot_num}_tk0000{idx}_step0000{step}.png"
+                                        )
+                                # revert
+                                to_v_attention_map = to_v_attention_map.permute(0, 2, 3, 1)
+
 
                         if print_plot:
                                 in_map = in_map.view(batch_size, downscale_height, downscale_width, inner_dim)
-                                ogmap = plot_attention_map(
-                                        in_map[0],
-                                        f"Step {step}, Plot {plot_num}, Input",
-                                        x_label="Width", y_label="Height",
-                                        save_path=f"{outdir}\\step_000{step}_plot0000{plot_num}_in00.png"
-                                )
-                                ogmap = plot_attention_map(
-                                        to_v_attention_map[0],
-                                        f"Step {step}, Plot {plot_num}, Output * To V",
-                                        x_label="Width", y_label="Height",
-                                        save_path=f"{outdir}\\step_000{step}_plot0000{plot_num}_in01.png"
-                                )
+                                # ogmap = plot_attention_map(
+                                #         in_map[0],
+                                #         f"Step {step}, Plot {plot_num}, Input",
+                                #         x_label="Width", y_label="Height",
+                                #         save_path=f"{outdir}\\step_000{step}_plot0000{plot_num}_in00.png"
+                                # )
+                                # ogmap = plot_attention_map(
+                                #         to_v_attention_map[0],
+                                #         f"Step {step}, Plot {plot_num}, Output * To V",
+                                #         x_label="Width", y_label="Height",
+                                #         save_path=f"{outdir}\\step_000{step}_plot0000{plot_num}_in01.png"
+                                # )
                                 ogmap = plot_attention_map(
                                         attention_map[0],
-                                        f"Step {step}, Plot {plot_num}, Old",
+                                        f"Step {step}, Plot {plot_num}, Original Output",
                                         x_label="Width", y_label="Height",
-                                        save_path=f"{outdir}\\step_000{step}_plot0000{plot_num}_old00.png"
+                                        save_path=f"{outdir}\\plot0000{plot_num}_step0000{step}_out99.png",
+                                        plot_type="num"
                                 )
 
 
                         if module.t2i0_ema is None:
                                 module.t2i0_ema = output.detach().clone()
-
-                        # Select token indices (Assuming this is provided as t2i0_params or similar)
-                        # selected_tokens = module.t2i0_tokens  # Example: Replace with actual indices
-                        selected_tokens = torch.tensor(list(range(to_v_inner_dim)))  # Example: Replace with actual indices
-
 
                         # Extract and process the selected attention maps
                         # GaussianBlur expects the input [..., C, H, W]
@@ -470,7 +516,7 @@ class T2I0ExtensionScript(UIWrapper):
                                         AC[0],
                                         f"Step {step}, Plot {plot_num}, After Blur",
                                         x_label="Width", y_label="Height",
-                                        save_path=f"{outdir}\\step_000{step}_plot0000{plot_num}_old01.png"
+                                        save_path=f"{outdir}\\plot0000{plot_num}_step0000{step}_out01.png"
                                 )
 
                         # Find the maximum contributing token for each pixel
@@ -481,40 +527,57 @@ class T2I0ExtensionScript(UIWrapper):
                                         M[0],
                                         f"Step {step}, Plot {plot_num}, ArgMax Map",
                                         x_label="Width", y_label="Height",
-                                        save_path=f"{outdir}\\step_000{step}_plot0000{plot_num}_old02.png",
+                                        save_path=f"{outdir}\\plot0000{plot_num}_step0000{step}_out02.png",
                                         plot_type="num"
                                 )
 
+
+                        #if module.t2i0_tokens is not None:
+                        #        M = M.permute(0, 3, 1, 2)
+                        #        for idx in selected_tokens:
+                        #                plot_attention_map(
+                        #                        M[:, idx, :, :][0],
+                        #                        f"Step {step}, Plot {plot_num}, M, Token Index {idx}",
+                        #                        x_label="Width", y_label="Height",
+                        #                        save_path=f"{outdir}\\step_000{step}_plot0000{plot_num}_mm00{idx}.png"
+                        #                )
+                        #        # revert
+                        #        M = M.permute(0, 2, 3, 1)
+
                         # Create one-hot vectors for suppression
                         t = to_v_attention_map.size(-1)
+                        one_hot_M = F.one_hot(M, num_classes=to_v_inner_dim).to(dtype=dtype, device=device)
+
+                        if print_plot:
+                                ogmap = plot_attention_map(
+                                        one_hot_M[0],
+                                        f"Step {step}, Plot {plot_num}, One Hot Map: {to_v_inner_dim} classes",
+                                        x_label="Width", y_label="Height",
+                                        save_path=f"{outdir}\\plot0000{plot_num}_step0000{step}_out03.png",
+                                        plot_type="num"
+                                )
                         one_hot_M = F.one_hot(M, num_classes=inner_dim).to(dtype=dtype, device=device)
 
-                        # dimensions [batch_size, height, width, t]
-                        #one_hot_M_mult = one_hot_M * to_v_attention_map
+                        if print_plot:
+                                ogmap = plot_attention_map(
+                                        one_hot_M[0],
+                                        f"Step {step}, Plot {plot_num}, One Hot Map: {inner_dim} classes",
+                                        x_label="Width", y_label="Height",
+                                        save_path=f"{outdir}\\plot0000{plot_num}_step0000{step}_out04.png",
+                                        plot_type="num"
+                                )
 
                         # how do we multiply the one hot map with the attention map?
                         # the attention map is of shape [batch_size, height, width, inner_dim]
-
-                        # one_hot_M = one_hot_M.view(batch_size, sequence_length, t)
-
-                        # Apply the suppression mask
-                        #suppressed_attention_map = one_hot_M.unsqueeze(2) * attention_map
-                        #suppressed_attention_map = attention_map
-                        #suppressed_attention_map = one_hot_M * to_v_attention_map 
                         suppressed_attention_map = one_hot_M * attention_map
+                        # suppressed_attention_map = attention_map
 
                         if print_plot:
-                                # ogmap = plot_attention_map(
-                                #         one_hot_M_mult[0],
-                                #         f"Step {step}, Plot {plot_num}, One Hot Map",
-                                #         x_label="Width", y_label="Height",
-                                #         save_path=f"{outdir}\\step_000{step}_plot0000{plot_num}_old03.png"
-                                # )
                                 ogmap = plot_attention_map(
                                         suppressed_attention_map[0],
                                         f"Step {step}, Plot {plot_num}, One Hot * Attention Map",
                                         x_label="Width", y_label="Height",
-                                        save_path=f"{outdir}\\step_000{step}_plot0000{plot_num}_old04.png"
+                                        save_path=f"{outdir}\\plot0000{plot_num}_step0000{step}_out05.png"
                                 )
 
                         # Reshape back to original dimensions
@@ -539,17 +602,12 @@ class T2I0ExtensionScript(UIWrapper):
 
 
                         if print_plot:
-                                #ogmap = plot_attention_map(
-                                #        attention_map[0],
-                                #        f"Step {step}, Plot {plot_num}, Old",
-                                #        x_label="Width", y_label="Height",
-                                #        save_path=f"{outdir}\\step_000{step}_plot0000{plot_num}_old.png"
-                                #)
                                 newmap = plot_attention_map(
                                         out_tensor.view(batch_size, downscale_height, downscale_width, inner_dim)[0],
-                                        f"Step {step}, Plot {plot_num}, Suppressed",
+                                        f"Step {step}, Plot {plot_num}, Suppressed Output",
                                         x_label="Width", y_label="Height",
-                                        save_path=f"{outdir}\\step_000{step}_plot0000{plot_num}_new.png"
+                                        save_path=f"{outdir}\\plot0000{plot_num}_step0000{step}_out06.png",
+                                        plot_type="num"
                                 )
                         return out_tensor
 
@@ -606,8 +664,11 @@ class T2I0ExtensionScript(UIWrapper):
                 ctnms_alpha = sp.ctnms_alpha
 
                 step = params.sampling_step
+                step_start = sp.step_start
                 step_end = sp.step_end
 
+                if step_start > step:
+                        return
                 if step > step_end:
                         return
 
@@ -651,43 +712,23 @@ def plot_attention_map(attention_map: torch.Tensor, title, x_label="X", y_label=
 
         plot_tools.plot_attention_map(attention_map, title, x_label, y_label, save_path, plot_type)
 
+def debug_plot_attention_map(attention_map):
+        """ Plots an attention map using matplotlib.pyplot 
+                Arguments:
+                        attention_map: Tensor - The attention map to plot
+                        title: str - The title of the plot
+                        x_label: str (optional) - The x-axis label
+                        y_label: str (optional) - The y-axis label
+                        save_path: str (optional) - The path to save the plot
+                Returns:
+                        PIL.Image: The plot as a PIL image
+        """
 
-
-#        # Create figure and axis
-#        fig, ax = plt.subplots()
-#
-#        # Plot the attention map
-#        if plot_type=='default':
-#                ax.imshow(attention_map, cmap='viridis', interpolation='nearest')
-#        elif plot_type == 'num':
-#                ax.imshow(attention_map, cmap='tab20c', interpolation='nearest')
-#                #for x in range(attention_map.shape[0]):
-#                #        for y in range(attention_map.shape[1]):
-#                #                fig.text(x, y, f"{attention_map[x, y]:.2f}", ha="center", va="center")
-#                elements = list(set(attention_map.flatten()))
-#                labels = [f"{x}" for x in elements]
-#                fig.legend(elements, labels, loc='lower left')
-#
-#        # Set title and labels
-#        ax.set_title(title)
-#        ax.set_xlabel(x_label)
-#        ax.set_ylabel(y_label)
-#
-#        # Save the plot if save_path is provided
-#        if save_path:
-#                plt.savefig(save_path)
-#        
-#        plt.close(fig)
-#
-#        # Show the plot
-#        # plt.show()
-#
-#        # Convert the plot to PIL image
-#        #image = Image.fromarray(np.uint8(fig.canvas.tostring_rgb()))
-#
-#        #return image
-
-
+        plot_attention_map(
+                attention_map,
+                f"Debug Output",
+                save_path=f"F:\\incant\\temp\\AAA_out_temp.png"
+        )
 
 
 # XYZ Plot
@@ -705,6 +746,29 @@ def t2i0_apply_field(field):
                 setattr(p, "t2i0_active", True)
         setattr(p, field, x)
     return fun
+
+
+# taken from modules/ui.py
+def get_token_count(text, steps, is_positive: bool = True):
+    try:
+        text, _ = extra_networks.parse_prompt(text)
+
+        if is_positive:
+            _, prompt_flat_list, _ = prompt_parser.get_multicond_prompt_list([text])
+        else:
+            prompt_flat_list = [text]
+
+        prompt_schedules = prompt_parser.get_learned_conditioning_prompt_schedules(prompt_flat_list, steps)
+
+    except Exception:
+        # a parsing error can happen here during typing, and we don't want to bother the user with
+        # messages related to it in console
+        prompt_schedules = [[[steps, text]]]
+
+    flat_prompts = reduce(lambda list1, list2: list1+list2, prompt_schedules)
+    prompts = [prompt_text for step, prompt_text in flat_prompts]
+    token_count, max_length = max([sd_hijack.model_hijack.get_prompt_lengths(prompt) for prompt in prompts], key=lambda args: args[0])
+    return token_count, max_length
 
 
 # thanks torch; removing hooks DOESN'T WORK
