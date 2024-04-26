@@ -454,10 +454,14 @@ class T2I0ExtensionScript(UIWrapper):
                         # to_v_map = to_v_map.view(batch_size, -1, h, head_dim).transpose(1, 2)
                         to_v_inner_dim = to_v_map.size(-2)
                         to_v_map = (to_v_map @ output.transpose(1, 2)).transpose(1, 2)
+
                         to_v_attention_map = to_v_map.view(batch_size, downscale_height, downscale_width, to_v_inner_dim)
+
+                        # to_v_map = to_v_attention_map.permute(3, 0, 1, 2)
+
                         attention_map = output.view(batch_size, downscale_height, downscale_width, inner_dim)
 
-
+                        
                         if token_indices is None:
                                 selected_tokens = torch.tensor(list(range(token_count.item())))
                         else:
@@ -476,21 +480,8 @@ class T2I0ExtensionScript(UIWrapper):
                                 # revert
                                 to_v_attention_map = to_v_attention_map.permute(0, 2, 3, 1)
 
-
                         if print_plot:
                                 in_map = in_map.view(batch_size, downscale_height, downscale_width, inner_dim)
-                                # ogmap = plot_attention_map(
-                                #         in_map[0],
-                                #         f"Step {step}, Plot {plot_num}, Input",
-                                #         x_label="Width", y_label="Height",
-                                #         save_path=f"{outdir}\\step_000{step}_plot0000{plot_num}_in00.png"
-                                # )
-                                # ogmap = plot_attention_map(
-                                #         to_v_attention_map[0],
-                                #         f"Step {step}, Plot {plot_num}, Output * To V",
-                                #         x_label="Width", y_label="Height",
-                                #         save_path=f"{outdir}\\step_000{step}_plot0000{plot_num}_in01.png"
-                                # )
                                 ogmap = plot_attention_map(
                                         attention_map[0],
                                         f"Step {step}, Plot {plot_num}, Original Output",
@@ -499,19 +490,38 @@ class T2I0ExtensionScript(UIWrapper):
                                         plot_type="num"
                                 )
 
-
                         if module.t2i0_ema is None:
                                 module.t2i0_ema = output.detach().clone()
+
+                        # Extract the attention maps for the selected tokens
+                        AC = attention_map[:, :, :, selected_tokens]  # Extracting relevant attention maps
+
+                        if token_indices is not None and print_plot:
+                                AC = AC.permute(0, 3, 1, 2)
+                                for idx, attn_map in enumerate(AC[0]):
+                                        plot_attention_map(
+                                                attn_map,
+                                                f"Step {step}, Plot {plot_num}, Extracted Attn Map for Token Index {selected_tokens[idx]}",
+                                                x_label="Width", y_label="Height",
+                                                save_path=f"{outdir}\\plot_0000{plot_num}_tk0000{idx}_step0000{step}_extidx0000{selected_tokens[idx]}.png"
+                                        )
+                                AC = AC.permute(0, 2, 3, 1)
+
 
                         # Extract and process the selected attention maps
                         # GaussianBlur expects the input [..., C, H, W]
                         gaussian_blur = GaussianBlur(kernel_size=3, sigma=1)
-                        AC = to_v_attention_map[:, :, :, selected_tokens]  # Extracting relevant attention maps
                         AC = AC.permute(0, 3, 1, 2)
                         AC = gaussian_blur(AC)  # Applying Gaussian smoothing
                         AC = AC.permute(0, 2, 3, 1)
 
                         if print_plot:
+                                ogmap = plot_attention_map(
+                                        AC[0],
+                                        f"Step {step}, Plot {plot_num}, After Blur",
+                                        x_label="Width", y_label="Height",
+                                        save_path=f"{outdir}\\plot0000{plot_num}_step0000{step}_out01.png"
+                                )
                                 ogmap = plot_attention_map(
                                         AC[0],
                                         f"Step {step}, Plot {plot_num}, After Blur",
@@ -531,31 +541,19 @@ class T2I0ExtensionScript(UIWrapper):
                                         plot_type="num"
                                 )
 
-
-                        #if module.t2i0_tokens is not None:
-                        #        M = M.permute(0, 3, 1, 2)
-                        #        for idx in selected_tokens:
-                        #                plot_attention_map(
-                        #                        M[:, idx, :, :][0],
-                        #                        f"Step {step}, Plot {plot_num}, M, Token Index {idx}",
-                        #                        x_label="Width", y_label="Height",
-                        #                        save_path=f"{outdir}\\step_000{step}_plot0000{plot_num}_mm00{idx}.png"
-                        #                )
-                        #        # revert
-                        #        M = M.permute(0, 2, 3, 1)
-
                         # Create one-hot vectors for suppression
-                        t = to_v_attention_map.size(-1)
-                        one_hot_M = F.one_hot(M, num_classes=to_v_inner_dim).to(dtype=dtype, device=device)
+                        # t = to_v_attention_map.size(-1)
+                        # one_hot_M = F.one_hot(M, num_classes=to_v_inner_dim).to(dtype=dtype, device=device)
 
-                        if print_plot:
-                                ogmap = plot_attention_map(
-                                        one_hot_M[0],
-                                        f"Step {step}, Plot {plot_num}, One Hot Map: {to_v_inner_dim} classes",
-                                        x_label="Width", y_label="Height",
-                                        save_path=f"{outdir}\\plot0000{plot_num}_step0000{step}_out03.png",
-                                        plot_type="num"
-                                )
+                        # if print_plot:
+                        #         ogmap = plot_attention_map(
+                        #                 one_hot_M[0],
+                        #                 f"Step {step}, Plot {plot_num}, One Hot Map: {to_v_inner_dim} classes",
+                        #                 x_label="Width", y_label="Height",
+                        #                 save_path=f"{outdir}\\plot0000{plot_num}_step0000{step}_out03.png",
+                        #                 plot_type="num"
+                        #         )
+
                         one_hot_M = F.one_hot(M, num_classes=inner_dim).to(dtype=dtype, device=device)
 
                         if print_plot:
@@ -594,12 +592,6 @@ class T2I0ExtensionScript(UIWrapper):
                                 #out_tensor = (1-alpha) * ema + alpha * suppressed_attention_map
                         else:
                                 out_tensor = (1-alpha) * output + alpha * suppressed_attention_map
-
-
-                        # # increment step
-                        # module.t2i0_step += 1
-
-
 
                         if print_plot:
                                 newmap = plot_attention_map(
