@@ -7,6 +7,7 @@ import scipy.stats as stats
 from functools import reduce
 
 from scripts.incant_utils import plot_tools
+from einops import rearrange
 #import matplotlib.pyplot as plt
 
 from PIL import Image
@@ -381,7 +382,6 @@ class T2I0ExtensionScript(UIWrapper):
                         self.add_field_cross_attn_modules(module, 'plot_num', torch.tensor([plot_num]).to(device=shared.device))
                         self.add_field_cross_attn_modules(module, 't2i0_to_v_map', None)
                         self.add_field_cross_attn_modules(module.to_v, 't2i0_parent_module', [module])
-
                         self.add_field_cross_attn_modules(module, 't2i0_token_count', torch.tensor(token_count).to(device=shared.device, dtype=torch.int64))
                         if tokens is not None:
                                 self.add_field_cross_attn_modules(module, 't2i0_tokens', torch.tensor(tokens).to(device=shared.device, dtype=torch.int64))
@@ -443,7 +443,8 @@ class T2I0ExtensionScript(UIWrapper):
                         step = current_step.to('cpu').item()
                         plot_num = module.plot_num.to('cpu').item()
 
-                        print_plot = plot_num in [0]
+                        print_plot = False
+                        #print_plot = plot_num in [0]
                         #print_plot = downscale_width == 64
                         # Reshape the attention map to batch_size, height, width
                         # FIXME: need to assert the height/width divides into the sequence length
@@ -494,7 +495,7 @@ class T2I0ExtensionScript(UIWrapper):
                                 module.t2i0_ema = output.detach().clone()
 
                         # Extract the attention maps for the selected tokens
-                        AC = attention_map[:, :, :, selected_tokens]  # Extracting relevant attention maps
+                        AC = to_v_attention_map[:, :, :, selected_tokens]  # Extracting relevant attention maps
 
                         if token_indices is not None and print_plot:
                                 AC = AC.permute(0, 3, 1, 2)
@@ -554,7 +555,7 @@ class T2I0ExtensionScript(UIWrapper):
                         #                 plot_type="num"
                         #         )
 
-                        one_hot_M = F.one_hot(M, num_classes=inner_dim).to(dtype=dtype, device=device)
+                        one_hot_M = F.one_hot(M, num_classes=to_v_attention_map.size(-1)).to(dtype=dtype, device=device)
 
                         if print_plot:
                                 ogmap = plot_attention_map(
@@ -567,7 +568,21 @@ class T2I0ExtensionScript(UIWrapper):
 
                         # how do we multiply the one hot map with the attention map?
                         # the attention map is of shape [batch_size, height, width, inner_dim]
-                        suppressed_attention_map = one_hot_M * attention_map
+                        one_hot_M_z = rearrange(one_hot_M, 'b h w c -> b (h w) c')
+                        one_hot_M_z = one_hot_M_z @ module.t2i0_to_v_map
+                        #one_hot_M_z = one_hot_M_z @ context
+                        one_hot_M_z = rearrange(one_hot_M_z, 'b (h w) c -> b h w c', h=downscale_height, w=downscale_width)
+
+
+                        if print_plot:
+                                ogmap = plot_attention_map(
+                                        one_hot_M_z[0],
+                                        f"Step {step}, Plot {plot_num}, One Hot * Context Map",
+                                        x_label="Width", y_label="Height",
+                                        save_path=f"{outdir}\\plot0000{plot_num}_step0000{step}_out05.png"
+                                )
+
+                        suppressed_attention_map = one_hot_M_z * attention_map
                         # suppressed_attention_map = attention_map
 
                         if print_plot:
@@ -575,7 +590,7 @@ class T2I0ExtensionScript(UIWrapper):
                                         suppressed_attention_map[0],
                                         f"Step {step}, Plot {plot_num}, One Hot * Attention Map",
                                         x_label="Width", y_label="Height",
-                                        save_path=f"{outdir}\\plot0000{plot_num}_step0000{step}_out05.png"
+                                        save_path=f"{outdir}\\plot0000{plot_num}_step0000{step}_out06.png"
                                 )
 
                         # Reshape back to original dimensions
@@ -598,7 +613,7 @@ class T2I0ExtensionScript(UIWrapper):
                                         out_tensor.view(batch_size, downscale_height, downscale_width, inner_dim)[0],
                                         f"Step {step}, Plot {plot_num}, Suppressed Output",
                                         x_label="Width", y_label="Height",
-                                        save_path=f"{outdir}\\plot0000{plot_num}_step0000{step}_out06.png",
+                                        save_path=f"{outdir}\\plot0000{plot_num}_step0000{step}_out07.png",
                                         plot_type="num"
                                 )
                         return out_tensor
