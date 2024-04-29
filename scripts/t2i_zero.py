@@ -89,6 +89,7 @@ class T2I0StateParams:
                 self.width = None
                 self.height = None
                 self.dims = []
+                self.cbs_similarities: list = None # we can precompute this
 
 class T2I0ExtensionScript(UIWrapper):
         def __init__(self):
@@ -114,7 +115,7 @@ class T2I0ExtensionScript(UIWrapper):
                         with gr.Row():
                                 window_size = gr.Slider(value = 3, minimum = 0, maximum = 100, step = 1, label="Correction by Similarities Window Size", elem_id = 't2i0_window_size', info="Exclude contribution of tokens further than this from the current token")
                                 correction_threshold = gr.Slider(value = 0.0, minimum = 0., maximum = 1.0, step = 0.001, label="CbS Score Threshold", elem_id = 't2i0_correction_threshold', info="Filter dimensions with similarity below this threshold")
-                                correction_strength = gr.Slider(value = 0.0, minimum = 0.0, maximum = 0.999, step = 0.01, label="CbS Correction Strength", elem_id = 't2i0_correction_strength', info="The strength of the correction, default 0.1")
+                                correction_strength = gr.Slider(value = 0.0, minimum = 0.0, maximum = 2.0, step = 0.01, label="CbS Correction Strength", elem_id = 't2i0_correction_strength', info="The strength of the correction, default 0.1")
                         with gr.Row():
                                 attnreg = gr.Checkbox(visible=False, value=False, default=False, label="Use Attention Regulation", elem_id='t2i0_use_attnreg')
                                 ctnms_alpha = gr.Slider(value = 0.1, minimum = 0.0, maximum = 1.0, step = 0.01, label="Alpha for Cross-Token Non-Maximum Suppression", elem_id = 't2i0_ctnms_alpha', info="Contribution of the suppressed attention map, default 0.1")
@@ -213,7 +214,7 @@ class T2I0ExtensionScript(UIWrapper):
                                 logger.error("Invalid token indices, must be comma separated integers")
                                 raise
                 else:
-                       token_indices = None
+                       token_indices = []
 
         
                 # Create a list of parameters for each concept
@@ -303,7 +304,7 @@ class T2I0ExtensionScript(UIWrapper):
                         pass
                 return f_tilde
 
-        def correction_by_similarities(self, f, C, percentile, gamma, alpha):
+        def correction_by_similarities(self, f, C, percentile, gamma, alpha, tokens=[], token_count=77):
                 """
                 Apply the Correction by Similarities algorithm on embeddings.
 
@@ -313,27 +314,55 @@ class T2I0ExtensionScript(UIWrapper):
                 percentile (float): Percentile to use for score threshold.
                 gamma (int): Window size for the windowing function.
                 alpha (float): Correction strength.
+                tokens (list): List of token indices to condition on (default is all tokens if empty list).
 
                 Returns:
                 Tensor: The corrected embedding tensor.
                 """
                 if alpha == 0:
                         return f
-
+                
                 n, d = f.shape
+
+                token_indices = tokens
+                min_idx = 1
+                max_idx = min(token_count+1, n)
+                if token_indices is []:
+                        token_indices = list(range(min_idx, max_idx))
+                else:
+                        token_indices = [x+1 for x in token_indices if x >= 0 and x < n]
+                
+
                 f_tilde = f.detach().clone()  # Copy the embedding tensor
 
                 # Define a windowing function
-                def psi(c, gamma, n, dtype, device):
+                def psi(c, gamma, n, dtype, device, min_idx, max_idx):
                         window = torch.zeros(n, dtype=dtype, device=device)
-                        start = max(0, c - gamma)
-                        end = min(n, c + gamma + 1)
+                        start = max(min_idx, c - gamma)
+                        end = min(max_idx, c + gamma + 1)
                         window[start:end] = 1
                         return window
 
-                for token_idx, c in enumerate(C):
+                def threshold_filter(t, tau):
+                       """ Threshold filter function 
+                       Filters product values below a threshold tau and normalizes them to leave only the most similar dimensions.
+                        Arguments:
+                                t: torch.Tensor - The tensor to threshold
+                                tau: float - The threshold value
+                        Returns:
+                                bool: True if the value is above the threshold, False otherwise
+                       """
+                       pass
+
+
+
+
+                for c in token_indices:
+                        if c < 0 or c >= n:
+                                continue
                         Sc = f[c] * f  # Element-wise multiplication
-                        Sc_flat_positive = Sc[Sc > 0] # product = greater positive value indicates more similarity, filter out values under score threshold from 0 to max
+                        #Sc_flat_positive = torch.where(Sc > 0, True, False) # product = greater positive value indicates more similarity, filter out values under score threshold from 0 to max
+                        #Sc_flat_positive = Sc[Sc > 0] # product = greater positive value indicates more similarity, filter out values under score threshold from 0 to max
 
                         # calculate score threshold to filter out values under score threshold
                         # often there is a huge difference between the max and min values, so we use a log-like function instead
@@ -343,15 +372,18 @@ class T2I0ExtensionScript(UIWrapper):
                         pct_min = 1e-16
                         # max of 0.999... to 0.0000...1
                         pct = min(pct_max, max(pct_min, 1 - e**(-k * percentile)))
-                        tau = torch.quantile(Sc_flat_positive, pct)
+
+                        tau = torch.quantile(Sc, pct)
 
                         Sc_tilde = Sc * (Sc > tau)  # Apply threshold and filter
                         Sc_tilde /= Sc_tilde.max()  # Normalize
 
-                        window = psi(c, gamma, n, Sc_tilde.dtype, Sc_tilde.device).unsqueeze(1)  # Apply windowing function
+                        window = psi(c, gamma, n, Sc_tilde.dtype, Sc_tilde.device, min_idx, max_idx).unsqueeze(1)  # Apply windowing function
+
                         Sc_tilde *= window
                         f_c_tilde = torch.sum(Sc_tilde * f, dim=0)  # Combine embeddings
                         f_tilde[c] = (1 - alpha) * f[c] + alpha * f_c_tilde  # Blend embeddings
+
                 return f_tilde
 
         def ready_hijack_forward(self, alpha, width, height, ema_factor, step_start, step_end, tokens, token_count):
@@ -363,6 +395,8 @@ class T2I0ExtensionScript(UIWrapper):
                         ema_factor: float - EMA smoothing factor, default 2.0
                         step_start: int - Wait to apply CTNMS until this step
                         step_end: int - The number of steps to apply the CTNMS correction, after which don't
+                        tokens: list[int] - List of token indices to condition on
+                        token_count: int - The number of tokens in the prompt
 
                 Only modifies the output of the cross attention modules that get context (i.e. text embedding)
                 """
@@ -674,6 +708,9 @@ class T2I0ExtensionScript(UIWrapper):
                 step_start = sp.step_start
                 step_end = sp.step_end
 
+                tokens = sp.tokens if sp.tokens is not None else []
+
+
                 if step_start > step:
                         return
                 if step > step_end:
@@ -681,7 +718,7 @@ class T2I0ExtensionScript(UIWrapper):
 
                 for batch_idx, batch in enumerate(text_cond):
                         window = list(range(0, len(batch)))
-                        f_bar = self.correction_by_similarities(batch, window, score_threshold, window_size, correction_strength)
+                        f_bar = self.correction_by_similarities(batch, window, score_threshold, window_size, correction_strength, tokens)
                         if isinstance(params.text_cond, dict):
                                 params.text_cond['crossattn'][batch_idx] = f_bar
                         else:
