@@ -498,7 +498,9 @@ class T2I0ExtensionScript(UIWrapper):
 
                         
                         if token_indices is None:
-                                selected_tokens = torch.tensor(list(range(token_count.item())))
+                                selected_tokens = torch.tensor(list(range(1, token_count.item())))
+                        elif len(token_indices) == 0:
+                                selected_tokens = torch.tensor(list(range(1, token_count.item())))
                         else:
                                 selected_tokens = module.t2i0_tokens
 
