@@ -2,10 +2,12 @@
 This extension implements multiple novel algorithms that enhance image quality, prompt following, and more.
 
 ## COMPATIBILITY NOTICES:
-####  Currently incompatible with stable-diffusion-webui-forge https://github.com/lllyasviel/stable-diffusion-webui-forge
+####  Currently incompatible with stable-diffusion-webui-forge 
 Use this extension with Forge: https://github.com/pamparamm/sd-perturbed-attention
 
-May conflict with extensions that modify the CFGDenoiser
+* Reported incompatible with Adetailer: https://github.com/v0xie/sd-webui-incantations/issues/21
+
+* May conflict with extensions that modify the CFGDenoiser
 
 ---
 ## Perturbed Attention Guidance
@@ -14,6 +16,8 @@ An alternative/complementary method to CFG (Classifier-Free Guidance) that incre
 
 #### Controls
 * **PAG Scale**: Controls the intensity of effect of PAG on the generated image.  
+* **PAG Start Step**: Step to start using PAG.
+* **PAG End Step**: Step to stop using PAG. 
 
 #### Results
 Prompt: "a puppy and a kitten on the moon"
@@ -27,7 +31,39 @@ Prompt: "a puppy and a kitten on the moon"
 - https://ku-cvlab.github.io/Perturbed-Attention-Guidance/
 
 ---
+## CFG Interval / CFG Scheduler
+https://arxiv.org/abs/2404.07724 and https://arxiv.org/abs/2404.13040 
+
+Constrains the usage of CFG to within a specified noise interval. Allows usage of high CFG levels (>15) without drastic alteration of composition.  
+
+Adds controllable CFG schedules. For Clamp-Linear, use (c=2.0) for SD1.5 and (c=4.0) for SDXL. For PCS, use (s=1.0) for SD1.5 and (s=0.1) for SDXL.
+
+#### Controls
+* **Enable CFG Interval**: Enables the CFG Interval (PAG must be active! PAG scale can be set to 0.)
+* **CFG Noise Interval Start**: Minimum noise level to use CFG with. SDXL recommended value: 0.28.
+* **CFG Noise Interval End**: Maximum noise level to use CFG with. SDXL recommended value: >5.42.
+* **CFG Scheduler**: Sets the schedule type to apply CFG.
+    - Constant: The default CFG method (constant value over all timesteps)
+    - Clamp-Linear: Clamps the CFG to the maximum of (c, Linear)
+    - Clamp-Cosine: Clamps the CFG to the maximum of (c, Cosine)
+    - PCS: Powered Cosine, lower values are better
+
+#### Results
+##### CFG Interval
+Prompt: "A pointillist painting of a raccoon looking at the sea."
+- SD XL  
+![image](./images/xyz_grid-3192-1-A%20pointillist%20painting%20of%20a%20raccoon%20looking%20at%20the%20sea.jpg)
+
+##### CFG Schedule
+Prompt: "An epic lithograph of a handsome salaryman carefully pouring coffee from a cup into an overflowing carafe, 4K, directed by Wong Kar Wai"
+- SD XL  
+![image](./images/xyz_grid-3380-1-An%20epic%20lithograph%20of%20a%20handsome%20salaryman%20carefully%20pouring%20coffee%20from%20a%20cup%20into%20an%20overflowing%20carafe,%204K,%20directed%20by%20Wong.jpg)
+---
 ## Multi-Concept T2I-Zero / Attention Regulation
+
+#### Update: 29-04-2024
+The algorithms previously implemented for T2I-Zero were incorrect. They should be working much more stably now. See the previous result in the 'images' folder for an informal comparison between old and new.
+
 Implements Corrections by Similarities and Cross-Token Non-Maximum Suppression from https://arxiv.org/abs/2310.07419
 
 Also implements some methods from "Enhancing Semantic Fidelity in Text-to-Image Synthesis: Attention Regulation in Diffusion Models" https://arxiv.org/abs/2403.06381
@@ -52,7 +88,7 @@ Can error out with image dimensions which are not a multiple of 64
 #### Results:
 Prompt: "A photo of a lion and a grizzly bear and a tiger in the woods"  
 SD XL  
-![image](./images/xyz_grid-2660-1590472902-A%20photo%20of%20a%20lion%20and%20a%20grizzly%20bear%20and%20a%20tiger%20in%20the%20woods.jpg)  
+![image](./images/xyz_grid-3348-1590472902-A%20photo%20of%20a%20lion%20and%20a%20grizzly%20bear%20and%20a%20tiger%20in%20the%20woods.jpg)
 
 #### Also check out the paper authors' official project pages:
 - https://multi-concept-t2i-zero.github.io/ 
@@ -137,12 +173,30 @@ SD XL
       }
 
       @misc{zhang2024enhancing,
-      title={Enhancing Semantic Fidelity in Text-to-Image Synthesis: Attention Regulation in Diffusion Models},
-      author={Yang Zhang and Teoh Tze Tzun and Lim Wei Hern and Tiviatis Sim and Kenji Kawaguchi},
-      year={2024},
-      eprint={2403.06381},
-      archivePrefix={arXiv},
-      primaryClass={cs.CV}
+       title={Enhancing Semantic Fidelity in Text-to-Image Synthesis: Attention Regulation in Diffusion Models},
+       author={Yang Zhang and Teoh Tze Tzun and Lim Wei Hern and Tiviatis Sim and Kenji Kawaguchi},
+       year={2024},
+       eprint={2403.06381},
+       archivePrefix={arXiv},
+       primaryClass={cs.CV}
+      }
+
+      @misc{kynkäänniemi2024applying,
+       title={Applying Guidance in a Limited Interval Improves Sample and Distribution Quality in Diffusion Models}, 
+       author={Tuomas Kynkäänniemi and Miika Aittala and Tero Karras and Samuli Laine and Timo Aila and Jaakko Lehtinen},
+       year={2024},
+       eprint={2404.07724},
+       archivePrefix={arXiv},
+       primaryClass={cs.CV}
+      }
+
+      @misc{wang2024analysis,
+       title={Analysis of Classifier-Free Guidance Weight Schedulers}, 
+       author={Xi Wang and Nicolas Dufour and Nefeli Andreou and Marie-Paule Cani and Victoria Fernandez Abrevaya and David Picard and Vicky Kalogeiton},
+       year={2024},
+       eprint={2404.13040},
+       archivePrefix={arXiv},
+       primaryClass={cs.CV}
       }
 
 
