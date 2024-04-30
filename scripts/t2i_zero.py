@@ -2,28 +2,20 @@ import logging
 from os import environ
 import modules.scripts as scripts
 import gradio as gr
-import scipy.stats as stats
 
 from functools import reduce
 
 from scripts.incant_utils import plot_tools
 from einops import rearrange
-#import matplotlib.pyplot as plt
 
-from PIL import Image
 
-from scripts.ui_wrapper import UIWrapper, arg
+from scripts.ui_wrapper import UIWrapper
 from modules import script_callbacks
 from modules import extra_networks
 from modules import prompt_parser
 from modules import sd_hijack
-from modules.hypernetworks import hypernetwork
-#import modules.sd_hijack_optimizations
 from modules.script_callbacks import CFGDenoiserParams
-from modules.prompt_parser import reconstruct_multicond_batch
 from modules.processing import StableDiffusionProcessing
-#from modules.shared import sd_model, opts
-from modules.sd_samplers_cfg_denoiser import pad_cond
 from modules import shared
 
 import math
@@ -34,8 +26,6 @@ from torchvision.transforms import GaussianBlur
 from warnings import warn
 from typing import Callable, Dict, Optional
 from collections import OrderedDict
-import torch
-import numpy as np
 
 logger = logging.getLogger(__name__)
 logger.setLevel(environ.get("SD_WEBUI_LOG_LEVEL", logging.INFO))
@@ -48,7 +38,7 @@ Also implements some "Reduce distortion in generation" algorithms from "Enhancin
 
 
 @misc{tunanyan2023multiconcept,
-      title={Multi-Concept T2I-Zero: Tweaking Only The Text Embeddings and Nothing Else}, 
+      title={Multi-Concept T2I-Zero: Tweaking Only The Text Embeddings and Nothing Else},
       author={Hazarapet Tunanyan and Dejia Xu and Shant Navasardyan and Zhangyang Wang and Humphrey Shi},
       year={2023},
       eprint={2310.07419},
@@ -89,7 +79,7 @@ class T2I0StateParams:
                 self.width = None
                 self.height = None
                 self.dims = []
-                self.cbs_similarities: list = None # we can precompute this
+                self.cbs_similarities: list = None # we can precompute this?
 
 class T2I0ExtensionScript(UIWrapper):
         def __init__(self):
@@ -162,7 +152,7 @@ class T2I0ExtensionScript(UIWrapper):
 
         def t2i0_process_batch(self, p: StableDiffusionProcessing, active, attnreg, window_size, ctnms_alpha, correction_threshold, correction_strength, tokens, ema_factor, step_end, step_start, *args, **kwargs):
                 active = getattr(p, "t2i0_active", active)
-                use_attnreg = getattr(p, "t2i0_attnreg", attnreg)
+                # use_attnreg = getattr(p, "t2i0_attnreg", attnreg)
                 ema_factor = getattr(p, "t2i0_ema_factor", ema_factor)
                 step_start = getattr(p, "t2i0_step_start", step_start)
                 step_end = getattr(p, "t2i0_step_end", step_end)
@@ -220,23 +210,23 @@ class T2I0ExtensionScript(UIWrapper):
                 else:
                        token_indices = []
 
-        
+
                 # Create a list of parameters for each concept
                 t2i0_params = []
 
                 #for _, strength in concept_conds:
                 params = T2I0StateParams()
-                params.attnreg = attnreg 
-                params.ema_smoothing_factor = ema_factor 
+                params.attnreg = attnreg
+                params.ema_smoothing_factor = ema_factor
                 params.step_start = step_start
-                params.step_end = step_end 
+                params.step_end = step_end
                 params.window_size_period = window_size
                 params.ctnms_alpha = ctnms_alpha
                 params.correction_threshold = correction_threshold
                 params.correction_strength = correction_strength
                 params.strength = 1.0
                 params.width = width
-                params.height = height 
+                params.height = height
                 params.dims = [width, height]
 
                 params.token_count, _ = get_token_count(p.prompt, p.steps, True)
@@ -249,7 +239,7 @@ class T2I0ExtensionScript(UIWrapper):
 
                 # Use lambda to call the callback function with the parameters to avoid global variables
                 y = lambda params: self.on_cfg_denoiser_callback(params, t2i0_params)
-                un = lambda params: self.unhook_callbacks()
+                # un = lambda params: self.unhook_callbacks()
 
                 # Hook callbacks
                 if ctnms_alpha > 0:
@@ -309,11 +299,11 @@ class T2I0ExtensionScript(UIWrapper):
                 n, d = f.shape
                 f_tilde = f.detach().clone()  # Copy the embedding tensor
 
-                for token_idx, c in enumerate(C):
-                        pass
+                # for token_idx, c in enumerate(C):
+                #         pass
                 return f_tilde
 
-        def correction_by_similarities(self, f, C, percentile, gamma, alpha, tokens=[], token_count=77):
+        def correction_by_similarities(self, f, C, percentile, gamma, alpha, tokens=None, token_count=77):
                 """
                 Apply the Correction by Similarities algorithm on embeddings.
 
@@ -330,18 +320,19 @@ class T2I0ExtensionScript(UIWrapper):
                 """
                 if alpha == 0:
                         return f
-                
+
                 n, d = f.shape
 
                 token_indices = tokens
                 min_idx = 1
                 max_idx = min(token_count+1, n)
-                if token_indices is []:
+                if token_indices is None:
+                        token_indices = list(range(min_idx, max_idx))
+                if token_indices == []:
                         token_indices = list(range(min_idx, max_idx))
                 else:
-                        pass
                         token_indices = [x+1 for x in token_indices if x >= 0 and x < n]
-                
+
 
                 f_tilde = f.detach().clone()  # Copy the embedding tensor
 
@@ -354,7 +345,7 @@ class T2I0ExtensionScript(UIWrapper):
                         return window
 
                 def threshold_filter(t, tau):
-                       """ Threshold filter function 
+                       """ Threshold filter function
                        Filters product values below a threshold tau and normalizes them to leave only the most similar dimensions.
                         Arguments:
                                 t: torch.Tensor - The tensor to threshold
@@ -395,7 +386,7 @@ class T2I0ExtensionScript(UIWrapper):
                 return f_tilde
 
         def ready_hijack_forward(self, alpha, width, height, ema_factor, step_start, step_end, tokens, token_count):
-                """ Create a hook to modify the output of the forward pass of the cross attention module 
+                """ Create a hook to modify the output of the forward pass of the cross attention module
                 Arguments:
                         alpha: float - The strength of the CTNMS correction, default 0.1
                         width: int - The width of the final output image map
@@ -445,7 +436,7 @@ class T2I0ExtensionScript(UIWrapper):
                         if context.shape[1] % 77 != 0:
                                 logger.error("Context shape is not divisible by 77, cannot run T2I-0")
                                 return
-                        
+
                         current_step = module.t2i0_step
                         start_step = module.t2i0_step_start
                         end_step = module.t2i0_step_end
@@ -469,8 +460,8 @@ class T2I0ExtensionScript(UIWrapper):
                                 print(f"Error: Width: {width}, height: {height}, Downscale width: {downscale_width}, height: {downscale_height}, Factor: {factor}, Max dims: {max_dims}\n")
                                 return
 
-                        h = module.heads
-                        head_dim = inner_dim // h
+                        # h = module.heads
+                        # head_dim = inner_dim // h
                         dtype = output.dtype
                         device = output.device
 
@@ -537,7 +528,7 @@ class T2I0ExtensionScript(UIWrapper):
                         pass
 
                 def t2i0_to_v_hook(module, input, kwargs, output):
-                        setattr(module.t2i0_parent_module[0], 't2i0_to_v_map', output)
+                        module.t2i0_parent_module[0].t2i0_to_v_map = output
 
                 # Hook
                 for module in cross_attn_modules:
@@ -564,7 +555,7 @@ class T2I0ExtensionScript(UIWrapper):
                 """ Add a field to a module if it doesn't exist """
                 if not hasattr(module, field):
                         setattr(module, field, value)
-        
+
         def remove_field_cross_attn_modules(self, module, field):
                 """ Remove a field from a module if it exists """
                 if hasattr(module, field):
@@ -580,9 +571,6 @@ class T2I0ExtensionScript(UIWrapper):
                 window_size = sp.window_size_period
                 correction_strength = sp.correction_strength
                 score_threshold = sp.correction_threshold
-                width = sp.width
-                height = sp.height
-                ctnms_alpha = sp.ctnms_alpha
 
                 step = params.sampling_step
                 step_start = sp.step_start
@@ -621,7 +609,7 @@ class T2I0ExtensionScript(UIWrapper):
 
 
 def plot_attention_map(attention_map: torch.Tensor, title, x_label="X", y_label="Y", save_path=None, plot_type="default"):
-        """ Plots an attention map using matplotlib.pyplot 
+        """ Plots an attention map using matplotlib.pyplot
                 Arguments:
                         attention_map: Tensor - The attention map to plot
                         title: str - The title of the plot
@@ -637,7 +625,7 @@ def plot_attention_map(attention_map: torch.Tensor, title, x_label="X", y_label=
         plot_tools.plot_attention_map(attention_map, title, x_label, y_label, save_path, plot_type)
 
 def debug_plot_attention_map(attention_map):
-        """ Plots an attention map using matplotlib.pyplot 
+        """ Plots an attention map using matplotlib.pyplot
                 Arguments:
                         attention_map: Tensor - The attention map to plot
                         title: str - The title of the plot
@@ -650,8 +638,8 @@ def debug_plot_attention_map(attention_map):
 
         plot_attention_map(
                 attention_map,
-                f"Debug Output",
-                save_path=f"F:\\incant\\temp\\AAA_out_temp.png"
+                "Debug Output",
+                save_path="F:\\incant\\temp\\AAA_out_temp.png"
         )
 
 
@@ -667,7 +655,7 @@ def t2i0_apply_override(field, boolean: bool = False):
 def t2i0_apply_field(field):
     def fun(p, x, xs):
         if not hasattr(p, "t2i0_active"):
-                setattr(p, "t2i0_active", True)
+                p.t2i0_active = True
         setattr(p, field, x)
     return fun
 
@@ -736,7 +724,7 @@ def _remove_all_forward_hooks(
     def _remove_child_hooks(
         target_module: torch.nn.Module, hook_name: Optional[str] = None
     ) -> None:
-        for name, child in target_module._modules.items():
+        for _, child in target_module._modules.items():
             if child is not None:
                 _remove_hooks(child, hook_name)
                 _remove_child_hooks(child, hook_name)
