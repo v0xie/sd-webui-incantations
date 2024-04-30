@@ -130,16 +130,18 @@ class T2I0ExtensionScript(UIWrapper):
                 attnreg.do_not_save_to_config = True
                 ctnms_alpha.do_not_save_to_config = True
                 ema_factor.do_not_save_to_config = True
+                tokens.do_not_save_to_config = True
                 self.infotext_fields = [
                         (active, lambda d: gr.Checkbox.update(value='T2I-0 Active' in d)),
                         #(attnreg, lambda d: gr.Checkbox.update(value='T2I-0 AttnReg' in d)),
+                        (window_size, 'T2I-0 Window Size'),
                         (step_start, 'T2I-0 Step Start'),
                         (step_end, 'T2I-0 Step End'),
-                        (window_size, 'T2I-0 Window Size'),
-                        (ctnms_alpha, 'T2I-0 CTNMS Alpha'),
                         (correction_threshold, 'T2I-0 CbS Score Threshold'),
                         (correction_strength, 'T2I-0 CbS Correction Strength'),
+                        (ctnms_alpha, 'T2I-0 CTNMS Alpha'),
                         (ema_factor, 'T2I-0 CTNMS EMA Smoothing Factor'),
+                        (tokens, 'T2I-0 Tokens'),
                 ]
                 self.paste_field_names = [
                         't2i0_active',
@@ -150,7 +152,8 @@ class T2I0ExtensionScript(UIWrapper):
                         't2i0_correction_strength'
                         't2i0_ema_factor',
                         't2i0_step_start',
-                        't2i0_step_end'
+                        't2i0_step_end',
+                        't2i0_tokens'
                 ]
                 return [active, attnreg, window_size, ctnms_alpha, correction_threshold, correction_strength, tokens, ema_factor, step_end, step_start]
 
@@ -173,14 +176,14 @@ class T2I0ExtensionScript(UIWrapper):
                 p.extra_generation_params.update({
                         "T2I-0 Active": active,
                         #"T2I-0 AttnReg": attnreg,
-                        #"T2I-0 Tokens": tokens,
-                        "T2I-0 window_size Period": window_size,
+                        "T2I-0 Window Size": window_size,
+                        "T2I-0 Step Start": step_start,
+                        "T2I-0 Step End": step_end,
                         "T2I-0 CbS Score Threshold": correction_threshold,
                         "T2I-0 CbS Correction Strength": correction_strength,
                         "T2I-0 CTNMS Alpha": ctnms_alpha,
-                        "T2I-0 Step Start": step_start,
-                        "T2I-0 Step End": step_end,
-                        "T2I-0 EMA Smoothing Factor": ema_factor,
+                        "T2I-0 CTNMS EMA Smoothing Factor": ema_factor,
+                        "T2I-0 Tokens": tokens,
                 })
 
                 self.create_hook(p, active, attnreg, window_size, ctnms_alpha, correction_threshold, correction_strength, tokens, ema_factor, step_end, step_start, p.width, p.height)
@@ -283,8 +286,8 @@ class T2I0ExtensionScript(UIWrapper):
                         self.remove_field_cross_attn_modules(module.to_k, 't2i0_parent_module')
                         self.remove_field_cross_attn_modules(module.to_v, 't2i0_parent_module')
                         _remove_all_forward_hooks(module, 'cross_token_non_maximum_suppression')
-                        _remove_all_forward_hooks(module, 'cross_token_non_maximum_suppression_pre')
-                        _remove_all_forward_hooks(module.to_k, 't2i0_to_k_hook')
+                        # _remove_all_forward_hooks(module, 'cross_token_non_maximum_suppression_pre')
+                        # _remove_all_forward_hooks(module.to_k, 't2i0_to_k_hook')
                         _remove_all_forward_hooks(module.to_v, 't2i0_to_v_hook')
                 script_callbacks.remove_current_script_callbacks()
 
@@ -368,8 +371,6 @@ class T2I0ExtensionScript(UIWrapper):
                         if c < 0 or c >= n:
                                 continue
                         Sc = f[c] * f  # Element-wise multiplication
-                        #Sc_flat_positive = torch.where(Sc > 0, True, False) # product = greater positive value indicates more similarity, filter out values under score threshold from 0 to max
-                        #Sc_flat_positive = Sc[Sc > 0] # product = greater positive value indicates more similarity, filter out values under score threshold from 0 to max
 
                         # calculate score threshold to filter out values under score threshold
                         # often there is a huge difference between the max and min values, so we use a log-like function instead
@@ -431,9 +432,9 @@ class T2I0ExtensionScript(UIWrapper):
 
                         plot_num += 1
 
-                def cross_token_non_maximum_suppression_pre(module, args, kwargs):
-                        pass
-                        pass
+                # def cross_token_non_maximum_suppression_pre(module, args, kwargs):
+                #         pass
+                #         pass
 
                 def cross_token_non_maximum_suppression(module, input, kwargs, output):
                         module.t2i0_step += 1
@@ -458,8 +459,6 @@ class T2I0ExtensionScript(UIWrapper):
                         if current_step < start_step:
                                 return
 
-                        in_map = input[0]
-
                         batch_size, sequence_length, inner_dim = output.shape
 
                         max_dims = width*height
@@ -475,37 +474,16 @@ class T2I0ExtensionScript(UIWrapper):
                         dtype = output.dtype
                         device = output.device
 
-                        #print_plot = False
-
-                        # Plot the attention maps
-                        outdir = f"F:\\temp\\incant"
-                        ogmap_savepath= f"{outdir}\\plot{current_step}_old.png"
-                        map_savepath= f"{outdir}\\plot{current_step}_old.png"
-                        step = current_step.to('cpu').item()
-                        plot_num = module.plot_num.to('cpu').item()
-                        step_str = f"0{step}" if step < 10 else f"{step}"
-
-                        #print_plot = True
-                        print_plot = False
-                        #print_plot = plot_num in [32]
-                        #print_plot = downscale_width == 64
-                        # Reshape the attention map to batch_size, height, width
-                        # FIXME: need to assert the height/width divides into the sequence length
-
-
                         # Multiply text embeddings into visual embeddings
                         to_v_map = module.t2i0_to_v_map.detach().clone()
-                        # to_v_map = to_v_map.view(batch_size, -1, h, head_dim).transpose(1, 2)
                         to_v_inner_dim = to_v_map.size(-2)
                         to_v_map = (to_v_map @ output.transpose(1, 2)).transpose(1, 2)
 
                         to_v_attention_map = to_v_map.view(batch_size, downscale_height, downscale_width, to_v_inner_dim)
 
-                        # to_v_map = to_v_attention_map.permute(3, 0, 1, 2)
-
+                        # Original attention map
                         attention_map = output.view(batch_size, downscale_height, downscale_width, inner_dim)
 
-                        
                         if token_indices is None:
                                 selected_tokens = torch.tensor(list(range(1, token_count.item())))
                         elif len(token_indices) == 0:
@@ -513,46 +491,11 @@ class T2I0ExtensionScript(UIWrapper):
                         else:
                                 selected_tokens = module.t2i0_tokens
 
-                        # Permute to [batch_size, inner_dim, height, width]
-                        if module.t2i0_tokens is not None and print_plot:
-                                to_v_attention_map = to_v_attention_map.permute(0, 3, 1, 2)
-                                for idx in selected_tokens:
-                                        plot_attention_map(
-                                                to_v_attention_map[:, idx, :, :][0],
-                                                f"Step {step}, Plot {plot_num}, Token Index {idx}",
-                                                x_label="Width", y_label="Height",
-                                                save_path=f"{outdir}\\plot_0000{plot_num}_tk0000{idx}_step0000{step}.png"
-                                        )
-                                # revert
-                                to_v_attention_map = to_v_attention_map.permute(0, 2, 3, 1)
-
-                        if print_plot:
-                                in_map = in_map.view(batch_size, downscale_height, downscale_width, inner_dim)
-                                ogmap = plot_attention_map(
-                                        attention_map[0],
-                                        f"Step {step_str}, Plot {plot_num}, Original Output",
-                                        x_label="Width", y_label="Height",
-                                        save_path=f"{outdir}\\plot0000{plot_num}_step0000{step_str}_out99.png",
-                                        #plot_type="num"
-                                )
-
                         if module.t2i0_ema is None:
                                 module.t2i0_ema = output.detach().clone()
 
                         # Extract the attention maps for the selected tokens
                         AC = to_v_attention_map[:, :, :, selected_tokens]  # Extracting relevant attention maps
-
-                        if token_indices is not None and print_plot:
-                                AC = AC.permute(0, 3, 1, 2)
-                                for idx, attn_map in enumerate(AC[0]):
-                                        plot_attention_map(
-                                                attn_map,
-                                                f"Step {step_str}, Plot {plot_num}, Extracted Attn Map for Token Index {selected_tokens[idx]}",
-                                                x_label="Width", y_label="Height",
-                                                save_path=f"{outdir}\\plot_0000{plot_num}_tk0000{idx}_step0000{step_str}_extidx0000{selected_tokens[idx]}.png"
-                                        )
-                                AC = AC.permute(0, 2, 3, 1)
-
 
                         # Extract and process the selected attention maps
                         # GaussianBlur expects the input [..., C, H, W]
@@ -561,77 +504,16 @@ class T2I0ExtensionScript(UIWrapper):
                         AC = gaussian_blur(AC)  # Applying Gaussian smoothing
                         AC = AC.permute(0, 2, 3, 1)
 
-                        if print_plot:
-                                ogmap = plot_attention_map(
-                                        AC[0],
-                                        f"Step {step_str}, Plot {plot_num}, After Blur",
-                                        x_label="Width", y_label="Height",
-                                        save_path=f"{outdir}\\plot0000{plot_num}_step0000{step_str}_out01.png",
-                                        plot_type="num"
-                                )
-
                         # Find the maximum contributing token for each pixel
                         M = torch.argmax(AC, dim=-1)
-
-                        if print_plot:
-                                ogmap = plot_attention_map(
-                                        M[0],
-                                        f"Step {step_str}, Plot {plot_num}, ArgMax Map",
-                                        x_label="Width", y_label="Height",
-                                        save_path=f"{outdir}\\plot0000{plot_num}_step0000{step_str}_out02.png",
-                                        plot_type="num"
-                                )
-
-                        # Create one-hot vectors for suppression
-                        # t = to_v_attention_map.size(-1)
-                        # one_hot_M = F.one_hot(M, num_classes=to_v_inner_dim).to(dtype=dtype, device=device)
-
-                        # if print_plot:
-                        #         ogmap = plot_attention_map(
-                        #                 one_hot_M[0],
-                        #                 f"Step {step}, Plot {plot_num}, One Hot Map: {to_v_inner_dim} classes",
-                        #                 x_label="Width", y_label="Height",
-                        #                 save_path=f"{outdir}\\plot0000{plot_num}_step0000{step}_out03.png",
-                        #                 plot_type="num"
-                        #         )
-
                         one_hot_M = F.one_hot(M, num_classes=to_v_attention_map.size(-1)).to(dtype=dtype, device=device)
 
-                        if print_plot:
-                                ogmap = plot_attention_map(
-                                        one_hot_M[0],
-                                        f"Step {step_str}, Plot {plot_num}, One Hot Map: {inner_dim} classes",
-                                        x_label="Width", y_label="Height",
-                                        save_path=f"{outdir}\\plot0000{plot_num}_step0000{step_str}_out04.png",
-                                        plot_type="num"
-                                )
-
-                        # how do we multiply the one hot map with the attention map?
                         # the attention map is of shape [batch_size, height, width, inner_dim]
                         one_hot_M_z = rearrange(one_hot_M, 'b h w c -> b (h w) c')
                         one_hot_M_z = one_hot_M_z @ module.t2i0_to_v_map
-                        #one_hot_M_z = one_hot_M_z @ context
                         one_hot_M_z = rearrange(one_hot_M_z, 'b (h w) c -> b h w c', h=downscale_height, w=downscale_width)
 
-
-                        if print_plot:
-                                ogmap = plot_attention_map(
-                                        one_hot_M_z[0],
-                                        f"Step {step}, Plot {plot_num}, One Hot * Context Map",
-                                        x_label="Width", y_label="Height",
-                                        save_path=f"{outdir}\\plot0000{plot_num}_step0000{step_str}_out05.png"
-                                )
-
                         suppressed_attention_map = one_hot_M_z * attention_map
-                        # suppressed_attention_map = attention_map
-
-                        if print_plot:
-                                ogmap = plot_attention_map(
-                                        suppressed_attention_map[0],
-                                        f"Step {step_str}, Plot {plot_num}, One Hot * Attention Map",
-                                        x_label="Width", y_label="Height",
-                                        save_path=f"{outdir}\\plot0000{plot_num}_step0000{step_str}_out06.png"
-                                )
 
                         # Reshape back to original dimensions
                         suppressed_attention_map = suppressed_attention_map.view(batch_size, sequence_length, inner_dim)
@@ -648,14 +530,6 @@ class T2I0ExtensionScript(UIWrapper):
                         else:
                                 out_tensor = (1-alpha) * output + alpha * suppressed_attention_map
 
-                        if print_plot:
-                                newmap = plot_attention_map(
-                                        out_tensor.view(batch_size, downscale_height, downscale_width, inner_dim)[0],
-                                        f"Step {step_str}, Plot {plot_num}, Suppressed Output",
-                                        x_label="Width", y_label="Height",
-                                        save_path=f"{outdir}\\plot0000{plot_num}_step0000{step_str}_out07.png",
-                                        #plot_type="num"
-                                )
                         return out_tensor
 
                 def t2i0_to_k_hook(module, input, kwargs, output):
@@ -667,10 +541,10 @@ class T2I0ExtensionScript(UIWrapper):
 
                 # Hook
                 for module in cross_attn_modules:
-                        handle = module.to_k.register_forward_hook(t2i0_to_k_hook, with_kwargs=True)
+                        # handle = module.to_k.register_forward_hook(t2i0_to_k_hook, with_kwargs=True)
                         handle = module.to_v.register_forward_hook(t2i0_to_v_hook, with_kwargs=True)
                         handle = module.register_forward_hook(cross_token_non_maximum_suppression, with_kwargs=True)
-                        handle = module.register_forward_pre_hook(cross_token_non_maximum_suppression_pre, with_kwargs=True)
+                        # handle = module.register_forward_pre_hook(cross_token_non_maximum_suppression_pre, with_kwargs=True)
 
         def get_cross_attn_modules(self):
                 """ Get all cross attention modules """
@@ -735,11 +609,12 @@ class T2I0ExtensionScript(UIWrapper):
                 xyz_grid = [x for x in scripts.scripts_data if x.script_class.__module__ in ("xyz_grid.py", "scripts.xyz_grid")][0].module
                 extra_axis_options = {
                         xyz_grid.AxisOption("[T2I-0] Active", str, t2i0_apply_override('t2i0_active', boolean=True), choices=xyz_grid.boolean_choice(reverse=True)),
-                        xyz_grid.AxisOption("[T2I-0] ctnms_alpha", float, t2i0_apply_field("t2i0_ctnms_alpha")),
-                        xyz_grid.AxisOption("[T2I-0] Step End", float, t2i0_apply_field("t2i0_step_end")),
-                        xyz_grid.AxisOption("[T2I-0] Window Size", int, t2i0_apply_field("t2i0_window_size")),
-                        xyz_grid.AxisOption("[T2I-0] Correction Threshold", float, t2i0_apply_field("t2i0_correction_threshold")),
-                        xyz_grid.AxisOption("[T2I-0] Correction Strength", float, t2i0_apply_field("t2i0_correction_strength")),
+                        xyz_grid.AxisOption("[T2I-0] Step Start", int, t2i0_apply_field("t2i0_step_end")),
+                        xyz_grid.AxisOption("[T2I-0] Step End", int, t2i0_apply_field("t2i0_step_end")),
+                        xyz_grid.AxisOption("[T2I-0] CbS Window Size", int, t2i0_apply_field("t2i0_window_size")),
+                        xyz_grid.AxisOption("[T2I-0] CbS Score Threshold", float, t2i0_apply_field("t2i0_correction_threshold")),
+                        xyz_grid.AxisOption("[T2I-0] CbS Correction Strength", float, t2i0_apply_field("t2i0_correction_strength")),
+                        xyz_grid.AxisOption("[T2I-0] CTNMS Alpha", float, t2i0_apply_field("t2i0_ctnms_alpha")),
                         xyz_grid.AxisOption("[T2I-0] CTNMS EMA Smoothing Factor", float, t2i0_apply_field("t2i0_ema_factor")),
                 }
                 return extra_axis_options
