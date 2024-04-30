@@ -55,6 +55,10 @@ Prompt: "A pointillist painting of a raccoon looking at the sea."
 
 ---
 ## Multi-Concept T2I-Zero / Attention Regulation
+
+#### Update: 29-04-2024
+The algorithms previously implemented for T2I-Zero were incorrect. They should be working much more stably now. See the previous result in the 'images' folder for an informal comparison between old and new.
+
 Implements Corrections by Similarities and Cross-Token Non-Maximum Suppression from https://arxiv.org/abs/2310.07419
 
 Also implements some methods from "Enhancing Semantic Fidelity in Text-to-Image Synthesis: Attention Regulation in Diffusion Models" https://arxiv.org/abs/2403.06381
@@ -79,7 +83,7 @@ Can error out with image dimensions which are not a multiple of 64
 #### Results:
 Prompt: "A photo of a lion and a grizzly bear and a tiger in the woods"  
 SD XL  
-![image](./images/xyz_grid-2660-1590472902-A%20photo%20of%20a%20lion%20and%20a%20grizzly%20bear%20and%20a%20tiger%20in%20the%20woods.jpg)  
+![image](./images/xyz_grid-3348-1590472902-A%20photo%20of%20a%20lion%20and%20a%20grizzly%20bear%20and%20a%20tiger%20in%20the%20woods.png)
 
 #### Also check out the paper authors' official project pages:
 - https://multi-concept-t2i-zero.github.io/ 
