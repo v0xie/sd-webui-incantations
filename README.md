@@ -83,7 +83,7 @@ Can error out with image dimensions which are not a multiple of 64
 #### Results:
 Prompt: "A photo of a lion and a grizzly bear and a tiger in the woods"  
 SD XL  
-![image](./images/xyz_grid-3348-1590472902-A%20photo%20of%20a%20lion%20and%20a%20grizzly%20bear%20and%20a%20tiger%20in%20the%20woods.png)
+![image](./images/xyz_grid-3348-1590472902-A%20photo%20of%20a%20lion%20and%20a%20grizzly%20bear%20and%20a%20tiger%20in%20the%20woods.jpg)
 
 #### Also check out the paper authors' official project pages:
 - https://multi-concept-t2i-zero.github.io/ 
