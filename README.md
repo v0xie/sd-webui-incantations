@@ -49,10 +49,15 @@ Adds controllable CFG schedules. For Clamp-Linear, use (c=2.0) for SD1.5 and (c=
     - PCS: Powered Cosine, lower values are better
 
 #### Results
+##### CFG Interval
 Prompt: "A pointillist painting of a raccoon looking at the sea."
 - SD XL  
 ![image](./images/xyz_grid-3192-1-A%20pointillist%20painting%20of%20a%20raccoon%20looking%20at%20the%20sea.jpg)
 
+##### CFG Schedule
+Prompt: "An epic lithograph of a handsome salaryman carefully pouring coffee from a cup into an overflowing carafe, 4K, directed by Wong Kar Wai"
+- SD XL  
+![image](./images/xyz_grid-3380-1-An%20epic%20lithograph%20of%20a%20handsome%20salaryman%20carefully%20pouring%20coffee%20from%20a%20cup%20into%20an%20overflowing%20carafe,%204K,%20directed%20by%20Wong.jpg)
 ---
 ## Multi-Concept T2I-Zero / Attention Regulation
 
