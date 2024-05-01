@@ -42,14 +42,14 @@ To use CFG Scheduler, PAG Active must be set True! PAG scale can be set to 0.
 
 #### Controls
 * **Enable CFG Scheduler**: Enables the CFG Scheduler.
-* **CFG Noise Interval Start**: Minimum noise level to use CFG with. SDXL recommended value: 0.28.
-* **CFG Noise Interval End**: Maximum noise level to use CFG with. SDXL recommended value: >5.42.
-* **CFG Scheduler**: Sets the schedule type to apply CFG.
+* **CFG Schedule Type**: Sets the schedule type to apply CFG.
     - Constant: The default CFG method (constant value over all timesteps)
     - Interval: Constant with CFG only being applied within the specified noise interval!
     - Clamp-Linear: Clamps the CFG to the maximum of (c, Linear)
     - Clamp-Cosine: Clamps the CFG to the maximum of (c, Cosine)
-    - PCS: Powered Cosine, lower values are better
+    - PCS: Powered Cosine, lower values are typically better
+* **CFG Noise Interval Start**: Minimum noise level to use CFG with. SDXL recommended value: 0.28.
+* **CFG Noise Interval End**: Maximum noise level to use CFG with. SDXL recommended value: >5.42.
 
 
 #### Results
