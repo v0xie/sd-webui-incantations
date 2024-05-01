@@ -36,17 +36,21 @@ https://arxiv.org/abs/2404.07724 and https://arxiv.org/abs/2404.13040
 
 Constrains the usage of CFG to within a specified noise interval. Allows usage of high CFG levels (>15) without drastic alteration of composition.  
 
-Adds controllable CFG schedules. For Clamp-Linear, use (c=2.0) for SD1.5 and (c=4.0) for SDXL. For PCS, use (s=1.0) for SD1.5 and (s=0.1) for SDXL.
+Adds controllable CFG schedules. For Clamp-Linear, use (c=2.0) for SD1.5 and (c=4.0) for SDXL. For PCS, use (s=1.0) for SD1.5 and (s=0.1) for SDXL.  
+
+To use CFG Scheduler, PAG Active must be set True! PAG scale can be set to 0.
 
 #### Controls
-* **Enable CFG Interval**: Enables the CFG Interval (PAG must be active! PAG scale can be set to 0.)
+* **Enable CFG Scheduler**: Enables the CFG Scheduler.
 * **CFG Noise Interval Start**: Minimum noise level to use CFG with. SDXL recommended value: 0.28.
 * **CFG Noise Interval End**: Maximum noise level to use CFG with. SDXL recommended value: >5.42.
 * **CFG Scheduler**: Sets the schedule type to apply CFG.
     - Constant: The default CFG method (constant value over all timesteps)
+    - Interval: Constant with CFG only being applied within the specified noise interval!
     - Clamp-Linear: Clamps the CFG to the maximum of (c, Linear)
     - Clamp-Cosine: Clamps the CFG to the maximum of (c, Cosine)
     - PCS: Powered Cosine, lower values are better
+
 
 #### Results
 ##### CFG Interval

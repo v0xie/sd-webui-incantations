@@ -148,11 +148,11 @@ class PAGExtensionScript(UIWrapper):
                                 start_step = gr.Slider(value = 0, minimum = 0, maximum = 150, step = 1, label="Start Step", elem_id = 'pag_start_step', info="")
                                 end_step = gr.Slider(value = 150, minimum = 0, maximum = 150, step = 1, label="End Step", elem_id = 'pag_end_step', info="")
                         with gr.Row():
-                                cfg_interval_enable = gr.Checkbox(value=False, default=False, label="Enable CFG Interval", elem_id='cfg_interval_enable', info="Apply CFG only within noise interval. PAG must be enabled (scale can be 0). SDXL recommend CFG=15; CFG interval (0.28, 5.42]")
+                                cfg_interval_enable = gr.Checkbox(value=False, default=False, label="Enable CFG Scheduler", elem_id='cfg_interval_enable', info="If enabled, applies CFG only within noise interval with the selected schedule type. PAG must be enabled (scale can be 0). SDXL recommend CFG=15; CFG interval (0.28, 5.42]")
                                 cfg_schedule = gr.Dropdown(
                                         value='Constant',
                                         choices= SCHEDULES,
-                                        label="CFG Interval Schedule", 
+                                        label="CFG Schedule Type", 
                                         elem_id='cfg_interval_schedule', 
                                         info="Select the CFG schedule"
                                 )
