@@ -502,10 +502,11 @@ def combine_denoised_pass_conds_list(*args, **kwargs):
         def new_combine_denoised(x_out, conds_list, uncond, cond_scale):
                 denoised_uncond = x_out[-uncond.shape[0]:]
                 denoised = torch.clone(denoised_uncond)
-                cfg_scale = cond_scale
 
                 noise_level = calculate_noise_level(new_params.step, new_params.max_sampling_step)
 
+                # Calculate CFG Scale
+                cfg_scale = cond_scale
                 if new_params.cfg_interval_enable:
                         if new_params.cfg_interval_schedule == 'Interval':
                                 start = new_params.cfg_interval_low
@@ -513,8 +514,8 @@ def combine_denoised_pass_conds_list(*args, **kwargs):
                                 begin_range = start if start <= end else end
                                 end_range = end if start <= end else start
                                 cfg_scale = cfg_scale if begin_range <= noise_level <= end_range else 1.0
-                else:
-                        cfg_scale = cfg_scheduler(new_params.cfg_interval_schedule, new_params.step, new_params.max_sampling_step, cond_scale)
+                        else:
+                                cfg_scale = cfg_scheduler(new_params.cfg_interval_schedule, new_params.step, new_params.max_sampling_step, cond_scale)
 
                 if incantations_debug:
                         logger.debug(f"Schedule: {new_params.cfg_interval_schedule}, CFG Scale: {cfg_scale}, Noise_level: {round(noise_level,3)}")
@@ -769,6 +770,10 @@ def pag_apply_override(field, boolean: bool = False):
         if boolean:
             x = True if x.lower() == "true" else False
         setattr(p, field, x)
+        if not hasattr(p, "pag_active"):
+                setattr(p, "pag_active", True)
+        if 'cfg_interval_' in field and not hasattr(p, "cfg_interval_enable"):
+            setattr(p, "cfg_interval_enable", True)
     return fun
 
 
