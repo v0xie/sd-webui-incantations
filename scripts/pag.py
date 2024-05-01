@@ -241,7 +241,7 @@ class PAGExtensionScript(UIWrapper):
                        high_index = find_closest_index(cfg_interval_high, pag_params.max_sampling_step)
                        pag_params.cfg_interval_low = calculate_noise_level(low_index, pag_params.max_sampling_step)
                        pag_params.cfg_interval_high = calculate_noise_level(high_index, pag_params.max_sampling_step)
-                       logger.debug(f"Low Index, High Index: ({low_index}, {high_index}), CFG Interval Low, High: ({pag_params.cfg_interval_low}, {pag_params.cfg_interval_high})")
+                       logger.debug(f"Step Aligned CFG Interval (low, high): ({low_index}, {high_index}), Step Aligned CFG Interval: ({round(pag_params.cfg_interval_low, 4)}, {round(pag_params.cfg_interval_high, 4)})")
 
                 # Get all the qv modules
                 cross_attn_modules = self.get_cross_attn_modules()
