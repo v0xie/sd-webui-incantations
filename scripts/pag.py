@@ -507,14 +507,16 @@ def combine_denoised_pass_conds_list(*args, **kwargs):
                 # Calculate CFG Scale
                 cfg_scale = cond_scale
                 if new_params.cfg_interval_enable:
-                        if new_params.cfg_interval_schedule == 'Interval':
+                        if new_params.cfg_interval_schedule != 'Constant':
+                                # Calculate noise interval
                                 start = new_params.cfg_interval_low
                                 end = new_params.cfg_interval_high
                                 begin_range = start if start <= end else end
                                 end_range = end if start <= end else start
-                                cfg_scale = cfg_scale if begin_range <= noise_level <= end_range else 1.0
-                        else:
-                                cfg_scale = cfg_scheduler(new_params.cfg_interval_schedule, new_params.step, new_params.max_sampling_step, cond_scale)
+                                # Scheduled CFG Value
+                                scheduled_cfg_scale = cfg_scheduler(new_params.cfg_interval_schedule, new_params.step, new_params.max_sampling_step, cond_scale)
+                                # Only apply CFG in the interval
+                                cfg_scale = scheduled_cfg_scale if begin_range <= noise_level <= end_range else 1.0
 
                 if incantations_debug:
                         logger.debug(f"Schedule: {new_params.cfg_interval_schedule}, CFG Scale: {cfg_scale}, Noise_level: {round(noise_level,3)}")
