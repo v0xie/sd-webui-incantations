@@ -154,7 +154,6 @@ class PAGExtensionScript(UIWrapper):
                                         choices= SCHEDULES,
                                         label="CFG Schedule Type", 
                                         elem_id='cfg_interval_schedule', 
-                                        info="Select the CFG schedule"
                                 )
                                 with gr.Row():
                                         cfg_interval_low = gr.Slider(value = 0, minimum = 0, maximum = 100, step = 0.01, label="CFG Noise Interval Low", elem_id = 'cfg_interval_low', info="")
