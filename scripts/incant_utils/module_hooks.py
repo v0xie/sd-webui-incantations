@@ -11,7 +11,7 @@ from modules import shared
 logger = logging.getLogger(__name__)
 
 
-def modules_add_field(self, modules, field, value=None):
+def modules_add_field(modules, field, value=None):
     """ Add a field to a module if it isn't already added.
     Args:
         modules (list): Module or list of modules to add the field to
