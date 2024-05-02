@@ -128,3 +128,34 @@ def remove_module_forward_hook(
 
     # Remove hooks from the target module
     _remove_hooks(module, hook_fn_name)
+
+
+def module_add_forward_hook(module, hook_fn, hook_type="forward", with_kwargs=False):
+    """ Adds a forward hook to a module.
+
+    hook_fn should be a function that accepts the following arguments:
+        forward hook, no kwargs: hook(module, args, output) -> None or modified output
+        forward hook, with kwargs: hook(module, args, kwargs output) -> None or modified output
+
+    Args:
+        module (torch.nn.Module): Module to hook
+        hook_fn (Callable): Function to call when the hook is triggered
+        hook_type (str, optional): Type of hook to create. Defaults to "forward". Can be "forward" or "pre_forward".
+        with_kwargs (bool, optional): Whether the hook function should accept keyword arguments. Defaults to False.
+
+    Returns:
+        torch.utils.hooks.RemovableHandle: Handle for the hook
+    """
+    if module is None:
+        raise ValueError("module must be provided")
+    if not callable(hook_fn):
+        raise ValueError("hook_fn must be a callable function")
+
+    if hook_type == "forward":
+        handle = module.register_forward_hook(hook_fn, with_kwargs=with_kwargs)
+    elif hook_type == "pre_forward":
+        handle = module.register_forward_pre_hook(hook_fn, with_kwargs=with_kwargs)
+    else:
+        raise ValueError(f"Invalid hook type {hook_type}. Must be 'forward' or 'pre_forward'.")
+
+    return handle
