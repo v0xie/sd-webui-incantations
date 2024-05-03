@@ -11,6 +11,7 @@ from scripts.ui_wrapper import UIWrapper
 from scripts.incant import IncantExtensionScript
 from scripts.t2i_zero import T2I0ExtensionScript
 from scripts.pag import PAGExtensionScript
+from scripts.save_attn_maps import SaveAttentionMapsScript
 
 logger = logging.getLogger(__name__)
 logger.setLevel(environ.get("SD_WEBUI_LOG_LEVEL", logging.INFO))
@@ -33,6 +34,7 @@ submodules: list[SubmoduleInfo] = [
         SubmoduleInfo(module=PAGExtensionScript()),
         SubmoduleInfo(module=T2I0ExtensionScript()),
         SubmoduleInfo(module=IncantExtensionScript()),
+        SubmoduleInfo(module=SaveAttentionMapsScript()),
 ]
                 
 class IncantBaseExtensionScript(scripts.Script):
