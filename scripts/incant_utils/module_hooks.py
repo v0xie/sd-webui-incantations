@@ -46,7 +46,8 @@ def modules_remove_field(modules, field):
         if hasattr(module, field):
                 delattr(module, field)
         else:
-            logger.warning(f"Field {field} does not exist in module {module}")
+            # logger.warning(f"Field {field} does not exist in module {module}")
+            pass
 
 
 def get_modules(network_layer_name_filter: Optional[str] = None, module_name_filter: Optional[str] = None):
