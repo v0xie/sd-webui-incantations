@@ -8,7 +8,7 @@ import torch
 from modules import shared
 from modules.processing import StableDiffusionProcessing
 from scripts.ui_wrapper import UIWrapper, arg
-from scripts.incant_utils import module_hooks
+from scripts.incant_utils import module_hooks, plot_tools
 
 logger = logging.getLogger(__name__)
 
@@ -47,13 +47,14 @@ class SaveAttentionMapsScript(UIWrapper):
         self.paste_field_names = []
         return [active, module_name_filter, class_name_filter, save_every_n_step]
     
-    def before_process(self, p: StableDiffusionProcessing, active, module_name_filter, class_name_filter, save_every_n_step, *args, **kwargs):
+    def before_process_batch(self, p: StableDiffusionProcessing, active, module_name_filter, class_name_filter, save_every_n_step, *args, **kwargs):
         # Always unhook the modules first
         module_list = self.get_modules_by_filter(module_name_filter, class_name_filter)
         self.unhook_modules(module_list, copy.deepcopy(module_field_map))
 
         if not active:
             return
+
         # Make sure the output folder exists
         outpath_samples = p.outpath_samples
         # Move this to plot tools?
@@ -64,6 +65,8 @@ class SaveAttentionMapsScript(UIWrapper):
         if not os.path.exists(output_folder_path):
             logger.info(f"Creating directory: {output_folder_path}")
             os.makedirs(output_folder_path)
+
+        latent_shape = [p.height // p.rng.shape[1], p.width // p.rng.shape[2]] # (height, width)
         
         save_steps = []
         min_step = max(save_every_n_step, 0) 
@@ -77,20 +80,58 @@ class SaveAttentionMapsScript(UIWrapper):
         value_map = copy.deepcopy(module_field_map)
         value_map['save_attention_maps_save_steps'] = torch.tensor(save_steps).to(device=shared.device, dtype=torch.int32)
         value_map['save_attention_maps_step'] = torch.tensor([0]).to(device=shared.device, dtype=torch.int32)
+        #value_map['save_attention_maps_shape'] = torch.tensor(latent_shape).to(device=shared.device, dtype=torch.int32)
         self.hook_modules(module_list, value_map)
         self.create_save_hook(module_list)
 
     def process(self, p, *args, **kwargs):
         pass
 
-    def before_process_batch(self, p, *args, **kwargs):
-        pass
+    def before_process(self, p: StableDiffusionProcessing, active, module_name_filter, class_name_filter, save_every_n_step, *args, **kwargs):
+        module_list = self.get_modules_by_filter(module_name_filter, class_name_filter)
+        self.unhook_modules(module_list, copy.deepcopy(module_field_map))
 
     def process_batch(self, p, *args, **kwargs):
         pass
 
     def postprocess_batch(self, p: StableDiffusionProcessing, active, module_name_filter, class_name_filter, save_every_n_step, *args, **kwargs):
         module_list = self.get_modules_by_filter(module_name_filter, class_name_filter)
+
+        save_image_path = os.path.join(p.outpath_samples, 'attention_maps')
+
+        latent_shape = [p.height // p.rng.shape[1], p.width // p.rng.shape[2]] # (height, width)
+        max_dims = p.height * p.width
+
+        #max_dims = latent_shape[0] * latent_shape[1]
+        for module in module_list:
+            if not hasattr(module, 'save_attention_maps_batch') or module.save_attention_maps_batch is None:
+                logger.error(f"No attention maps found for module: {module.network_layer_name}")
+                continue
+            attn_maps = module.save_attention_maps_batch # (attn_map num, 2 * batch_num, height * width, sequence_len)
+
+            attn_map_num, batch_num, hw, seq_len = attn_maps.shape
+
+            downscale_ratio = max_dims / hw
+            downscale_h = round((hw * (p.height / p.width)) ** 0.5)
+            downscale_w = hw // downscale_h
+
+            attn_maps = attn_maps.mean(dim=-1) # (attn_map num, batch_num, height * width)
+            attn_maps = attn_maps.view(attn_map_num, 2, batch_num // 2, downscale_h, downscale_w).mean(dim=1)
+            attn_map_num, batch_num, height, width = attn_maps.shape
+            for i in range(attn_map_num):
+                for j in range(batch_num):
+                    savestep_num = module.save_attention_maps_save_steps[i]
+                    batch_idx = j
+                    attn_map = attn_maps[i, j]
+                    out_file_name = f'{module.network_layer_name}_attn_map_{i}_batch_{j}.png'
+                    save_path = os.path.join(save_image_path, out_file_name)
+                    plot_tools.plot_attention_map(
+                        attention_map=attn_map,
+                        title="",
+                        save_path=save_path,
+                        plot_type="default"
+                    )
+
         self.unhook_modules(module_list, copy.deepcopy(module_field_map))
     
     def unhook_callbacks(self) -> None:
@@ -109,7 +150,7 @@ class SaveAttentionMapsScript(UIWrapper):
         def save_attn_map_hook(module, input, kwargs, output):
             """ Hook to save attention maps every N steps, or the last step if N is 0.
             Saves attention maps to a field named 'save_attention_maps_batch' in the module.
-            with shape (attn_map, batch_num, height, width, seq_len).
+            with shape (attn_map, batch_num, height * width).
             
             """
             if not hasattr(module, 'save_attention_maps'):
@@ -117,6 +158,7 @@ class SaveAttentionMapsScript(UIWrapper):
             module.save_attention_maps_step += 1
             if (module.save_attention_maps_step in module.save_attention_maps_save_steps):
                 attn_map = output.detach().clone().unsqueeze(0)
+                #attn_map = attn_map.mean(dim=-1)
                 if module.save_attention_maps_batch is None:
                     module.save_attention_maps_batch = attn_map
                 else:
