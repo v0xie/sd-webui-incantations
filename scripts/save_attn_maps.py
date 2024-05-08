@@ -14,10 +14,10 @@ logger = logging.getLogger(__name__)
 
 
 module_field_map = {
-    'save_attention_maps': True,
-    'save_attention_maps_batch': None,
-    'save_attention_maps_step': None,
-    'save_attention_maps_save_steps': None,
+    'savemaps': True,
+    'savemaps_batch': None,
+    'savemaps_step': None,
+    'savemaps_save_steps': None,
 }
 
 
@@ -78,9 +78,9 @@ class SaveAttentionMapsScript(UIWrapper):
 
         # Create fields in module
         value_map = copy.deepcopy(module_field_map)
-        value_map['save_attention_maps_save_steps'] = torch.tensor(save_steps).to(device=shared.device, dtype=torch.int32)
-        value_map['save_attention_maps_step'] = torch.tensor([0]).to(device=shared.device, dtype=torch.int32)
-        #value_map['save_attention_maps_shape'] = torch.tensor(latent_shape).to(device=shared.device, dtype=torch.int32)
+        value_map['savemaps_save_steps'] = torch.tensor(save_steps).to(device=shared.device, dtype=torch.int32)
+        value_map['savemaps_step'] = torch.tensor([0]).to(device=shared.device, dtype=torch.int32)
+        #value_map['savemaps_shape'] = torch.tensor(latent_shape).to(device=shared.device, dtype=torch.int32)
         self.hook_modules(module_list, value_map)
         self.create_save_hook(module_list)
 
@@ -104,10 +104,10 @@ class SaveAttentionMapsScript(UIWrapper):
 
         #max_dims = latent_shape[0] * latent_shape[1]
         for module in module_list:
-            if not hasattr(module, 'save_attention_maps_batch') or module.save_attention_maps_batch is None:
+            if not hasattr(module, 'savemaps_batch') or module.savemaps_batch is None:
                 logger.error(f"No attention maps found for module: {module.network_layer_name}")
                 continue
-            attn_maps = module.save_attention_maps_batch # (attn_map num, 2 * batch_num, height * width, sequence_len)
+            attn_maps = module.savemaps_batch # (attn_map num, 2 * batch_num, height * width, sequence_len)
 
             attn_map_num, batch_num, hw, seq_len = attn_maps.shape
 
@@ -120,7 +120,7 @@ class SaveAttentionMapsScript(UIWrapper):
             attn_map_num, batch_num, height, width = attn_maps.shape
             for i in range(attn_map_num):
                 for j in range(batch_num):
-                    savestep_num = module.save_attention_maps_save_steps[i]
+                    savestep_num = module.savemaps_save_steps[i]
                     batch_idx = j
                     attn_map = attn_maps[i, j]
                     out_file_name = f'{module.network_layer_name}_attn_map_{i}_batch_{j}.png'
@@ -147,34 +147,56 @@ class SaveAttentionMapsScript(UIWrapper):
         pass
 
     def hook_modules(self, module_list: list, value_map: dict):
-        def save_attn_map_hook(module, input, kwargs, output):
+        def savemaps_hook(module, input, kwargs, output):
             """ Hook to save attention maps every N steps, or the last step if N is 0.
-            Saves attention maps to a field named 'save_attention_maps_batch' in the module.
+            Saves attention maps to a field named 'savemaps_batch' in the module.
             with shape (attn_map, batch_num, height * width).
             
             """
-            if not hasattr(module, 'save_attention_maps'):
-                return output
-            module.save_attention_maps_step += 1
-            if (module.save_attention_maps_step in module.save_attention_maps_save_steps):
-                attn_map = output.detach().clone().unsqueeze(0)
+            module.savemaps_step += 1
+
+            #parent_module = getattr(module, 'savemaps_parent_module', None)
+            #to_v_map = None
+            #if parent_module is not None:
+            to_v_map = getattr(module, 'savemaps_to_v_map', None)
+
+            if (module.savemaps_step in module.savemaps_save_steps):
+                #context = kwargs.get('context', None)
+                attn_map = output.detach().clone()
+
+                # multiply into text embeddings
+                if to_v_map is not None:
+                    attn_map = (to_v_map @ output.transpose(1,2)).transpose(1,2)
+                
+                attn_map = attn_map.unsqueeze(0)
+                
+
                 #attn_map = attn_map.mean(dim=-1)
-                if module.save_attention_maps_batch is None:
-                    module.save_attention_maps_batch = attn_map
+                if module.savemaps_batch is None:
+                    module.savemaps_batch = attn_map
                 else:
-                    module.save_attention_maps_batch = torch.cat([module.save_attention_maps_batch, attn_map], dim=0)
+                    module.savemaps_batch = torch.cat([module.savemaps_batch, attn_map], dim=0)
+
+        def savemaps_to_v_hook(module, input, kwargs, output):
+                module.savemaps_parent_module[0].savemaps_to_v_map = output
 
         #for module, kv in zip(module_list, value_map.items()):
         for module in module_list:
             for key_name, default_value in value_map.items():
                 module_hooks.modules_add_field(module, key_name, default_value)
-            module_hooks.module_add_forward_hook(module, save_attn_map_hook, 'forward', with_kwargs=True)
+            module_hooks.module_add_forward_hook(module, savemaps_hook, 'forward', with_kwargs=True)
+            if hasattr(module, 'to_v'):
+                module_hooks.modules_add_field(module.to_v, 'savemaps_parent_module', [module])
+                module_hooks.module_add_forward_hook(module.to_v, savemaps_to_v_hook, 'forward', with_kwargs=True)
     
     def unhook_modules(self, module_list: list, value_map: dict):
         for module in module_list:
             for key_name, _ in value_map.items():
                 module_hooks.modules_remove_field(module, key_name)
-            module_hooks.remove_module_forward_hook(module, 'save_attn_map_hook')
+            module_hooks.remove_module_forward_hook(module, 'savemaps_hook')
+            if hasattr(module, 'to_v'):
+                module_hooks.modules_remove_field(module.to_v, 'savemaps_parent_module')    
+                module_hooks.remove_module_forward_hook(module.to_v, 'savemaps_to_v_hook')
 
     def print_modules(self, module_name_filter, class_name_filter):
             logger.info("Module name filter: '%s', Class name filter: '%s'", module_name_filter, class_name_filter)
