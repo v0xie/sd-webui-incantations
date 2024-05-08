@@ -3,12 +3,14 @@ import logging
 import copy
 import gradio as gr
 import torch
+from torchvision.transforms import GaussianBlur
 
 
+from einops import rearrange
 from modules import shared
 from modules.processing import StableDiffusionProcessing
 from scripts.ui_wrapper import UIWrapper, arg
-from scripts.incant_utils import module_hooks, plot_tools
+from scripts.incant_utils import module_hooks, plot_tools, prompt_utils
 
 logger = logging.getLogger(__name__)
 
@@ -33,7 +35,7 @@ class SaveAttentionMapsScript(UIWrapper):
         with gr.Accordion('Save Attention Maps', open = False):
             active = gr.Checkbox(label = 'Active', default = False)
             export_folder = gr.Textbox(label = 'Export Folder', value = 'attention_maps', info = 'Folder to save attention maps to as a subdirectory of the outputs.')
-            module_name_filter = gr.Textbox(label = 'Module Names', value = 'middle_block_1_transformer_blocks_0_attn1', info = 'Module name to save attention maps for. If the substring is found in the module name, the attention maps will be saved for that module.')
+            module_name_filter = gr.Textbox(label = 'Module Names', value = 'middle_block_1_transformer_blocks_0_attn2', info = 'Module name to save attention maps for. If the substring is found in the module name, the attention maps will be saved for that module.')
             class_name_filter = gr.Textbox(label = 'Class Name Filter', value = 'CrossAttention', info = 'Filters eligible modules by the class name.')
             save_every_n_step = gr.Slider(label = 'Save Every N Step', value = 0, min = 0, max = 100, step = 1, info = 'Save attention maps every N steps. 0 to save last step.')
             print_modules = gr.Button(value = 'Print Modules To Console')
@@ -54,6 +56,9 @@ class SaveAttentionMapsScript(UIWrapper):
 
         if not active:
             return
+
+        token_count, _ = prompt_utils.get_token_count(p.prompt, p.steps, True)
+        setattr(p, 'savemaps_token_count', token_count)
 
         # Make sure the output folder exists
         outpath_samples = p.outpath_samples
@@ -101,6 +106,8 @@ class SaveAttentionMapsScript(UIWrapper):
 
         latent_shape = [p.height // p.rng.shape[1], p.width // p.rng.shape[2]] # (height, width)
         max_dims = p.height * p.width
+        token_count = p.savemaps_token_count
+        token_indices = [x+1 for x in range(token_count)]
 
         #max_dims = latent_shape[0] * latent_shape[1]
         for module in module_list:
@@ -115,22 +122,31 @@ class SaveAttentionMapsScript(UIWrapper):
             downscale_h = round((hw * (p.height / p.width)) ** 0.5)
             downscale_w = hw // downscale_h
 
-            attn_maps = attn_maps.mean(dim=-1) # (attn_map num, batch_num, height * width)
-            attn_maps = attn_maps.view(attn_map_num, 2, batch_num // 2, downscale_h, downscale_w).mean(dim=1)
-            attn_map_num, batch_num, height, width = attn_maps.shape
-            for i in range(attn_map_num):
-                for j in range(batch_num):
-                    savestep_num = module.savemaps_save_steps[i]
-                    batch_idx = j
-                    attn_map = attn_maps[i, j]
-                    out_file_name = f'{module.network_layer_name}_attn_map_{i}_batch_{j}.png'
-                    save_path = os.path.join(save_image_path, out_file_name)
-                    plot_tools.plot_attention_map(
-                        attention_map=attn_map,
-                        title="",
-                        save_path=save_path,
-                        plot_type="default"
-                    )
+            # if take_mean_of_all_dims:
+            # attn_maps = attn_maps.mean(dim=-1) # (attn_map num, batch_num, height * width)
+            gaussian_blur = GaussianBlur(kernel_size=3, sigma=1)
+            attn_maps = attn_maps.permute(0, 3, 1, 2)
+            attn_maps = gaussian_blur(attn_maps)  # Applying Gaussian smoothing
+            attn_maps = attn_maps.permute(0, 2, 3, 1)
+
+            attn_maps = attn_maps[:, :, :, token_indices] # (attn_map num, batch_num, height * width)
+
+            attn_maps = rearrange(attn_maps, 'n (m b) (h w) t -> n m b t h w', m = 2, h = downscale_h).mean(dim=1) # (attn_map num, batch_num, token_idx, height, width)
+            attn_map_num, batch_num, token_num, height, width = attn_maps.shape
+            for attn_map_idx in range(attn_map_num):
+                for batch_idx in range(batch_num):
+                    for token_idx in range(token_num):
+                        fn_pad_zeroes = lambda num: f"{num:04}"
+                        savestep_num = module.savemaps_save_steps[attn_map_idx]
+                        attn_map = attn_maps[attn_map_idx, batch_idx, token_idx]
+                        out_file_name = f'{module.network_layer_name}_token{token_idx+1:04}_step{savestep_num:04}_attnmap_{attn_map_idx:04}_batch{batch_idx:04}.png'
+                        save_path = os.path.join(save_image_path, out_file_name)
+                        plot_tools.plot_attention_map(
+                            attention_map=attn_map,
+                            title=f"{module.network_layer_name}\nToken {token_idx+1}, Step {savestep_num}",
+                            save_path=save_path,
+                            plot_type="default"
+                        )
 
         self.unhook_modules(module_list, copy.deepcopy(module_field_map))
     
@@ -169,7 +185,6 @@ class SaveAttentionMapsScript(UIWrapper):
                     attn_map = (to_v_map @ output.transpose(1,2)).transpose(1,2)
                 
                 attn_map = attn_map.unsqueeze(0)
-                
 
                 #attn_map = attn_map.mean(dim=-1)
                 if module.savemaps_batch is None:
