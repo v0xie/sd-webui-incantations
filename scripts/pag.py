@@ -565,7 +565,9 @@ class PAGExtensionScript(UIWrapper):
                 """
                 # S-CFG
                 ca_mask, fore_mask = get_mask(scfg_params.all_crossattn_modules)
-                pass
+                R = 4
+                mask_t = F.interpolate(ca_mask, scale_factor=R, mode='nearest')
+                mask_fore = F.interpolate(fore_mask, scale_factor=R, mode='nearest')
 
                 # Run only within interval
                 if not pag_params.pag_start_step <= params.sampling_step <= pag_params.pag_end_step or pag_params.pag_scale <= 0:
@@ -1049,6 +1051,30 @@ class GaussianSmoothing(nn.Module):
         """
         return self.conv(input, weight=self.weight.to(input.dtype), groups=self.groups)
 
+# based on diffusers/models/attention_processor.py Attention head_to_batch_dim
+def head_to_batch_dim(x, heads, out_dim=3):
+        head_size = heads
+        if x.ndim == 3:
+
+                batch_size, seq_len, dim = x.shape
+                extra_dim = 1
+        else:
+               batch_size, extra_dim, seq_len, dim = x.shape
+        x = x.reshape(batch_size, seq_len * extra_dim, head_size, dim // head_size)
+        x = x.permute(0, 2, 1, 3)
+        if out_dim == 3:
+               x = x.reshape(batch_size * head_size, seq_len * extra_dim, dim // head_size)
+        return x
+
+
+# based on diffusers/models/attention_processor.py Attention batch_to_head_dim
+def batch_to_head_dim(x, heads):
+        head_size = heads
+        batch_size, seq_len, dim = x.shape
+        x = x.reshape(batch_size // head_size, head_size, seq_len, dim)
+        x = x.permute(0, 2, 1, 3).reshape(batch_size // head_size, seq_len, dim * head_size)
+        return x
+
 
 import torch.nn.functional as F
 from einops import rearrange
@@ -1076,6 +1102,10 @@ def get_mask(attn_modules, r: int=4):
                 to_k_map = getattr(module, 'scfg_last_to_k_map', None)
                 to_v_map = getattr(module, 'scfg_last_to_v_map', None)
                 to_out_map = getattr(module, 'scfg_last_to_out_map', None)
+
+                to_q_map = head_to_batch_dim(to_q_map, module.heads)
+                to_k_map = head_to_batch_dim(to_k_map, module.heads)
+
                 #if getattr(module, 'scfg_last_context_map', None) is not None:
                 #        context_map = getattr(module, 'scfg_last_context_map', None)
                 #        attn_map = getattr(module, 'scfg_last_attn_map', None)
@@ -1089,33 +1119,22 @@ def get_mask(attn_modules, r: int=4):
                 module_key = f"r{r}_{module_type}"
 
                 batch_size, seq_len, inner_dim = to_out_map.size()
-                to_out_map = rearrange(to_out_map, 'b s (h t) -> (b h) s t', h=module.heads)
+                to_out_map = rearrange(to_out_map, 'b s (h t) -> b h s t', h=module.heads)
                 to_out_map = to_out_map.mean(dim=1)
-                # based on diffusers models/attention.py "get_attention_scores"
-                if module_type == 'self':
-                        attn_scores_input = torch.empty(
-                                to_out_map.shape[0], to_q_map.shape[1], to_k_map.shape[1], device=to_out_map.device, dtype=to_out_map.dtype
-                        )
-                        beta = 0
-                        attn_scores = torch.baddbmm(
-                               attn_scores_input,
-                               to_q_map,
-                               to_k_map.transpose(-1, -2),
-                               beta = beta,
-                               alpha = module.scale,
-                        )
-                        del attn_scores_input
-                        attn_probs = attn_scores.softmax(dim=-1)
-                        attn_probs = attn_probs.to(to_out_map.dtype)
-                        attention_store_proxy[module_key].append(attn_probs)
-                
                 if not r in [2, 4, 8, 16] or r < 2:
                         continue
+                # based on diffusers models/attention.py "get_attention_scores"
+                #if module_type == 'self':
+                attn_scores = to_q_map @ to_k_map.transpose(-1, -2)
+                attn_probs = attn_scores.softmax(dim=-1)
+                del attn_scores
+                attn_probs = attn_probs.to(to_out_map.dtype)
                 #attention_store_proxy[module_key].append(attn_map)
                 try:
-                        attention_store_proxy[module_key].append(to_out_map)
+                        attention_store_proxy[module_key].append(attn_probs)
+                        #attention_store_proxy[module_key].append(to_out_map)
                 except KeyError:
-                       continue
+                        continue
 
         attention_maps = attention_store_proxy
 
@@ -1129,8 +1148,8 @@ def get_mask(attn_modules, r: int=4):
                 sa = torch.stack(attention_maps[key_self], dim=1)
                 ca = torch.stack(attention_maps[key_corss], dim=1)
                 attn_num = sa.size(1)
-                sa = rearrange(sa, 'b n h c -> (b n) h c')
-                ca = rearrange(ca, 'b n h c -> (b n) h c')
+                sa = rearrange(sa, 'b n h w -> (b n) h w')
+                ca = rearrange(ca, 'b n h w -> (b n) h w')
 
                 curr = 0 # b hw c=hw
                 curr +=sa
@@ -1139,17 +1158,17 @@ def get_mask(attn_modules, r: int=4):
                 for _ in range(ssgc_n-1):
                         curr = sa@sa
                         ssgc_sa += curr
-                        ssgc_sa/=ssgc_n
-                        sa = ssgc_sa
-                        ########smoothing ca
-                        ca = sa@ca # b hw c
+                ssgc_sa/=ssgc_n
+                sa = ssgc_sa
+                ########smoothing ca
+                ca = sa@ca # b hw c
 
-                        h=w = int(sa.size(1)**(0.5))
+                h=w = int(sa.size(1)**(0.5))
 
-                        ca = rearrange(ca, 'b (h w) c -> b c h w', h=h )
-                        if r_r>1:
-                                mode =  'bilinear' #'nearest' #
-                                ca = F.interpolate(ca, scale_factor=r_r, mode=mode) # b 77 32 32
+                ca = rearrange(ca, 'b (h w) c -> b c h w', h=h )
+                if r_r>1:
+                        mode =  'bilinear' #'nearest' #
+                        ca = F.interpolate(ca, scale_factor=r_r, mode=mode) # b 77 32 32
 
 
                 #####Gaussian Smoothing
