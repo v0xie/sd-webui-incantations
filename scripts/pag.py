@@ -95,9 +95,6 @@ SCHEDULES = [
         'PCS (s=4.0)',
 ]
 
-SCFG_MODULES = ['to_q', 'to_v', 'to_k']
-
-
 
 class PAGStateParams:
         def __init__(self):
@@ -117,8 +114,7 @@ class PAGStateParams:
                 self.sigma = None
                 self.text_uncond = None
                 self.make_condition_dict = None # callable lambda
-                self.crossattn_modules = []
-                self.all_crossattn_modules = []
+                self.crossattn_modules = [] # callable lambda
                 self.to_v_modules = []
                 self.to_out_modules = []
                 self.pag_x_out = None
@@ -127,13 +123,6 @@ class PAGStateParams:
                 self.patched_combine_denoised = None
                 self.conds_list = None
                 self.uncond_shape_0 = None
-
-class SCFGStateParams:
-        def __init__(self):
-                self.all_crossattn_modules = []
-                self.max_out_dim = 1280
-                self.mask_t = None
-                self.mask_fore = None
 
 
 class PAGExtensionScript(UIWrapper):
@@ -255,14 +244,6 @@ class PAGExtensionScript(UIWrapper):
                        logger.debug(f"Step Aligned CFG Interval (low, high): ({low_index}, {high_index}), Step Aligned CFG Interval: ({round(pag_params.cfg_interval_low, 4)}, {round(pag_params.cfg_interval_high, 4)})")
 
                 # Get all the qv modules
-                scfg_params = SCFGStateParams()
-                all_crossattn_modules = self.get_all_crossattn_modules()
-                if len(all_crossattn_modules) > 0:
-                        scfg_params.all_crossattn_modules = all_crossattn_modules
-
-                        # Get the max out dim to upscale targeted crossattn maps
-                        scfg_params.max_out_dim = max([m.to_v.out_features for m in all_crossattn_modules])
-
                 cross_attn_modules = self.get_cross_attn_modules()
                 if len(cross_attn_modules) == 0:
                         logger.error("No cross attention modules found, cannot proceed with PAG")
@@ -270,12 +251,12 @@ class PAGExtensionScript(UIWrapper):
                 pag_params.crossattn_modules = [m for m in cross_attn_modules if 'CrossAttention' in m.__class__.__name__]
 
                 # Use lambda to call the callback function with the parameters to avoid global variables
-                cfg_denoise_lambda = lambda callback_params: self.on_cfg_denoiser_callback(callback_params, pag_params, scfg_params)
-                cfg_denoised_lambda = lambda callback_params: self.on_cfg_denoised_callback(callback_params, pag_params, scfg_params)
+                cfg_denoise_lambda = lambda callback_params: self.on_cfg_denoiser_callback(callback_params, pag_params)
+                cfg_denoised_lambda = lambda callback_params: self.on_cfg_denoised_callback(callback_params, pag_params)
                 #after_cfg_lambda = lambda x: self.cfg_after_cfg_callback(x, params)
                 unhook_lambda = lambda _: self.unhook_callbacks(pag_params)
 
-                self.ready_hijack_forward(pag_params.crossattn_modules, scfg_params.all_crossattn_modules, pag_scale)
+                self.ready_hijack_forward(pag_params.crossattn_modules, pag_scale)
 
                 logger.debug('Hooked callbacks')
                 script_callbacks.on_cfg_denoiser(cfg_denoise_lambda)
@@ -303,33 +284,6 @@ class PAGExtensionScript(UIWrapper):
                         self.remove_field_cross_attn_modules(to_v, 'pag_parent_module')
                         _remove_all_forward_hooks(module, 'pag_pre_hook')
                         _remove_all_forward_hooks(to_v, 'to_v_pre_hook')
-                        #_remove_all_forward_hooks(to_v, 'scfg_to_v_hook')
-
-                all_crossattn_modules = self.get_all_crossattn_modules()
-                for module in all_crossattn_modules:
-                        self.remove_field_cross_attn_modules(module, 'scfg_last_attn_map')
-                        self.remove_field_cross_attn_modules(module, 'scfg_last_context_map')
-                        self.remove_field_cross_attn_modules(module, 'scfg_last_to_q_map')
-                        self.remove_field_cross_attn_modules(module, 'scfg_last_to_k_map')
-                        self.remove_field_cross_attn_modules(module, 'scfg_last_to_v_map')
-                        self.remove_field_cross_attn_modules(module, 'scfg_last_to_out_map')
-                        self.remove_field_cross_attn_modules(module, 'scfg_attn_size')
-                        _remove_all_forward_hooks(module, 'scfg_hook')
-                        _remove_all_forward_hooks(module, 'scfg_pre_hook')
-                        to_v = getattr(module, 'to_v', None)
-                        _remove_all_forward_hooks(to_v, 'scfg_to_v_hook')
-                        if hasattr(module, 'to_q'):
-                                handle_scfg_to_q = _remove_all_forward_hooks(module.to_q, 'scfg_to_q_hook')
-                                self.remove_field_cross_attn_modules(module.to_q, 'scfg_parent_module')
-                        if hasattr(module, 'to_k'):
-                                handle_scfg_to_q = _remove_all_forward_hooks(module.to_k, 'scfg_to_k_hook')
-                                self.remove_field_cross_attn_modules(module.to_k, 'scfg_parent_module')
-                        if hasattr(module, 'to_v'):
-                                handle_scfg_to_v = _remove_all_forward_hooks(module.to_v, 'scfg_to_v_hook')
-                                self.remove_field_cross_attn_modules(module.to_v, 'scfg_parent_module')
-                        if hasattr(module, 'to_out'):
-                                handle_scfg_to_out = _remove_all_forward_hooks(module.to_out[0], 'scfg_to_out_hook')
-                                self.remove_field_cross_attn_modules(module.to_out[0], 'scfg_parent_module')
 
         def unhook_callbacks(self, pag_params: PAGStateParams):
                 global handles
@@ -352,7 +306,7 @@ class PAGExtensionScript(UIWrapper):
                         pag_params.denoiser = None
 
 
-        def ready_hijack_forward(self, crossattn_modules, all_crossattn_modules, pag_scale):
+        def ready_hijack_forward(self, crossattn_modules, pag_scale):
                 """ Create hooks in the forward pass of the cross attention modules
                 Copies the output of the to_v module to the parent module
                 Then applies the PAG perturbation to the output of the cross attention module (multiplication by identity)
@@ -364,42 +318,13 @@ class PAGExtensionScript(UIWrapper):
                         self.add_field_cross_attn_modules(module, 'pag_enable', False)
                         self.add_field_cross_attn_modules(module, 'pag_last_to_v', None)
                         self.add_field_cross_attn_modules(to_v, 'pag_parent_module', [module])
-                        self.add_field_cross_attn_modules(module, 'scfg_last_attn_map', None)
-                        self.add_field_cross_attn_modules(module, 'scfg_attn_size', -1)
                         # self.add_field_cross_attn_modules(to_out, 'pag_parent_module', [module])
-                        
-                # add field for last_to_v
-                for module in all_crossattn_modules:
-                        self.add_field_cross_attn_modules(module, 'scfg_last_attn_map', None)
-                        self.add_field_cross_attn_modules(module, 'scfg_last_context_map', None)
-                        self.add_field_cross_attn_modules(module, 'scfg_last_to_q_map', None)
-                        self.add_field_cross_attn_modules(module, 'scfg_last_to_k_map', None)
-                        self.add_field_cross_attn_modules(module, 'scfg_last_to_v_map', None)
-                        self.add_field_cross_attn_modules(module, 'scfg_last_to_out_map', None)
-                        self.add_field_cross_attn_modules(module, 'scfg_attn_size', -1)
-                        for submodule in SCFG_MODULES:
-                                sub_module = getattr(module, submodule, None)
-                                self.add_field_cross_attn_modules(sub_module, 'scfg_parent_module', [module])
-                        if hasattr(module, 'to_out'):
-                                self.add_field_cross_attn_modules(module.to_out[0], 'scfg_parent_module', [module])
 
                 def to_v_pre_hook(module, input, kwargs, output):
                         """ Copy the output of the to_v module to the parent module """
                         parent_module = getattr(module, 'pag_parent_module', None)
                         # copy the output of the to_v module to the parent module
                         setattr(parent_module[0], 'pag_last_to_v', output.detach().clone())
-
-                def scfg_to_q_hook(module, input, kwargs, output):
-                        setattr(module.scfg_parent_module[0], 'scfg_last_to_q_map', output.detach().clone())
-
-                def scfg_to_k_hook(module, input, kwargs, output):
-                        setattr(module.scfg_parent_module[0], 'scfg_last_to_k_map', output.detach().clone())
-
-                def scfg_to_v_hook(module, input, kwargs, output):
-                        setattr(module.scfg_parent_module[0], 'scfg_last_to_v_map', output.detach().clone())
-
-                def scfg_to_out_hook(module, input, kwargs, output):
-                        setattr(module.scfg_parent_module[0], 'scfg_last_to_out_map', output.detach().clone())
 
                 def pag_pre_hook(module, input, kwargs, output):
                         if hasattr(module, 'pag_enable') and getattr(module, 'pag_enable', False) is False:
@@ -420,63 +345,11 @@ class PAGExtensionScript(UIWrapper):
                                 # this is bad
                                 return output
 
-                def scfg_pre_hook(module, args, kwargs):
-                        if not hasattr(module, 'scfg_last_attn_map'):
-                                return
-                        #if kwargs.get('context', None) is not None:
-                        #        setattr(module, 'scfg_last_context_map', kwargs.get('context').detach().clone())
-                        #setattr(module, 'scfg_last_attn_map', args[0].detach().clone())
-
-                def scfg_hook(module, input, kwargs, output):
-                        if not hasattr(module, 'scfg_last_attn_map'):
-                                return
-                        if kwargs.get('context', None) is not None:
-                                setattr(module, 'scfg_last_context_map', kwargs.get('context').detach().clone())
-                                #to_v_map = getattr(module, 'scfg_last_to_v_map', None)
-                                #attn_map = (input[0] @ to_v_map.transpose(1,2)).transpose(1,2)
-                        #        setattr(module, 'scfg_last_attn_map', attn_map)
-                        #else:
-                        setattr(module, 'scfg_last_attn_map', output.detach().clone())
-                        #if kwargs.get('context', None) is not None:
-                        #        setattr(module, 'scfg_last_attn_map', kwargs.get('context').detach().clone())
-                        #else:
-                        #setattr(module, 'scfg_last_attn_map', output.detach().clone())
-                        # setattr(module, 'scfg_attn_size', output.size(1) ** 0.5)
-
-
                 # Create hooks 
                 for module in crossattn_modules:
                         handle_parent = module.register_forward_hook(pag_pre_hook, with_kwargs=True)
                         to_v = getattr(module, 'to_v', None)
                         handle_to_v = to_v.register_forward_hook(to_v_pre_hook, with_kwargs=True)
-                
-                for module in all_crossattn_modules:
-                        handle_scfg = module.register_forward_hook(scfg_hook, with_kwargs=True)
-                        handle_scfg_pre = module.register_forward_pre_hook(scfg_pre_hook, with_kwargs=True)
-                        if hasattr(module, 'to_q'):
-                                handle_scfg_to_q = module.to_q.register_forward_hook(scfg_to_q_hook, with_kwargs=True)
-                        if hasattr(module, 'to_k'):
-                                handle_scfg_to_k = module.to_k.register_forward_hook(scfg_to_k_hook, with_kwargs=True)
-                        if hasattr(module, 'to_v'):
-                                handle_scfg_to_v= module.to_v.register_forward_hook(scfg_to_v_hook, with_kwargs=True)
-                        if hasattr(module, 'to_out'):
-                                handle_scfg_to_out = module.to_out[0].register_forward_hook(scfg_to_out_hook, with_kwargs=True)
-
-        def get_all_crossattn_modules(self):
-                """ 
-                Get ALL attention modules
-                """
-                try:
-                        m = shared.sd_model
-                        nlm = m.network_layer_mapping
-                        middle_block_modules = [m for m in nlm.values() if 'CrossAttention' in m.__class__.__name__]
-                        return middle_block_modules
-                except AttributeError:
-                        logger.exception("AttributeError in get_middle_block_modules", stack_info=True)
-                        return []
-                except Exception:
-                        logger.exception("Exception in get_middle_block_modules", stack_info=True)
-                        return []
 
         def get_middle_block_modules(self):
                 """ Get all attention modules from the middle block 
@@ -509,7 +382,7 @@ class PAGExtensionScript(UIWrapper):
                 if hasattr(module, field):
                         delattr(module, field)
 
-        def on_cfg_denoiser_callback(self, params: CFGDenoiserParams, pag_params: PAGStateParams, scfg_params: SCFGStateParams):
+        def on_cfg_denoiser_callback(self, params: CFGDenoiserParams, pag_params: PAGStateParams):
                 # always unhook
                 self.unhook_callbacks(pag_params)
 
@@ -526,8 +399,7 @@ class PAGExtensionScript(UIWrapper):
                                         *args,
                                         **kwargs,
                                         original_func = params.denoiser.combine_denoised_original,
-                                        pag_params = pag_params,
-                                        scfg_params = scfg_params)
+                                        pag_params = pag_params)
                                 pag_params.patched_combine_denoised = patches.patch(__name__, params.denoiser, "combine_denoised", pass_conds_func)
                                 setattr(params.denoiser, 'combine_denoised_patched', True)
                                 setattr(params.denoiser, 'combine_denoised_original', patches.original(__name__, params.denoiser, "combine_denoised"))
@@ -538,44 +410,34 @@ class PAGExtensionScript(UIWrapper):
                                 logger.exception("RuntimeError patching combine_denoised")
                                 pass
 
-                # Run PAG only within interval
-                if pag_params.pag_start_step <= params.sampling_step <= pag_params.pag_end_step and pag_params.pag_scale > 0:
-                        if isinstance(params.text_cond, dict):
-                                text_cond = params.text_cond['crossattn'] # SD XL
-                                pag_params.text_cond = {}
-                                pag_params.text_uncond = {}
-                                for key, value in params.text_cond.items():
-                                        pag_params.text_cond[key] = value.clone().detach()
-                                        pag_params.text_uncond[key] = value.clone().detach()
-                        else:
-                                text_cond = params.text_cond # SD 1.5
-                                pag_params.text_cond = text_cond.clone().detach()
-                                pag_params.text_uncond = text_cond.clone().detach()
+                # Run only within interval
+                if not pag_params.pag_start_step <= params.sampling_step <= pag_params.pag_end_step or pag_params.pag_scale <= 0:
+                        return
 
-                        pag_params.x_in = params.x.clone().detach()
-                        pag_params.sigma = params.sigma.clone().detach()
-                        pag_params.image_cond = params.image_cond.clone().detach()
-                        pag_params.denoiser = params.denoiser
-                        pag_params.make_condition_dict = get_make_condition_dict_fn(params.text_uncond)
+                if isinstance(params.text_cond, dict):
+                        text_cond = params.text_cond['crossattn'] # SD XL
+                        pag_params.text_cond = {}
+                        pag_params.text_uncond = {}
+                        for key, value in params.text_cond.items():
+                                pag_params.text_cond[key] = value.clone().detach()
+                                pag_params.text_uncond[key] = value.clone().detach()
+                else:
+                        text_cond = params.text_cond # SD 1.5
+                        pag_params.text_cond = text_cond.clone().detach()
+                        pag_params.text_uncond = text_cond.clone().detach()
+
+                pag_params.x_in = params.x.clone().detach()
+                pag_params.sigma = params.sigma.clone().detach()
+                pag_params.image_cond = params.image_cond.clone().detach()
+                pag_params.denoiser = params.denoiser
+                pag_params.make_condition_dict = get_make_condition_dict_fn(params.text_uncond)
 
 
-
-
-        def on_cfg_denoised_callback(self, params: CFGDenoisedParams, pag_params: PAGStateParams, scfg_params: SCFGStateParams):
+        def on_cfg_denoised_callback(self, params: CFGDenoisedParams, pag_params: PAGStateParams):
                 """ Callback function for the CFGDenoisedParams 
                 Refer to pg.22 A.2 of the PAG paper for how CFG and PAG combine
                 
                 """
-                # S-CFG
-                ca_mask, fore_mask = get_mask(scfg_params.all_crossattn_modules)
-
-                # todo parameterize this
-                R = 4
-                mask_t = F.interpolate(ca_mask, scale_factor=R, mode='nearest')
-                mask_fore = F.interpolate(fore_mask, scale_factor=R, mode='nearest')
-                scfg_params.mask_t = mask_t
-                scfg_params.mask_fore = mask_fore
-
                 # Run only within interval
                 if not pag_params.pag_start_step <= params.sampling_step <= pag_params.pag_end_step or pag_params.pag_scale <= 0:
                         return
@@ -631,7 +493,6 @@ def combine_denoised_pass_conds_list(*args, **kwargs):
         """ Hijacked function for combine_denoised in CFGDenoiser """
         original_func = kwargs.get('original_func', None)
         new_params = kwargs.get('pag_params', None)
-        scfg_params = kwargs.get('scfg_params', None)
 
         if new_params is None:
                 logger.error("new_params is None")
@@ -662,38 +523,8 @@ def combine_denoised_pass_conds_list(*args, **kwargs):
 
                 for i, conds in enumerate(conds_list):
                         for cond_index, weight in conds:
-                                if scfg_params is not None:
-                                        mask_t = scfg_params.mask_t
-                                        mask_fore = scfg_params.mask_fore
-
-                                        model_delta = (x_out[cond_index] - denoised_uncond[i]).unsqueeze(0)
-                                        model_delta_norm = model_delta.norm(dim=1, keepdim=True)
-                                        delta_mask_norms = (model_delta_norm * scfg_params.mask_t).sum([2,3])/(mask_t.sum([2,3])+1e-8)
-                                        upnormmax = delta_mask_norms.max(dim=1)[0]
-                                        upnormmax = upnormmax.unsqueeze(-1)
-
-                                        fore_norms = (model_delta_norm * mask_fore).sum([2,3])/(mask_fore.sum([2,3])+1e-8)
-
-                                        up = fore_norms
-                                        down = delta_mask_norms
-                                        
-
-                                        tmp_mask = (mask_t.sum([2,3])>0).float()
-                                        rate = up*(tmp_mask)/(down+1e-8) # b 257
-                                        rate = (rate.unsqueeze(-1).unsqueeze(-1)*mask_t).sum(dim=1, keepdim=True) # b 1, 64 64
-                                        
-                                        rate = torch.clamp(rate,min=0.8, max=3.0)
-                                        rate = torch.clamp_max(rate, 15.0/cfg_scale)
-
-                                        ###Gaussian Smoothing 
-                                        kernel_size = 3
-                                        sigma=0.5
-                                        smoothing = GaussianSmoothing(channels=1, kernel_size=kernel_size, sigma=sigma, dim=2).to(rate.device)
-                                        rate = F.pad(rate, (1, 1, 1, 1), mode='reflect')
-                                        rate = smoothing(rate)
-                                        rate = rate.to(x_out[cond_index].dtype)
-                                        denoised[i] += (x_out[cond_index] - denoised_uncond[i]) * rate.squeeze(0) * (weight * cfg_scale)
-
+                                if not new_params.cfg_interval_enable:
+                                        denoised[i] += (x_out[cond_index] - denoised_uncond[i]) * (weight * cfg_scale)
                                 else:
                                         denoised[i] += (x_out[cond_index] - denoised_uncond[i]) * (weight * cfg_scale)
 
@@ -1006,256 +837,3 @@ def _remove_all_forward_hooks(
 
     # Remove hooks from the target module
     _remove_hooks(module, hook_fn_name)
-
-"""
-# below code modified from https://github.com/SmilesDZgk/S-CFG
-@inproceedings{shen2024rethinking,
-  title={Rethinking the Spatial Inconsistency in Classifier-Free Diffusion Guidancee},
-  author={Shen, Dazhong and Song, Guanglu and Xue, Zeyue and Wang, Fu-Yun and Liu, Yu},
-  booktitle={Proceedings of The IEEE/CVF Computer Vision and Pattern Recognition Conference (CVPR)},
-  year={2024}
-}
-"""
-
-import math
-import numbers
-import torch
-from torch import nn
-from torch.nn import functional as F
-
-
-class GaussianSmoothing(nn.Module):
-    """
-    Apply gaussian smoothing on a
-    1d, 2d or 3d tensor. Filtering is performed seperately for each channel
-    in the input using a depthwise convolution.
-    Arguments:
-        channels (int, sequence): Number of channels of the input tensors. Output will
-            have this number of channels as well.
-        kernel_size (int, sequence): Size of the gaussian kernel.
-        sigma (float, sequence): Standard deviation of the gaussian kernel.
-        dim (int, optional): The number of dimensions of the data.
-            Default value is 2 (spatial).
-    """
-    def __init__(self, channels, kernel_size, sigma, dim=2):
-        super(GaussianSmoothing, self).__init__()
-        if isinstance(kernel_size, numbers.Number):
-            kernel_size = [kernel_size] * dim
-        if isinstance(sigma, numbers.Number):
-            sigma = [sigma] * dim
-
-        # The gaussian kernel is the product of the
-        # gaussian function of each dimension.
-        kernel = 1
-        meshgrids = torch.meshgrid(
-            [
-                torch.arange(size, dtype=torch.float32)
-                for size in kernel_size
-            ]
-        )
-        for size, std, mgrid in zip(kernel_size, sigma, meshgrids):
-            mean = (size - 1) / 2
-            kernel *= 1 / (std * math.sqrt(2 * math.pi)) * \
-                      torch.exp(-((mgrid - mean) / (2 * std)) ** 2)
-
-        # Make sure sum of values in gaussian kernel equals 1.
-        kernel = kernel / torch.sum(kernel)
-
-        # Reshape to depthwise convolutional weight
-        kernel = kernel.view(1, 1, *kernel.size())
-        kernel = kernel.repeat(channels, *[1] * (kernel.dim() - 1))
-
-        self.register_buffer('weight', kernel)
-        self.groups = channels
-
-        if dim == 1:
-            self.conv = F.conv1d
-        elif dim == 2:
-            self.conv = F.conv2d
-        elif dim == 3:
-            self.conv = F.conv3d
-        else:
-            raise RuntimeError(
-                'Only 1, 2 and 3 dimensions are supported. Received {}.'.format(dim)
-            )
-
-    def forward(self, input):
-        """
-        Apply gaussian filter to input.
-        Arguments:
-            input (torch.Tensor): Input to apply gaussian filter on.
-        Returns:
-            filtered (torch.Tensor): Filtered output.
-        """
-        return self.conv(input, weight=self.weight.to(input.dtype), groups=self.groups)
-
-# based on diffusers/models/attention_processor.py Attention head_to_batch_dim
-def head_to_batch_dim(x, heads, out_dim=3):
-        head_size = heads
-        if x.ndim == 3:
-
-                batch_size, seq_len, dim = x.shape
-                extra_dim = 1
-        else:
-               batch_size, extra_dim, seq_len, dim = x.shape
-        x = x.reshape(batch_size, seq_len * extra_dim, head_size, dim // head_size)
-        x = x.permute(0, 2, 1, 3)
-        if out_dim == 3:
-               x = x.reshape(batch_size * head_size, seq_len * extra_dim, dim // head_size)
-        return x
-
-
-# based on diffusers/models/attention_processor.py Attention batch_to_head_dim
-def batch_to_head_dim(x, heads):
-        head_size = heads
-        batch_size, seq_len, dim = x.shape
-        x = x.reshape(batch_size // head_size, head_size, seq_len, dim)
-        x = x.permute(0, 2, 1, 3).reshape(batch_size // head_size, seq_len, dim * head_size)
-        return x
-
-
-def average_over_head_dim(x, heads):
-        x = rearrange(x, '(b h) s t -> b h s t', h=heads).mean(1)
-        return x
-
-
-import torch.nn.functional as F
-from einops import rearrange
-def get_mask(attn_modules, r: int=4):
-        """ Aggregates the attention across the different layers and heads at the specified resolution. """
-
-        key_corss = f"r{r}_cross"
-        key_self = f"r{r}_self"
-        curr_r = r
-
-        r_r = 1
-        new_ca = 0
-        new_fore=0
-        a_n=0
-        # corresponds to diffusers pipe.unet.config.sample_size
-        sample_size = 64
-        # get a layer wise mapping
-        attention_store_proxy = {"r2_cross": [], "r4_cross": [], "r8_cross": [], "r16_cross": [],
-                                 "r2_self": [], "r4_self": [], "r8_self": [], "r16_self": []}
-        for module in attn_modules:
-                module_type = 'cross' if 'attn2' in module.network_layer_name else 'self'
-
-                attn_map = getattr(module, 'scfg_last_attn_map', None)
-                to_q_map = getattr(module, 'scfg_last_to_q_map', None)
-                to_k_map = getattr(module, 'scfg_last_to_k_map', None)
-                to_v_map = getattr(module, 'scfg_last_to_v_map', None)
-                to_out_map = getattr(module, 'scfg_last_to_out_map', None)
-
-                to_q_map = head_to_batch_dim(to_q_map, module.heads)
-                to_q_map = average_over_head_dim(to_q_map, module.heads)
-                to_q_map = torch.stack([to_q_map[0], to_q_map[0]], dim=0)
-
-                to_k_map = head_to_batch_dim(to_k_map, module.heads)
-                to_k_map = average_over_head_dim(to_k_map, module.heads)
-                to_k_map = torch.stack([to_k_map[0], to_k_map[0]], dim=0)
-
-                #if getattr(module, 'scfg_last_context_map', None) is not None:
-                #        context_map = getattr(module, 'scfg_last_context_map', None)
-                #        attn_map = getattr(module, 'scfg_last_attn_map', None)
-                #        #attn_map = rearrange(attn_map, 'b n c h w -> b n (h w) c')
-                #        module_attn_size = int((attn_map.size(1)) ** (0.5))
-                #        r = int(sample_size / module_attn_size)
-                #else:
-                module_attn_size = int((attn_map.size(1)) ** (0.5))
-                r = int(sample_size / module_attn_size)
-                #r = int(module_attn_size)
-                module_key = f"r{r}_{module_type}"
-
-                batch_size, seq_len, inner_dim = to_out_map.size()
-                to_out_map = rearrange(to_out_map, 'b s (h t) -> b h s t', h=module.heads)
-                to_out_map = to_out_map.mean(dim=1)
-                if not r in [2, 4, 8, 16] or r < 2:
-                        continue
-                # based on diffusers models/attention.py "get_attention_scores"
-                #if module_type == 'self':
-                attn_scores = to_q_map @ to_k_map.transpose(-1, -2)
-                attn_probs = attn_scores.softmax(dim=-1)
-                del attn_scores
-                attn_probs = attn_probs.to(to_out_map.dtype)
-                #attention_store_proxy[module_key].append(attn_map)
-                try:
-                        attention_store_proxy[module_key].append(attn_probs)
-                        #attention_store_proxy[module_key].append(to_out_map)
-                except KeyError:
-                        continue
-
-        attention_maps = attention_store_proxy
-
-        #attention_maps = attention_store.get_average_attention()
-        while curr_r<=8:
-                key_corss = f"r{curr_r}_cross"
-                key_self = f"r{curr_r}_self"
-                # pdb.set_trace()
-
-
-                sa = torch.stack(attention_maps[key_self], dim=1)
-                ca = torch.stack(attention_maps[key_corss], dim=1)
-                attn_num = sa.size(1)
-                sa = rearrange(sa, 'b n h w -> (b n) h w')
-                ca = rearrange(ca, 'b n h w -> (b n) h w')
-
-                curr = 0 # b hw c=hw
-                curr +=sa
-                ssgc_sa = curr
-                ssgc_n =4
-                for _ in range(ssgc_n-1):
-                        curr = sa@sa
-                        ssgc_sa += curr
-                ssgc_sa/=ssgc_n
-                sa = ssgc_sa
-                ########smoothing ca
-                ca = sa@ca # b hw c
-
-                h=w = int(sa.size(1)**(0.5))
-
-                ca = rearrange(ca, 'b (h w) c -> b c h w', h=h )
-                if r_r>1:
-                        mode =  'bilinear' #'nearest' #
-                        ca = F.interpolate(ca, scale_factor=r_r, mode=mode) # b 77 32 32
-
-
-                #####Gaussian Smoothing
-                kernel_size = 3
-                sigma = 0.5
-                smoothing = GaussianSmoothing(channels=1, kernel_size=kernel_size, sigma=sigma, dim=2).to(ca.device)
-                channel = ca.size(1)
-                ca= rearrange(ca, ' b c h w -> (b c) h w' ).unsqueeze(1)
-                ca = F.pad(ca, (1, 1, 1, 1), mode='reflect')
-                ca = smoothing(ca.float()).squeeze(1)
-                ca = rearrange(ca, ' (b c) h w -> b c h w' , c= channel)
-                
-                ca_norm = ca/(ca.mean(dim=[2,3], keepdim=True)+1e-8) ### spatial  normlization 
-                
-                new_ca+=rearrange(ca_norm, '(b n) c h w -> b n c h w', n=attn_num).sum(1) 
-
-                fore_ca = torch.stack([ca[:,0],ca[:,1:].sum(dim=1)], dim=1)
-                froe_ca_norm = fore_ca/fore_ca.mean(dim=[2,3], keepdim=True) ### spatial  normlization 
-                new_fore += rearrange(froe_ca_norm, '(b n) c h w -> b n c h w', n=attn_num).sum(1)  
-                a_n+=attn_num
-
-                curr_r = int(curr_r*2)
-                r_r*=2
-        
-        new_ca = new_ca/a_n
-        new_fore = new_fore/a_n
-        _,new_ca   = new_ca.chunk(2, dim=0) #[1]
-        fore_ca, _ = new_fore.chunk(2, dim=0)
-
-
-        max_ca, inds = torch.max(new_ca[:,:], dim=1) 
-        max_ca = max_ca.unsqueeze(1) # 
-        ca_mask = (new_ca==max_ca).float() # b 77/10 16 16 
-
-
-        max_fore, inds = torch.max(fore_ca[:,:], dim=1) 
-        max_fore = max_fore.unsqueeze(1) # 
-        fore_mask = (fore_ca==max_fore).float() # b 77/10 16 16 
-        fore_mask = 1.0-fore_mask[:,:1] # b 1 16 16
-
-
-        return [ ca_mask, fore_mask]
