@@ -32,39 +32,32 @@ logger.setLevel(environ.get("SD_WEBUI_LOG_LEVEL", logging.INFO))
 incantations_debug = environ.get("INCANTAIONS_DEBUG", False)
 
 """
-An unofficial implementation of "Self-Rectifying Diffusion Sampling with Perturbed-Attention Guidance" for Automatic1111 WebUI.
+An unofficial implementation of "Rethinking the Spatial Inconsistency in Classifier-Free Diffusion Guidancee" for Automatic1111 WebUI.
 
-@misc{ahn2024selfrectifying,
-      title={Self-Rectifying Diffusion Sampling with Perturbed-Attention Guidance}, 
-      author={Donghoon Ahn and Hyoungwon Cho and Jaewon Min and Wooseok Jang and Jungwoo Kim and SeonHwa Kim and Hyun Hee Park and Kyong Hwan Jin and Seungryong Kim},
-      year={2024},
-      eprint={2403.17377},
-      archivePrefix={arXiv},
-      primaryClass={cs.CV}
+This builds upon the code provided in the official S-CFG repository: https://github.com/SmilesDZgk/S-CFG
+
+
+@inproceedings{shen2024rethinking,
+  title={Rethinking the Spatial Inconsistency in Classifier-Free Diffusion Guidancee},
+  author={Shen, Dazhong and Song, Guanglu and Xue, Zeyue and Wang, Fu-Yun and Liu, Yu},
+  booktitle={Proceedings of The IEEE/CVF Computer Vision and Pattern Recognition Conference (CVPR)},
+  year={2024}
 }
 
-Include noise interval for CFG and PAG guidance in the sampling process from "Applying Guidance in a Limited Interval Improves
-Sample and Distribution Quality in Diffusion Models"
-
-@misc{kynkäänniemi2024applying,
-      title={Applying Guidance in a Limited Interval Improves Sample and Distribution Quality in Diffusion Models}, 
-      author={Tuomas Kynkäänniemi and Miika Aittala and Tero Karras and Samuli Laine and Timo Aila and Jaakko Lehtinen},
-      year={2024},
-      eprint={2404.07724},
-      archivePrefix={arXiv},
-      primaryClass={cs.CV}
-}
-
-Include CFG schedulers from "Analysis of Classifier-Free Guidance Weight Schedulers"
-
-@misc{wang2024analysis,
-      title={Analysis of Classifier-Free Guidance Weight Schedulers}, 
-      author={Xi Wang and Nicolas Dufour and Nefeli Andreou and Marie-Paule Cani and Victoria Fernandez Abrevaya and David Picard and Vicky Kalogeiton},
-      year={2024},
-      eprint={2404.13040},
-      archivePrefix={arXiv},
-      primaryClass={cs.CV}
-}
+Parts of the code are based on Diffusers under the Apache License 2.0:
+# Copyright 2024 The HuggingFace Team. All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
 
 Author: v0xie
 GitHub URL: https://github.com/v0xie/sd-webui-incantations
