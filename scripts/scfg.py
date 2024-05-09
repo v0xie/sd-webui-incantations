@@ -123,12 +123,14 @@ class SCFGExtensionScript(UIWrapper):
                         with gr.Row():
                                 start_step = gr.Slider(value = 0, minimum = 0, maximum = 150, step = 1, label="Start Step", elem_id = 'scfg_start_step', info="")
                                 end_step = gr.Slider(value = 150, minimum = 0, maximum = 150, step = 1, label="End Step", elem_id = 'scfg_end_step', info="")
+                                scfg_r = gr.Slider(value = 4, minimum = 2, maximum = 16, step = 1, label="SCFG R", elem_id = 'scfg_r', info="Must be 2, 4, 8, or 16")
                                 
                 active.do_not_save_to_config = True
                 scfg_scale.do_not_save_to_config = True
                 scfg_rate_min.do_not_save_to_config = True
                 scfg_rate_max.do_not_save_to_config = True
                 scfg_rate_clamp.do_not_save_to_config = True
+                scfg_r.do_not_save_to_config = True
                 start_step.do_not_save_to_config = True
                 end_step.do_not_save_to_config = True
 
@@ -140,6 +142,7 @@ class SCFGExtensionScript(UIWrapper):
                         (scfg_rate_clamp, 'SCFG Rate Clamp'),
                         (start_step, 'SCFG Start Step'),
                         (end_step, 'SCFG End Step'),
+                        (scfg_r, 'SCFG R'),
                 ]
                 self.paste_field_names = [
                         'scfg_active',
@@ -149,13 +152,14 @@ class SCFGExtensionScript(UIWrapper):
                         'scfg_rate_clamp',
                         'scfg_start_step',
                         'scfg_end_step',
+                        'scfg_r',
                 ]
-                return [active, scfg_scale, scfg_rate_min, scfg_rate_max, scfg_rate_clamp, start_step, end_step]
+                return [active, scfg_scale, scfg_rate_min, scfg_rate_max, scfg_rate_clamp, start_step, end_step, scfg_r]
 
         def process_batch(self, p: StableDiffusionProcessing, *args, **kwargs):
                self.pag_process_batch(p, *args, **kwargs)
 
-        def pag_process_batch(self, p: StableDiffusionProcessing, active, scfg_scale, scfg_rate_min, scfg_rate_max, scfg_rate_clamp, start_step, end_step, *args, **kwargs):
+        def pag_process_batch(self, p: StableDiffusionProcessing, active, scfg_scale, scfg_rate_min, scfg_rate_max, scfg_rate_clamp, start_step, end_step, scfg_r, *args, **kwargs):
                 # cleanup previous hooks always
                 script_callbacks.remove_current_script_callbacks()
                 self.remove_all_hooks()
@@ -169,6 +173,7 @@ class SCFGExtensionScript(UIWrapper):
                 scfg_rate_clamp = getattr(p, "scfg_rate_clamp", scfg_rate_clamp)
                 start_step = getattr(p, "scfg_start_step", start_step)
                 end_step = getattr(p, "scfg_end_step", end_step)
+                scfg_r = getattr(p, "scfg_r", scfg_r)
 
                 p.extra_generation_params.update({
                         "SCFG Active": active,
@@ -178,10 +183,11 @@ class SCFGExtensionScript(UIWrapper):
                         "SCFG Rate Clamp": scfg_rate_clamp,
                         "SCFG Start Step": start_step,
                         "SCFG End Step": end_step,
+                        "SCFG R": scfg_r,
                 })
-                self.create_hook(p, active, scfg_scale, scfg_rate_min, scfg_rate_max, scfg_rate_clamp, start_step, end_step)
+                self.create_hook(p, active, scfg_scale, scfg_rate_min, scfg_rate_max, scfg_rate_clamp, start_step, end_step, scfg_r)
 
-        def create_hook(self, p: StableDiffusionProcessing, active, scfg_scale, scfg_rate_min, scfg_rate_max, scfg_rate_clamp, start_step, end_step):
+        def create_hook(self, p: StableDiffusionProcessing, active, scfg_scale, scfg_rate_min, scfg_rate_max, scfg_rate_clamp, start_step, end_step, scfg_r):
                 # Create a list of parameters for each concept
                 scfg_params = SCFGStateParams()
                 scfg_params.denoiser = None
@@ -193,6 +199,7 @@ class SCFGExtensionScript(UIWrapper):
                 scfg_params.rate_clamp = scfg_rate_clamp
                 scfg_params.start_step = start_step
                 scfg_params.end_step = end_step
+                scfg_params.R = scfg_r
 
                 # Use lambda to call the callback function with the parameters to avoid global variables
                 cfg_denoise_lambda = lambda callback_params: self.on_cfg_denoiser_callback(callback_params, scfg_params)
@@ -390,7 +397,7 @@ class SCFGExtensionScript(UIWrapper):
                         return
 
                 # S-CFG
-                ca_mask, fore_mask = get_mask(scfg_params.all_crossattn_modules)
+                ca_mask, fore_mask = get_mask(scfg_params.all_crossattn_modules, r=scfg_params.R)
 
                 # todo parameterize this
                 R = scfg_params.R
@@ -444,7 +451,14 @@ def combine_denoised_pass_conds_list(*args, **kwargs):
 
                                 model_delta = (x_out[cond_index] - denoised_uncond[i]).unsqueeze(0)
                                 model_delta_norm = model_delta.norm(dim=1, keepdim=True)
-                                delta_mask_norms = (model_delta_norm * scfg_params.mask_t).sum([2,3])/(mask_t.sum([2,3])+1e-8)
+
+                                # rescale map if necessary
+                                if mask_t.shape[2] != model_delta_norm.shape[2] or mask_t.shape[3] != model_delta_norm.shape[3]:
+                                        mask_t = F.interpolate(mask_t, size=model_delta_norm.shape[2:], mode='bilinear')
+                                if mask_fore.shape[2] != model_delta_norm.shape[2] or mask_fore.shape[3] != model_delta_norm.shape[3]:
+                                        mask_fore = F.interpolate(mask_fore, size=model_delta_norm.shape[2:], mode='bilinear')
+
+                                delta_mask_norms = (model_delta_norm * mask_t).sum([2,3])/(mask_t.sum([2,3])+1e-8)
                                 upnormmax = delta_mask_norms.max(dim=1)[0]
                                 upnormmax = upnormmax.unsqueeze(-1)
 
@@ -668,6 +682,7 @@ def get_mask(attn_modules, r: int=4):
         key_corss = f"r{r}_cross"
         key_self = f"r{r}_self"
         curr_r = r
+        max_r = 2
 
         r_r = 1
         new_ca = 0
@@ -704,6 +719,9 @@ def get_mask(attn_modules, r: int=4):
 
                 if not r in [2, 4, 8, 16] or r < 2:
                         continue
+
+                if r > max_r:
+                       max_r = r
                 # based on diffusers models/attention.py "get_attention_scores"
                 #if module_type == 'self':
                 attn_scores = to_q_map @ to_k_map.transpose(-1, -2)
@@ -711,6 +729,8 @@ def get_mask(attn_modules, r: int=4):
                 del attn_scores
                 attn_probs = attn_probs.to(to_q_map.dtype)
 
+                if module_key not in attention_store_proxy:
+                        attention_store_proxy[module_key] = []
                 try:
                         attention_store_proxy[module_key].append(attn_probs)
                 except KeyError:
@@ -718,7 +738,7 @@ def get_mask(attn_modules, r: int=4):
 
         attention_maps = attention_store_proxy
 
-        while curr_r<=8:
+        while curr_r<=max_r:
                 key_corss = f"r{curr_r}_cross"
                 key_self = f"r{curr_r}_self"
                 # pdb.set_trace()
