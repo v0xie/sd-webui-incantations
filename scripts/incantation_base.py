@@ -33,7 +33,7 @@ class SubmoduleInfo:
 
 submodules: list[SubmoduleInfo] = [
         SubmoduleInfo(module=SCFGExtensionScript()),
-#        SubmoduleInfo(module=PAGExtensionScript()),
+        SubmoduleInfo(module=PAGExtensionScript()),
         SubmoduleInfo(module=T2I0ExtensionScript()),
         SubmoduleInfo(module=IncantExtensionScript()),
         SubmoduleInfo(module=SaveAttentionMapsScript()),
