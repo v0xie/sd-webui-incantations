@@ -10,6 +10,7 @@ from modules.processing import StableDiffusionProcessing
 from scripts.ui_wrapper import UIWrapper
 from scripts.incant import IncantExtensionScript
 from scripts.t2i_zero import T2I0ExtensionScript
+#from scripts.scfg import SCFGExtensionScript
 from scripts.pag import PAGExtensionScript
 from scripts.save_attn_maps import SaveAttentionMapsScript
 
@@ -31,6 +32,7 @@ class SubmoduleInfo:
                 self.arg_idx: int = arg_idx # where the list of args starts
 
 submodules: list[SubmoduleInfo] = [
+#        SubmoduleInfo(module=SCFGExtensionScript()),
         SubmoduleInfo(module=PAGExtensionScript()),
         SubmoduleInfo(module=T2I0ExtensionScript()),
         SubmoduleInfo(module=IncantExtensionScript()),
