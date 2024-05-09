@@ -116,10 +116,10 @@ class SCFGExtensionScript(UIWrapper):
                 with gr.Accordion('S-CFG', open=False):
                         active = gr.Checkbox(value=False, default=False, label="Active", elem_id='scfg_active')
                         with gr.Row():
-                                scfg_scale = gr.Slider(value = 0, minimum = 0, maximum = 20.0, step = 0.5, label="PAG Scale", elem_id = 'scfg_scale', info="")
-                                scfg_rate_min = gr.Slider(value = 0, minimum = 0, maximum = 20.0, step = 0.5, label="PAG Scale", elem_id = 'scfg_min_rate', info="")
-                                scfg_rate_max = gr.Slider(value = 0, minimum = 0, maximum = 20.0, step = 0.5, label="PAG Scale", elem_id = 'scfg_max_rate', info="")
-                                scfg_rate_clamp = gr.Slider(value = 0, minimum = 0, maximum = 20.0, step = 0.5, label="PAG Scale", elem_id = 'scfg_clamp_rate', info="")
+                                scfg_scale = gr.Slider(value = 1.0, minimum = 0, maximum = 30.0, step = 1.0, label="SCFG Scale", elem_id = 'scfg_scale', info="")
+                                scfg_rate_min = gr.Slider(value = 0.8, minimum = 0, maximum = 30.0, step = 0.1, label="Min CFG", elem_id = 'scfg_min_rate', info="")
+                                scfg_rate_max = gr.Slider(value = 3.0, minimum = 0, maximum = 30.0, step = 0.1, label="Max CFG", elem_id = 'scfg_max_rate', info="")
+                                scfg_rate_clamp = gr.Slider(value = 15.0, minimum = 0, maximum = 30.0, step = 0.1, label="Clamp CFG", elem_id = 'scfg_clamp_rate', info="")
                         with gr.Row():
                                 start_step = gr.Slider(value = 0, minimum = 0, maximum = 150, step = 1, label="Start Step", elem_id = 'scfg_start_step', info="")
                                 end_step = gr.Slider(value = 150, minimum = 0, maximum = 150, step = 1, label="End Step", elem_id = 'scfg_end_step', info="")
@@ -360,7 +360,7 @@ class SCFGExtensionScript(UIWrapper):
                                 pass_conds_func = lambda *args, **kwargs: combine_denoised_pass_conds_list(
                                         *args,
                                         **kwargs,
-                                        original_func = params.denoiser.combine_denoised_original,
+                                        original_func = params.denoiser.combine_denoised_original_scfg,
                                         scfg_params = scfg_params)
                                 scfg_params.patched_combine_denoised = patches.patch(__name__, params.denoiser, "combine_denoised", pass_conds_func)
                                 setattr(params.denoiser, 'combine_denoised_patched_scfg', True)
@@ -396,14 +396,13 @@ class SCFGExtensionScript(UIWrapper):
         def get_xyz_axis_options(self) -> dict:
                 xyz_grid = [x for x in scripts.scripts_data if x.script_class.__module__ in ("xyz_grid.py", "scripts.xyz_grid")][0].module
                 extra_axis_options = {
-                        xyz_grid.AxisOption("[PAG] Active", str, scfg_apply_override('pag_active', boolean=True), choices=xyz_grid.boolean_choice(reverse=True)),
-                        xyz_grid.AxisOption("[PAG] PAG Scale", float, pag_apply_field("pag_scale")),
-                        xyz_grid.AxisOption("[PAG] PAG Start Step", int, pag_apply_field("pag_start_step")),
-                        xyz_grid.AxisOption("[PAG] PAG End Step", int, pag_apply_field("pag_end_step")),
-                        xyz_grid.AxisOption("[PAG] Enable CFG Scheduler", str, scfg_apply_override('cfg_interval_enable', boolean=True), choices=xyz_grid.boolean_choice(reverse=True)),
-                        xyz_grid.AxisOption("[PAG] CFG Noise Interval Low", float, pag_apply_field("cfg_interval_low")),
-                        xyz_grid.AxisOption("[PAG] CFG Noise Interval High", float, pag_apply_field("cfg_interval_high")),
-                        xyz_grid.AxisOption("[PAG] CFG Schedule Type", str, scfg_apply_override('cfg_interval_schedule', boolean=False), choices=lambda: SCHEDULES),
+                        xyz_grid.AxisOption("[SCFG] Active", str, scfg_apply_override('scfg_active', boolean=True), choices=xyz_grid.boolean_choice(reverse=True)),
+                        xyz_grid.AxisOption("[SCFG] SCFG Scale", float, scfg_apply_field("scfg_scale")),
+                        xyz_grid.AxisOption("[SCFG] SCFG Rate Min", float, scfg_apply_field("scfg_rate_min")),
+                        xyz_grid.AxisOption("[SCFG] SCFG Rate Max", float, scfg_apply_field("scfg_rate_max")),
+                        xyz_grid.AxisOption("[SCFG] SCFG Rate Clamp", float, scfg_apply_field("scfg_rate_clamp")),
+                        xyz_grid.AxisOption("[SCFG] SCFG Start Step", int, scfg_apply_field("scfg_start_step")),
+                        xyz_grid.AxisOption("[SCFG] SCFG End Step", int, scfg_apply_field("scfg_end_step")),
                         #xyz_grid.AxisOption("[PAG] ctnms_alpha", float, pag_apply_field("pag_ctnms_alpha")),
                 }
                 return extra_axis_options
@@ -446,7 +445,6 @@ def combine_denoised_pass_conds_list(*args, **kwargs):
 
                                 up = fore_norms
                                 down = delta_mask_norms
-                                
 
                                 tmp_mask = (mask_t.sum([2,3])>0).float()
                                 rate = up*(tmp_mask)/(down+1e-8) # b 257
