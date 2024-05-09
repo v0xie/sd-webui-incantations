@@ -2,20 +2,18 @@ import logging
 from os import environ
 import modules.scripts as scripts
 import gradio as gr
+import scipy.stats as stats
 
-from functools import reduce
-
-from scripts.incant_utils import plot_tools, module_hooks
-from einops import rearrange
-
-
-from scripts.ui_wrapper import UIWrapper
-from modules import script_callbacks
-from modules import extra_networks
-from modules import prompt_parser
-from modules import sd_hijack
-from modules.script_callbacks import CFGDenoiserParams
+from scripts.ui_wrapper import UIWrapper, arg
+from modules import script_callbacks, patches
+from modules.hypernetworks import hypernetwork
+#import modules.sd_hijack_optimizations
+from modules.script_callbacks import CFGDenoiserParams, CFGDenoisedParams, AfterCFGCallbackParams
+from modules.prompt_parser import reconstruct_multicond_batch
 from modules.processing import StableDiffusionProcessing
+#from modules.shared import sd_model, opts
+from modules.sd_samplers_cfg_denoiser import catenate_conds
+from modules.sd_samplers_cfg_denoiser import CFGDenoiser
 from modules import shared
 
 import math
@@ -26,38 +24,73 @@ from torchvision.transforms import GaussianBlur
 from warnings import warn
 from typing import Callable, Dict, Optional
 from collections import OrderedDict
+import torch
 
 logger = logging.getLogger(__name__)
 logger.setLevel(environ.get("SD_WEBUI_LOG_LEVEL", logging.INFO))
 
-"""
+incantations_debug = environ.get("INCANTAIONS_DEBUG", False)
 
-SCFG arXiv:2404.05384v1 [cs.CV] 8 Apr 2024
+"""
+An unofficial implementation of "Self-Rectifying Diffusion Sampling with Perturbed-Attention Guidance" for Automatic1111 WebUI.
+
+@misc{ahn2024selfrectifying,
+      title={Self-Rectifying Diffusion Sampling with Perturbed-Attention Guidance}, 
+      author={Donghoon Ahn and Hyoungwon Cho and Jaewon Min and Wooseok Jang and Jungwoo Kim and SeonHwa Kim and Hyun Hee Park and Kyong Hwan Jin and Seungryong Kim},
+      year={2024},
+      eprint={2403.17377},
+      archivePrefix={arXiv},
+      primaryClass={cs.CV}
+}
+
+Include noise interval for CFG and PAG guidance in the sampling process from "Applying Guidance in a Limited Interval Improves
+Sample and Distribution Quality in Diffusion Models"
+
+@misc{kynkäänniemi2024applying,
+      title={Applying Guidance in a Limited Interval Improves Sample and Distribution Quality in Diffusion Models}, 
+      author={Tuomas Kynkäänniemi and Miika Aittala and Tero Karras and Samuli Laine and Timo Aila and Jaakko Lehtinen},
+      year={2024},
+      eprint={2404.07724},
+      archivePrefix={arXiv},
+      primaryClass={cs.CV}
+}
+
+Include CFG schedulers from "Analysis of Classifier-Free Guidance Weight Schedulers"
+
+@misc{wang2024analysis,
+      title={Analysis of Classifier-Free Guidance Weight Schedulers}, 
+      author={Xi Wang and Nicolas Dufour and Nefeli Andreou and Marie-Paule Cani and Victoria Fernandez Abrevaya and David Picard and Vicky Kalogeiton},
+      year={2024},
+      eprint={2404.13040},
+      archivePrefix={arXiv},
+      primaryClass={cs.CV}
+}
+
 Author: v0xie
 GitHub URL: https://github.com/v0xie/sd-webui-incantations
 
 """
 
+
 handles = []
-token_indices = [0]
+global_scale = 1
+
+SCFG_MODULES = ['to_q', 'to_v', 'to_k']
+
 
 class SCFGStateParams:
         def __init__(self):
-                self.attnreg: bool = False
-                self.ema_smoothing_factor: float = 2.0
-                self.step_start : int = 0
-                self.step_end : int = 25
-                self.token_count: int = 0
-                self.tokens: list[int] = [] # [0, 20]
-                self.window_size_period: int = 10 # [0, 20]
-                self.ctnms_alpha: float = 0.05 # [0., 1.] if abs value of difference between uncodition and concept-conditioned is less than this, then zero out the concept-conditioned values less than this
-                self.correction_threshold: float = 0.5 # [0., 1.]
-                self.correction_strength: float = 0.25 # [0., 1.) # larger bm is less volatile changes in momentum
-                self.strength = 1.0
-                self.width = None
-                self.height = None
-                self.dims = []
-                self.cbs_similarities: list = None # we can precompute this?
+                self.scfg_scale = 0.8
+                self.rate_min = 0.8
+                self.rate_max = 3.0
+                self.rate_clamp = 15.0
+                self.R = 4
+
+                self.mask_t = None
+                self.mask_fore = None
+                self.denoiser = None
+                self.all_crossattn_modules = None
+
 
 class SCFGExtensionScript(UIWrapper):
         def __init__(self):
@@ -76,569 +109,754 @@ class SCFGExtensionScript(UIWrapper):
         def setup_ui(self, is_img2img) -> list:
                 with gr.Accordion('S-CFG', open=False):
                         active = gr.Checkbox(value=False, default=False, label="Active", elem_id='scfg_active')
-                        step_start = gr.Slider(value=1, minimum=0, maximum=150, default=1, step=1, label="Step Start", elem_id='scfg_step_start', info="Start applying the correction at this step. Set to > 1 if using EMA.")
-                        step_end = gr.Slider(value=25, minimum=0, maximum=150, default=1, step=1, label="Step End", elem_id='scfg_step_end')
                         with gr.Row():
-                                tokens = gr.Textbox(visible=True, value="", label="Tokens", elem_id='scfg_tokens', info="Comma separated list of indices of tokens to condition on. Leave empty to condition on all tokens. Example: For prompt 'A cat and a dog', 'A': 0, 'cat': 1, 'and': 2, 'a': 3, 'dog': 4")
+                                scfg_scale = gr.Slider(value = 0, minimum = 0, maximum = 20.0, step = 0.5, label="PAG Scale", elem_id = 'scfg_scale', info="")
+                                scfg_rate_min = gr.Slider(value = 0, minimum = 0, maximum = 20.0, step = 0.5, label="PAG Scale", elem_id = 'scfg_min_rate', info="")
+                                scfg_rate_max = gr.Slider(value = 0, minimum = 0, maximum = 20.0, step = 0.5, label="PAG Scale", elem_id = 'scfg_max_rate', info="")
+                                scfg_rate_clamp = gr.Slider(value = 0, minimum = 0, maximum = 20.0, step = 0.5, label="PAG Scale", elem_id = 'scfg_clamp_rate', info="")
                         with gr.Row():
-                                window_size = gr.Slider(value = 2, minimum = 0, maximum = 100, step = 1, label="Correction by Similarities Window Size", elem_id = 'scfg_window_size', info="Exclude contribution of tokens with indices += this value from the current token index.")
-                                correction_threshold = gr.Slider(value = 0.5, minimum = 0., maximum = 1.0, step = 0.01, label="CbS Score Threshold", elem_id = 'scfg_correction_threshold', info="Filter dimensions with similarity below this threshold")
-                                correction_strength = gr.Slider(value = 0.0, minimum = 0.0, maximum = 2.0, step = 0.01, label="CbS Correction Strength", elem_id = 'scfg_correction_strength', info="The strength of the correction")
-                        with gr.Row():
-                                attnreg = gr.Checkbox(visible=False, value=False, default=False, label="Use Attention Regulation", elem_id='scfg_use_attnreg')
-                                ctnms_alpha = gr.Slider(value = 0.1, minimum = 0.0, maximum = 1.0, step = 0.01, label="Alpha for Cross-Token Non-Maximum Suppression", elem_id = 'scfg_ctnms_alpha', info="Contribution of the suppressed attention map, default 0.1")
-                                ema_factor = gr.Slider(value=0.0, minimum=0.0, maximum=4.0, default=2.0, label="EMA Smoothing Factor", elem_id='scfg_ema_factor', info="Based on method from [arXiv:2403.06381]")
+                                start_step = gr.Slider(value = 0, minimum = 0, maximum = 150, step = 1, label="Start Step", elem_id = 'scfg_start_step', info="")
+                                end_step = gr.Slider(value = 150, minimum = 0, maximum = 150, step = 1, label="End Step", elem_id = 'scfg_end_step', info="")
+                                
                 active.do_not_save_to_config = True
-                attnreg.do_not_save_to_config = True
-                step_start.do_not_save_to_config = True
-                step_end.do_not_save_to_config = True
-                window_size.do_not_save_to_config = True
-                correction_threshold.do_not_save_to_config = True
-                correction_strength.do_not_save_to_config = True
-                attnreg.do_not_save_to_config = True
-                ctnms_alpha.do_not_save_to_config = True
-                ema_factor.do_not_save_to_config = True
-                tokens.do_not_save_to_config = True
+                scfg_scale.do_not_save_to_config = True
+                scfg_rate_min.do_not_save_to_config = True
+                scfg_rate_max.do_not_save_to_config = True
+                scfg_rate_clamp.do_not_save_to_config = True
+                start_step.do_not_save_to_config = True
+                end_step.do_not_save_to_config = True
+
                 self.infotext_fields = [
-                        (active, lambda d: gr.Checkbox.update(value='S-CFG Active' in d)),
-                        #(attnreg, lambda d: gr.Checkbox.update(value='S-CFG AttnReg' in d)),
-                        (window_size, 'S-CFG Window Size'),
-                        (step_start, 'S-CFG Step Start'),
-                        (step_end, 'S-CFG Step End'),
-                        (correction_threshold, 'S-CFG CbS Score Threshold'),
-                        (correction_strength, 'S-CFG CbS Correction Strength'),
-                        (ctnms_alpha, 'S-CFG CTNMS Alpha'),
-                        (ema_factor, 'S-CFG CTNMS EMA Smoothing Factor'),
-                        (tokens, 'S-CFG Tokens'),
+                        (active, lambda d: gr.Checkbox.update(value='SCFG Active' in d)),
+                        (scfg_scale, 'SCFG Scale'),
+                        (scfg_rate_min, 'SCFG Rate Min'),
+                        (scfg_rate_max, 'SCFG Rate Max'),
+                        (scfg_rate_clamp, 'SCFG Rate Clamp'),
+                        (start_step, 'SCFG Start Step'),
+                        (end_step, 'SCFG End Step'),
                 ]
                 self.paste_field_names = [
                         'scfg_active',
-                        'scfg_attnreg',
-                        'scfg_window_size',
-                        'scfg_ctnms_alpha',
-                        'scfg_correction_threshold',
-                        'scfg_correction_strength'
-                        'scfg_ema_factor',
-                        'scfg_step_start',
-                        'scfg_step_end',
-                        'scfg_tokens'
+                        'scfg_scale',
+                        'scfg_rate_min',
+                        'scfg_rate_max',
+                        'scfg_rate_clamp',
+                        'scfg_start_step',
+                        'scfg_end_step',
                 ]
-                return [active, attnreg, window_size, ctnms_alpha, correction_threshold, correction_strength, tokens, ema_factor, step_end, step_start]
+                return [active, scfg_scale, scfg_rate_min, scfg_rate_max, scfg_rate_clamp, start_step, end_step]
 
         def process_batch(self, p: StableDiffusionProcessing, *args, **kwargs):
-               self.scfg_process_batch(p, *args, **kwargs)
+               self.pag_process_batch(p, *args, **kwargs)
 
-        def scfg_process_batch(self, p: StableDiffusionProcessing, active, attnreg, window_size, ctnms_alpha, correction_threshold, correction_strength, tokens, ema_factor, step_end, step_start, *args, **kwargs):
+        def pag_process_batch(self, p: StableDiffusionProcessing, active, scfg_scale, scfg_rate_min, scfg_rate_max, scfg_rate_clamp, start_step, end_step, *args, **kwargs):
+                # cleanup previous hooks always
+                script_callbacks.remove_current_script_callbacks()
+                self.remove_all_hooks()
+
                 active = getattr(p, "scfg_active", active)
-                # use_attnreg = getattr(p, "scfg_attnreg", attnreg)
-                ema_factor = getattr(p, "scfg_ema_factor", ema_factor)
-                step_start = getattr(p, "scfg_step_start", step_start)
-                step_end = getattr(p, "scfg_step_end", step_end)
                 if active is False:
                         return
-                window_size = getattr(p, "scfg_window_size", window_size)
-                ctnms_alpha = getattr(p, "scfg_ctnms_alpha", ctnms_alpha)
-                correction_threshold = getattr(p, "scfg_correction_threshold", correction_threshold)
-                correction_strength = getattr(p, "scfg_correction_strength", correction_strength)
-                tokens = getattr(p, "scfg_tokens", tokens)
+                scfg_scale = getattr(p, "scfg_scale", scfg_scale)
+                scfg_rate_min = getattr(p, "scfg_rate_min", scfg_rate_min)
+                scfg_rate_max = getattr(p, "scfg_rate_max", scfg_rate_max)
+                scfg_rate_clamp = getattr(p, "scfg_rate_clamp", scfg_rate_clamp)
+                start_step = getattr(p, "scfg_start_step", start_step)
+                end_step = getattr(p, "scfg_end_step", end_step)
+
                 p.extra_generation_params.update({
-                        "S-CFG Active": active,
-                        #"S-CFG AttnReg": attnreg,
-                        "S-CFG Window Size": window_size,
-                        "S-CFG Step Start": step_start,
-                        "S-CFG Step End": step_end,
-                        "S-CFG CbS Score Threshold": correction_threshold,
-                        "S-CFG CbS Correction Strength": correction_strength,
-                        "S-CFG CTNMS Alpha": ctnms_alpha,
-                        "S-CFG CTNMS EMA Smoothing Factor": ema_factor,
-                        "S-CFG Tokens": tokens,
+                        "SCFG Active": active,
+                        "SCFG Scale": scfg_scale,
+                        "SCFG Rate Min": scfg_rate_min,
+                        "SCFG Rate Max": scfg_rate_max,
+                        "SCFG Rate Clamp": scfg_rate_clamp,
+                        "SCFG Start Step": start_step,
+                        "SCFG End Step": end_step,
                 })
+                self.create_hook(p, active, scfg_scale, scfg_rate_min, scfg_rate_max, scfg_rate_clamp, start_step, end_step)
 
-                self.create_hook(p, active, attnreg, window_size, ctnms_alpha, correction_threshold, correction_strength, tokens, ema_factor, step_end, step_start, p.width, p.height)
-
-        def parse_concept_prompt(self, prompt:str) -> list[str]:
-                """
-                Separate prompt by comma into a list of concepts
-                TODO: parse prompt into a list of concepts using A1111 functions
-                >>> g = lambda prompt: self.parse_concept_prompt(prompt)
-                >>> g("")
-                []
-                >>> g("apples")
-                ['apples']
-                >>> g("apple, banana, carrot")
-                ['apple', 'banana', 'carrot']
-                """
-                if len(prompt) == 0:
-                        return []
-                return [x.strip() for x in prompt.split(",")]
-
-        def create_hook(self, p, active, attnreg, window_size, ctnms_alpha, correction_threshold, correction_strength, tokens, ema_factor, step_end, step_start, width, height, *args, **kwargs):
-                # Sanity check
-                cross_attn_modules = self.get_cross_attn_modules()
-                if len(cross_attn_modules) == 0:
-                        logger.error("No cross attention modules found, cannot run S-CFG")
-                        return
-
-                if len(tokens) > 0:
-                        try:
-                                token_indices = [int(x) for x in tokens.split(",")]
-                        except ValueError:
-                                logger.error("Invalid token indices, must be comma separated integers")
-                                raise
-                else:
-                       token_indices = []
-
-
+        def create_hook(self, p: StableDiffusionProcessing, active, scfg_scale, scfg_rate_min, scfg_rate_max, scfg_rate_clamp, start_step, end_step):
                 # Create a list of parameters for each concept
-                scfg_params = []
+                scfg_params = SCFGStateParams()
+                scfg_params.denoiser = None
 
-                #for _, strength in concept_conds:
-                params = SCFGStateParams()
-                params.attnreg = attnreg
-                params.ema_smoothing_factor = ema_factor
-                params.step_start = step_start
-                params.step_end = step_end
-                params.window_size_period = window_size
-                params.ctnms_alpha = ctnms_alpha
-                params.correction_threshold = correction_threshold
-                params.correction_strength = correction_strength
-                params.strength = 1.0
-                params.width = width
-                params.height = height
-                params.dims = [width, height]
-
-                params.token_count, _ = get_token_count(p.prompt, p.steps, True)
-                token_indices = [x+1 for x in token_indices if x >= 0 and x < params.token_count]
-                params.tokens = token_indices
-
-                scfg_params.append(params)
-
-
+                # Get all the qv modules
+                scfg_params.all_crossattn_modules = self.get_all_crossattn_modules()
 
                 # Use lambda to call the callback function with the parameters to avoid global variables
-                y = lambda params: self.on_cfg_denoiser_callback(params, scfg_params)
-                # un = lambda params: self.unhook_callbacks()
+                cfg_denoise_lambda = lambda callback_params: self.on_cfg_denoiser_callback(callback_params, scfg_params)
+                cfg_denoised_lambda = lambda callback_params: self.on_cfg_denoised_callback(callback_params, scfg_params)
+                #after_cfg_lambda = lambda x: self.cfg_after_cfg_callback(x, params)
+                unhook_lambda = lambda _: self.unhook_callbacks(None)
 
-                # Hook callbacks
-                if ctnms_alpha > 0:
-                        self.ready_hijack_forward(ctnms_alpha, width, height, ema_factor, step_start, step_end, token_indices, params.token_count)
+                self.ready_hijack_forward(scfg_params.all_crossattn_modules)
 
                 logger.debug('Hooked callbacks')
-                script_callbacks.on_cfg_denoiser(y)
-                script_callbacks.on_script_unloaded(self.unhook_callbacks)
+                script_callbacks.on_cfg_denoiser(cfg_denoise_lambda)
+                script_callbacks.on_cfg_denoised(cfg_denoised_lambda)
+                #script_callbacks.on_cfg_after_cfg(after_cfg_lambda)
+                script_callbacks.on_script_unloaded(unhook_lambda)
 
         def postprocess_batch(self, p, *args, **kwargs):
                 self.scfg_postprocess_batch(p, *args, **kwargs)
 
         def scfg_postprocess_batch(self, p, active, *args, **kwargs):
-                self.unhook_callbacks()
+                script_callbacks.remove_current_script_callbacks()
+
+                logger.debug('Removed script callbacks')
                 active = getattr(p, "scfg_active", active)
                 if active is False:
                         return
 
-        def unhook_callbacks(self):
-                global handles
-                logger.debug('Unhooked callbacks')
-                cross_attn_modules = self.get_cross_attn_modules()
-                for module in cross_attn_modules:
+        def remove_all_hooks(self):
+                all_crossattn_modules = self.get_all_crossattn_modules()
+                for module in all_crossattn_modules:
                         self.remove_field_cross_attn_modules(module, 'scfg_last_attn_map')
-                        self.remove_field_cross_attn_modules(module, 'scfg_step')
-                        self.remove_field_cross_attn_modules(module, 'scfg_step_start')
-                        self.remove_field_cross_attn_modules(module, 'scfg_step_end')
-                        self.remove_field_cross_attn_modules(module, 'scfg_ema_factor')
-                        self.remove_field_cross_attn_modules(module, 'scfg_ema')
-                        self.remove_field_cross_attn_modules(module, 'plot_num')
-                        self.remove_field_cross_attn_modules(module, 'scfg_tokens')
-                        self.remove_field_cross_attn_modules(module, 'scfg_token_count')
-                        self.remove_field_cross_attn_modules(module, 'scfg_to_v_map')
-                        self.remove_field_cross_attn_modules(module.to_k, 'scfg_parent_module')
-                        self.remove_field_cross_attn_modules(module.to_v, 'scfg_parent_module')
-                        _remove_all_forward_hooks(module, 'cross_token_non_maximum_suppression')
-                        # _remove_all_forward_hooks(module, 'cross_token_non_maximum_suppression_pre')
-                        # _remove_all_forward_hooks(module.to_k, 'scfg_to_k_hook')
-                        _remove_all_forward_hooks(module.to_v, 'scfg_to_v_hook')
-                script_callbacks.remove_current_script_callbacks()
+                        self.remove_field_cross_attn_modules(module, 'scfg_last_context_map')
+                        self.remove_field_cross_attn_modules(module, 'scfg_last_to_q_map')
+                        self.remove_field_cross_attn_modules(module, 'scfg_last_to_k_map')
+                        self.remove_field_cross_attn_modules(module, 'scfg_last_to_v_map')
+                        self.remove_field_cross_attn_modules(module, 'scfg_last_to_out_map')
+                        self.remove_field_cross_attn_modules(module, 'scfg_attn_size')
+                        _remove_all_forward_hooks(module, 'scfg_hook')
+                        _remove_all_forward_hooks(module, 'scfg_pre_hook')
+                        to_v = getattr(module, 'to_v', None)
+                        _remove_all_forward_hooks(to_v, 'scfg_to_v_hook')
+                        if hasattr(module, 'to_q'):
+                                handle_scfg_to_q = _remove_all_forward_hooks(module.to_q, 'scfg_to_q_hook')
+                                self.remove_field_cross_attn_modules(module.to_q, 'scfg_parent_module')
+                        if hasattr(module, 'to_k'):
+                                handle_scfg_to_q = _remove_all_forward_hooks(module.to_k, 'scfg_to_k_hook')
+                                self.remove_field_cross_attn_modules(module.to_k, 'scfg_parent_module')
+                        if hasattr(module, 'to_v'):
+                                handle_scfg_to_v = _remove_all_forward_hooks(module.to_v, 'scfg_to_v_hook')
+                                self.remove_field_cross_attn_modules(module.to_v, 'scfg_parent_module')
+                        if hasattr(module, 'to_out'):
+                                handle_scfg_to_out = _remove_all_forward_hooks(module.to_out[0], 'scfg_to_out_hook')
+                                self.remove_field_cross_attn_modules(module.to_out[0], 'scfg_parent_module')
 
-        def correction_by_similarities(self, f, C, percentile, gamma, alpha, tokens=None, token_count=77):
+        def unhook_callbacks(self, pag_params: PAGStateParams):
+                global handles
+
+                if pag_params is None:
+                       logger.error("PAG params is None")
+                       return
+
+                if pag_params.denoiser is not None:
+                        denoiser = pag_params.denoiser
+                        setattr(denoiser, 'combine_denoised_patched', False)
+                        try:
+                                patches.undo(__name__, denoiser, "combine_denoised")
+                        except KeyError:
+                                logger.exception("KeyError unhooking combine_denoised")
+                                pass
+                        except RuntimeError:
+                                logger.exception("RuntimeError unhooking combine_denoised")
+                                pass
+                        pag_params.denoiser = None
+
+
+        def ready_hijack_forward(self, crossattn_modules, all_crossattn_modules, pag_scale):
+                """ Create hooks in the forward pass of the cross attention modules
+                Copies the output of the to_v module to the parent module
+                Then applies the PAG perturbation to the output of the cross attention module (multiplication by identity)
                 """
-                Apply the Correction by Similarities algorithm on embeddings.
 
-                Args:
-                f (Tensor): The embedding tensor of shape (n, d).
-                C (list): Indices of selected tokens.
-                percentile (float): Percentile to use for score threshold.
-                gamma (int): Window size for the windowing function.
-                alpha (float): Correction strength.
-                tokens (list): List of token indices to condition on (default is all tokens if empty list).
-
-                Returns:
-                Tensor: The corrected embedding tensor.
-                """
-                if alpha == 0:
-                        return f
-
-                n, d = f.shape
-
-                token_indices = tokens
-                min_idx = 1
-                max_idx = min(token_count+1, n)
-                if token_indices is None:
-                        token_indices = list(range(min_idx, max_idx))
-                if token_indices == []:
-                        token_indices = list(range(min_idx, max_idx))
-                else:
-                        token_indices = [x+1 for x in token_indices if x >= 0 and x < n]
-
-
-                f_tilde = f.detach().clone()  # Copy the embedding tensor
-
-                # Define a windowing function
-                def psi(c, gamma, n, dtype, device, min_idx, max_idx):
-                        window = torch.zeros(n, dtype=dtype, device=device)
-                        start = max(min_idx, c - gamma)
-                        end = min(max_idx, c + gamma + 1)
-                        window[start:end] = 1
-                        return window
-
-                def threshold_filter(t, tau):
-                       """ Threshold filter function
-                       Filters product values below a threshold tau and normalizes them to leave only the most similar dimensions.
-                        Arguments:
-                                t: torch.Tensor - The tensor to threshold
-                                tau: float - The threshold value
-                        Returns:
-                                bool: True if the value is above the threshold, False otherwise
-                       """
-                       pass
-
-
-
-
-                for c in token_indices:
-                        if c < 0 or c >= n:
-                                continue
-                        Sc = f[c] * f  # Element-wise multiplication
-
-                        # calculate score threshold to filter out values under score threshold
-                        # often there is a huge difference between the max and min values, so we use a log-like function instead
-                        k = 10
-                        e= 2.718281
-                        pct_max = 1/(1+1e-10)
-                        pct_min = 1e-16
-                        # max of 0.999... to 0.0000...1
-                        pct = min(pct_max, max(pct_min, 1 - e**(-k * percentile)))
-
-                        tau = torch.quantile(Sc, pct)
-
-                        Sc_tilde = Sc * (Sc > tau)  # Apply threshold and filter
-                        Sc_tilde /= Sc_tilde.max()  # Normalize
-
-                        window = psi(c, gamma, n, Sc_tilde.dtype, Sc_tilde.device, min_idx, max_idx).unsqueeze(1)  # Apply windowing function
-
-                        Sc_tilde *= window
-                        f_c_tilde = torch.sum(Sc_tilde * f, dim=0)  # Combine embeddings
-                        f_tilde[c] = (1 - alpha) * f[c] + alpha * f_c_tilde  # Blend embeddings
-
-                return f_tilde
-
-        def ready_hijack_forward(self, alpha, width, height, ema_factor, step_start, step_end, tokens, token_count):
-                """ Create a hook to modify the output of the forward pass of the cross attention module
-                Arguments:
-                        alpha: float - The strength of the CTNMS correction, default 0.1
-                        width: int - The width of the final output image map
-                        height: int - The height of the final output image map
-                        ema_factor: float - EMA smoothing factor, default 2.0
-                        step_start: int - Wait to apply CTNMS until this step
-                        step_end: int - The number of steps to apply the CTNMS correction, after which don't
-                        tokens: list[int] - List of token indices to condition on
-                        token_count: int - The number of tokens in the prompt
-
-                Only modifies the output of the cross attention modules that get context (i.e. text embedding)
-                """
-                cross_attn_modules = self.get_cross_attn_modules()
-                if len(cross_attn_modules) == 0:
-                        logger.error("No cross attention modules found, cannot run S-CFG")
-                        return
-                # add field for last_attn_map
-                plot_num = 0
-                for module in cross_attn_modules:
+                # add field for last_to_v
+                for module in crossattn_modules:
+                        to_v = getattr(module, 'to_v', None)
+                        self.add_field_cross_attn_modules(module, 'pag_enable', False)
+                        self.add_field_cross_attn_modules(module, 'pag_last_to_v', None)
+                        self.add_field_cross_attn_modules(to_v, 'pag_parent_module', [module])
                         self.add_field_cross_attn_modules(module, 'scfg_last_attn_map', None)
-                        self.add_field_cross_attn_modules(module, 'scfg_step', torch.tensor([-1]).to(device=shared.device))
-                        self.add_field_cross_attn_modules(module, 'scfg_step_start', torch.tensor([step_start]).to(device=shared.device))
-                        self.add_field_cross_attn_modules(module, 'scfg_step_end', torch.tensor([step_end]).to(device=shared.device))
-                        self.add_field_cross_attn_modules(module, 'scfg_ema', None)
-                        self.add_field_cross_attn_modules(module, 'scfg_ema_factor', torch.tensor([ema_factor]).to(device=shared.device, dtype=torch.float16))
-                        self.add_field_cross_attn_modules(module, 'plot_num', torch.tensor([plot_num]).to(device=shared.device))
-                        self.add_field_cross_attn_modules(module, 'scfg_to_v_map', None)
-                        self.add_field_cross_attn_modules(module.to_v, 'scfg_parent_module', [module])
-                        self.add_field_cross_attn_modules(module, 'scfg_token_count', torch.tensor(token_count).to(device=shared.device, dtype=torch.int64))
-                        if tokens is not None:
-                                self.add_field_cross_attn_modules(module, 'scfg_tokens', torch.tensor(tokens).to(device=shared.device, dtype=torch.int64))
-                        else:
-                                self.add_field_cross_attn_modules(module, 'scfg_tokens', None)
+                        self.add_field_cross_attn_modules(module, 'scfg_attn_size', -1)
+                        # self.add_field_cross_attn_modules(to_out, 'pag_parent_module', [module])
+                        
+                # add field for last_to_v
+                for module in all_crossattn_modules:
+                        self.add_field_cross_attn_modules(module, 'scfg_last_attn_map', None)
+                        self.add_field_cross_attn_modules(module, 'scfg_last_context_map', None)
+                        self.add_field_cross_attn_modules(module, 'scfg_last_to_q_map', None)
+                        self.add_field_cross_attn_modules(module, 'scfg_last_to_k_map', None)
+                        self.add_field_cross_attn_modules(module, 'scfg_last_to_v_map', None)
+                        self.add_field_cross_attn_modules(module, 'scfg_last_to_out_map', None)
+                        self.add_field_cross_attn_modules(module, 'scfg_attn_size', -1)
+                        for submodule in SCFG_MODULES:
+                                sub_module = getattr(module, submodule, None)
+                                self.add_field_cross_attn_modules(sub_module, 'scfg_parent_module', [module])
+                        if hasattr(module, 'to_out'):
+                                self.add_field_cross_attn_modules(module.to_out[0], 'scfg_parent_module', [module])
 
-                        plot_num += 1
+                def to_v_pre_hook(module, input, kwargs, output):
+                        """ Copy the output of the to_v module to the parent module """
+                        parent_module = getattr(module, 'pag_parent_module', None)
+                        # copy the output of the to_v module to the parent module
+                        setattr(parent_module[0], 'pag_last_to_v', output.detach().clone())
 
-                # def cross_token_non_maximum_suppression_pre(module, args, kwargs):
-                #         pass
-                #         pass
-
-                def cross_token_non_maximum_suppression(module, input, kwargs, output):
-                        module.scfg_step += 1
-
-                        context = kwargs.get('context', None)
-                        if context is None:
-                                return
-                        if context.shape[1] % 77 != 0:
-                                logger.error("Context shape is not divisible by 77, cannot run S-CFG")
-                                return
-
-                        current_step = module.scfg_step
-                        start_step = module.scfg_step_start
-                        end_step = module.scfg_step_end
-
-                        # Select token indices, default is ALL tokens
-                        token_count = module.scfg_token_count
-                        token_indices = module.scfg_tokens
-
-                        if current_step > end_step and end_step > 0:
-                                return
-                        if current_step < start_step:
-                                return
-
-                        batch_size, sequence_length, inner_dim = output.shape
-
-                        max_dims = width*height
-                        factor = math.isqrt(max_dims // sequence_length) # should be a square of 2
-                        downscale_width = width // factor
-                        downscale_height = height // factor
-                        if downscale_width * downscale_height != sequence_length:
-                                print(f"Error: Width: {width}, height: {height}, Downscale width: {downscale_width}, height: {downscale_height}, Factor: {factor}, Max dims: {max_dims}\n")
-                                return
-
-                        # h = module.heads
-                        # head_dim = inner_dim // h
-                        dtype = output.dtype
-                        device = output.device
-
-                        # Multiply text embeddings into visual embeddings
-                        to_v_map = module.scfg_to_v_map.detach().clone()
-                        to_v_inner_dim = to_v_map.size(-2)
-                        to_v_map = (to_v_map @ output.transpose(1, 2)).transpose(1, 2)
-
-                        to_v_attention_map = to_v_map.view(batch_size, downscale_height, downscale_width, to_v_inner_dim)
-
-                        # Original attention map
-                        attention_map = output.view(batch_size, downscale_height, downscale_width, inner_dim)
-
-                        if token_indices is None:
-                                selected_tokens = torch.tensor(list(range(1, token_count.item())))
-                        elif len(token_indices) == 0:
-                                selected_tokens = torch.tensor(list(range(1, token_count.item())))
-                        else:
-                                selected_tokens = module.scfg_tokens
-
-                        if module.scfg_ema is None:
-                                module.scfg_ema = output.detach().clone()
-
-                        # Extract the attention maps for the selected tokens
-                        AC = to_v_attention_map[:, :, :, selected_tokens]  # Extracting relevant attention maps
-
-                        # Extract and process the selected attention maps
-                        # GaussianBlur expects the input [..., C, H, W]
-                        gaussian_blur = GaussianBlur(kernel_size=3, sigma=1)
-                        AC = AC.permute(0, 3, 1, 2)
-                        AC = gaussian_blur(AC)  # Applying Gaussian smoothing
-                        AC = AC.permute(0, 2, 3, 1)
-
-                        # Find the maximum contributing token for each pixel
-                        M = torch.argmax(AC, dim=-1)
-                        one_hot_M = F.one_hot(M, num_classes=to_v_attention_map.size(-1)).to(dtype=dtype, device=device)
-
-                        # the attention map is of shape [batch_size, height, width, inner_dim]
-                        one_hot_M_z = rearrange(one_hot_M, 'b h w c -> b (h w) c')
-                        one_hot_M_z = one_hot_M_z @ module.scfg_to_v_map
-                        one_hot_M_z = rearrange(one_hot_M_z, 'b (h w) c -> b h w c', h=downscale_height, w=downscale_width)
-
-                        suppressed_attention_map = one_hot_M_z * attention_map
-
-                        # Reshape back to original dimensions
-                        suppressed_attention_map = suppressed_attention_map.view(batch_size, sequence_length, inner_dim)
-
-                        # Calculate the EMA of the suppressed attention map
-                        if module.scfg_ema_factor > 0:
-                                ema = module.scfg_ema
-                                ema_factor = module.scfg_ema_factor / (1 + current_step)
-                                # Add the suppressed attention map to the EMA
-                                ema = ema_factor * ema + (1 - ema_factor) * suppressed_attention_map
-                                module.scfg_ema = ema
-                                out_tensor = (1 -alpha) * output + (alpha) * ema
-                                #out_tensor = (1-alpha) * ema + alpha * suppressed_attention_map
-                        else:
-                                out_tensor = (1-alpha) * output + alpha * suppressed_attention_map
-
-                        return out_tensor
+                def scfg_to_q_hook(module, input, kwargs, output):
+                        setattr(module.scfg_parent_module[0], 'scfg_last_to_q_map', output.detach().clone())
 
                 def scfg_to_k_hook(module, input, kwargs, output):
-                        pass
-                        pass
+                        setattr(module.scfg_parent_module[0], 'scfg_last_to_k_map', output.detach().clone())
 
                 def scfg_to_v_hook(module, input, kwargs, output):
-                        module.scfg_parent_module[0].scfg_to_v_map = output
+                        setattr(module.scfg_parent_module[0], 'scfg_last_to_v_map', output.detach().clone())
 
-                # Hook
-                for module in cross_attn_modules:
-                        # handle = module.to_k.register_forward_hook(scfg_to_k_hook, with_kwargs=True)
-                        handle = module.to_v.register_forward_hook(scfg_to_v_hook, with_kwargs=True)
-                        handle = module.register_forward_hook(cross_token_non_maximum_suppression, with_kwargs=True)
-                        # handle = module.register_forward_pre_hook(cross_token_non_maximum_suppression_pre, with_kwargs=True)
+                def scfg_to_out_hook(module, input, kwargs, output):
+                        setattr(module.scfg_parent_module[0], 'scfg_last_to_out_map', output.detach().clone())
+
+                def pag_pre_hook(module, input, kwargs, output):
+                        if hasattr(module, 'pag_enable') and getattr(module, 'pag_enable', False) is False:
+                                return
+                        if not hasattr(module, 'pag_last_to_v'):
+                                # oops we forgot to unhook
+                                return
+
+                        batch_size, seq_len, inner_dim = output.shape
+                        identity = torch.eye(seq_len).expand(batch_size, -1, -1).to(shared.device)
+
+                        # get the last to_v output and save it
+                        last_to_v = getattr(module, 'pag_last_to_v', None)
+                        if last_to_v is not None:    
+                                new_output = torch.einsum('bij,bjk->bik', identity, last_to_v)
+                                return new_output
+                        else:
+                                # this is bad
+                                return output
+
+                def scfg_pre_hook(module, args, kwargs):
+                        if not hasattr(module, 'scfg_last_attn_map'):
+                                return
+                        #if kwargs.get('context', None) is not None:
+                        #        setattr(module, 'scfg_last_context_map', kwargs.get('context').detach().clone())
+                        #setattr(module, 'scfg_last_attn_map', args[0].detach().clone())
+
+                def scfg_hook(module, input, kwargs, output):
+                        if not hasattr(module, 'scfg_last_attn_map'):
+                                return
+                        if kwargs.get('context', None) is not None:
+                                setattr(module, 'scfg_last_context_map', kwargs.get('context').detach().clone())
+                                #to_v_map = getattr(module, 'scfg_last_to_v_map', None)
+                                #attn_map = (input[0] @ to_v_map.transpose(1,2)).transpose(1,2)
+                        #        setattr(module, 'scfg_last_attn_map', attn_map)
+                        #else:
+                        setattr(module, 'scfg_last_attn_map', output.detach().clone())
+                        #if kwargs.get('context', None) is not None:
+                        #        setattr(module, 'scfg_last_attn_map', kwargs.get('context').detach().clone())
+                        #else:
+                        #setattr(module, 'scfg_last_attn_map', output.detach().clone())
+                        # setattr(module, 'scfg_attn_size', output.size(1) ** 0.5)
+
+
+                # Create hooks 
+                for module in crossattn_modules:
+                        handle_parent = module.register_forward_hook(pag_pre_hook, with_kwargs=True)
+                        to_v = getattr(module, 'to_v', None)
+                        handle_to_v = to_v.register_forward_hook(to_v_pre_hook, with_kwargs=True)
+                
+                for module in all_crossattn_modules:
+                        handle_scfg = module.register_forward_hook(scfg_hook, with_kwargs=True)
+                        handle_scfg_pre = module.register_forward_pre_hook(scfg_pre_hook, with_kwargs=True)
+                        if hasattr(module, 'to_q'):
+                                handle_scfg_to_q = module.to_q.register_forward_hook(scfg_to_q_hook, with_kwargs=True)
+                        if hasattr(module, 'to_k'):
+                                handle_scfg_to_k = module.to_k.register_forward_hook(scfg_to_k_hook, with_kwargs=True)
+                        if hasattr(module, 'to_v'):
+                                handle_scfg_to_v= module.to_v.register_forward_hook(scfg_to_v_hook, with_kwargs=True)
+                        if hasattr(module, 'to_out'):
+                                handle_scfg_to_out = module.to_out[0].register_forward_hook(scfg_to_out_hook, with_kwargs=True)
+
+        def get_all_crossattn_modules(self):
+                """ 
+                Get ALL attention modules
+                """
+                try:
+                        m = shared.sd_model
+                        nlm = m.network_layer_mapping
+                        middle_block_modules = [m for m in nlm.values() if 'CrossAttention' in m.__class__.__name__]
+                        return middle_block_modules
+                except AttributeError:
+                        logger.exception("AttributeError in get_middle_block_modules", stack_info=True)
+                        return []
+                except Exception:
+                        logger.exception("Exception in get_middle_block_modules", stack_info=True)
+                        return []
+
+        def get_middle_block_modules(self):
+                """ Get all attention modules from the middle block 
+                Refere to page 22 of the PAG paper, Appendix A.2
+                
+                """
+                try:
+                        m = shared.sd_model
+                        nlm = m.network_layer_mapping
+                        middle_block_modules = [m for m in nlm.values() if 'middle_block_1_transformer_blocks_0_attn1' in m.network_layer_name and 'CrossAttention' in m.__class__.__name__]
+                        return middle_block_modules
+                except AttributeError:
+                        logger.exception("AttributeError in get_middle_block_modules", stack_info=True)
+                        return []
+                except Exception:
+                        logger.exception("Exception in get_middle_block_modules", stack_info=True)
+                        return []
 
         def get_cross_attn_modules(self):
                 """ Get all cross attention modules """
-                try:
-                        cross_attn_modules = module_hooks.get_modules(
-                               network_layer_name_filter='attn2',
-                               module_name_filter='CrossAttention',
-                        )
-                        #m = shared.sd_model
-                        #nlm = m.network_layer_mapping
-                        #cross_attn_modules = [m for m in nlm.values() if 'CrossAttention' in m.__class__.__name__ and 'attn2' in m.network_layer_name]
-                        return cross_attn_modules
-                except AttributeError:
-                        logger.exception("AttributeError while getting cross attention modules")
-                        return []
-                except Exception:
-                        logger.exception("Error while getting cross attention modules")
-                        return []
+                return self.get_middle_block_modules()
 
         def add_field_cross_attn_modules(self, module, field, value):
                 """ Add a field to a module if it doesn't exist """
-                module_hooks.modules_add_field(module, field, value)
-
+                if not hasattr(module, field):
+                        setattr(module, field, value)
+        
         def remove_field_cross_attn_modules(self, module, field):
                 """ Remove a field from a module if it exists """
-                module_hooks.modules_remove_field(module, field)
+                if hasattr(module, field):
+                        delattr(module, field)
 
-        def on_cfg_denoiser_callback(self, params: CFGDenoiserParams, scfg_params: list[SCFGStateParams]):
-                if isinstance(params.text_cond, dict):
-                        text_cond = params.text_cond['crossattn'] # SD XL
-                else:
-                        text_cond = params.text_cond # SD 1.5
+        def on_cfg_denoiser_callback(self, params: CFGDenoiserParams, scfg_params: SCFGStateParams):
+                # always unhook
+                self.unhook_callbacks(pag_params)
 
-                sp = scfg_params[0]
-                window_size = sp.window_size_period
-                correction_strength = sp.correction_strength
-                score_threshold = sp.correction_threshold
+                pag_params.step = params.sampling_step
 
-                step = params.sampling_step
-                step_start = sp.step_start
-                step_end = sp.step_end
+                # patch combine_denoised
+                if pag_params.denoiser is None:
+                        pag_params.denoiser = params.denoiser
+                if getattr(params.denoiser, 'combine_denoised_patched', False) is False:
+                        try:
+                                setattr(params.denoiser, 'combine_denoised_original', params.denoiser.combine_denoised)
+                                # create patch that references the original function
+                                pass_conds_func = lambda *args, **kwargs: combine_denoised_pass_conds_list(
+                                        *args,
+                                        **kwargs,
+                                        original_func = params.denoiser.combine_denoised_original,
+                                        pag_params = pag_params,
+                                        scfg_params = scfg_params)
+                                pag_params.patched_combine_denoised = patches.patch(__name__, params.denoiser, "combine_denoised", pass_conds_func)
+                                setattr(params.denoiser, 'combine_denoised_patched', True)
+                                setattr(params.denoiser, 'combine_denoised_original', patches.original(__name__, params.denoiser, "combine_denoised"))
+                        except KeyError:
+                                logger.exception("KeyError patching combine_denoised")
+                                pass
+                        except RuntimeError:
+                                logger.exception("RuntimeError patching combine_denoised")
+                                pass
 
-                tokens = sp.tokens if sp.tokens is not None else []
-
-
-                if step_start > step:
-                        return
-                if step > step_end:
-                        return
-
-                for batch_idx, batch in enumerate(text_cond):
-                        window = list(range(0, len(batch)))
-                        f_bar = self.correction_by_similarities(batch, window, score_threshold, window_size, correction_strength, tokens)
+                # Run PAG only within interval
+                if pag_params.pag_start_step <= params.sampling_step <= pag_params.pag_end_step and pag_params.pag_scale > 0:
                         if isinstance(params.text_cond, dict):
-                                params.text_cond['crossattn'][batch_idx] = f_bar
+                                text_cond = params.text_cond['crossattn'] # SD XL
+                                pag_params.text_cond = {}
+                                pag_params.text_uncond = {}
+                                for key, value in params.text_cond.items():
+                                        pag_params.text_cond[key] = value.clone().detach()
+                                        pag_params.text_uncond[key] = value.clone().detach()
                         else:
-                                params.text_cond[batch_idx] = f_bar
-                return
+                                text_cond = params.text_cond # SD 1.5
+                                pag_params.text_cond = text_cond.clone().detach()
+                                pag_params.text_uncond = text_cond.clone().detach()
+
+                        pag_params.x_in = params.x.clone().detach()
+                        pag_params.sigma = params.sigma.clone().detach()
+                        pag_params.image_cond = params.image_cond.clone().detach()
+                        pag_params.denoiser = params.denoiser
+                        pag_params.make_condition_dict = get_make_condition_dict_fn(params.text_uncond)
+
+
+
+
+        def on_cfg_denoised_callback(self, params: CFGDenoisedParams, scfg_params: SCFGStateParams):
+                """ Callback function for the CFGDenoisedParams 
+                Refer to pg.22 A.2 of the PAG paper for how CFG and PAG combine
+                
+                """
+                # S-CFG
+                ca_mask, fore_mask = get_mask(scfg_params.all_crossattn_modules)
+
+                # todo parameterize this
+                R = 4
+                mask_t = F.interpolate(ca_mask, scale_factor=R, mode='nearest')
+                mask_fore = F.interpolate(fore_mask, scale_factor=R, mode='nearest')
+                scfg_params.mask_t = mask_t
+                scfg_params.mask_fore = mask_fore
+
+                # Run only within interval
+                if not pag_params.pag_start_step <= params.sampling_step <= pag_params.pag_end_step or pag_params.pag_scale <= 0:
+                        return
+
+                # passed from on_cfg_denoiser_callback
+                x_in = pag_params.x_in
+                tensor = pag_params.text_cond
+                uncond = pag_params.text_uncond
+                image_cond_in = pag_params.image_cond
+                sigma_in = pag_params.sigma
+                
+                # concatenate the conditions 
+                # "modules/sd_samplers_cfg_denoiser.py:237"
+                cond_in = catenate_conds([tensor, uncond])
+                make_condition_dict = get_make_condition_dict_fn(uncond)
+                conds = make_condition_dict(cond_in, image_cond_in)
+                
+                # set pag_enable to True for the hooked cross attention modules
+                for module in pag_params.crossattn_modules:
+                        setattr(module, 'pag_enable', True)
+
+                # get the PAG guidance (is there a way to optimize this so we don't have to calculate it twice?)
+                pag_x_out = params.inner_model(x_in, sigma_in, cond=conds)
+
+                # update pag_x_out
+                pag_params.pag_x_out = pag_x_out
+
+                # set pag_enable to False
+                for module in pag_params.crossattn_modules:
+                        setattr(module, 'pag_enable', False)
+        
+        def cfg_after_cfg_callback(self, params: AfterCFGCallbackParams, pag_params: PAGStateParams):
+                #self.unhook_callbacks(pag_params)
+                pass
 
         def get_xyz_axis_options(self) -> dict:
                 xyz_grid = [x for x in scripts.scripts_data if x.script_class.__module__ in ("xyz_grid.py", "scripts.xyz_grid")][0].module
                 extra_axis_options = {
-                        xyz_grid.AxisOption("[S-CFG] Active", str, scfg_apply_override('scfg_active', boolean=True), choices=xyz_grid.boolean_choice(reverse=True)),
-                        xyz_grid.AxisOption("[S-CFG] Step Start", int, scfg_apply_field("scfg_step_start")),
-                        xyz_grid.AxisOption("[S-CFG] Step End", int, scfg_apply_field("scfg_step_end")),
-                        xyz_grid.AxisOption("[S-CFG] CbS Window Size", int, scfg_apply_field("scfg_window_size")),
-                        xyz_grid.AxisOption("[S-CFG] CbS Score Threshold", float, scfg_apply_field("scfg_correction_threshold")),
-                        xyz_grid.AxisOption("[S-CFG] CbS Correction Strength", float, scfg_apply_field("scfg_correction_strength")),
-                        xyz_grid.AxisOption("[S-CFG] CTNMS Alpha", float, scfg_apply_field("scfg_ctnms_alpha")),
-                        xyz_grid.AxisOption("[S-CFG] CTNMS EMA Smoothing Factor", float, scfg_apply_field("scfg_ema_factor")),
+                        xyz_grid.AxisOption("[PAG] Active", str, pag_apply_override('pag_active', boolean=True), choices=xyz_grid.boolean_choice(reverse=True)),
+                        xyz_grid.AxisOption("[PAG] PAG Scale", float, pag_apply_field("pag_scale")),
+                        xyz_grid.AxisOption("[PAG] PAG Start Step", int, pag_apply_field("pag_start_step")),
+                        xyz_grid.AxisOption("[PAG] PAG End Step", int, pag_apply_field("pag_end_step")),
+                        xyz_grid.AxisOption("[PAG] Enable CFG Scheduler", str, pag_apply_override('cfg_interval_enable', boolean=True), choices=xyz_grid.boolean_choice(reverse=True)),
+                        xyz_grid.AxisOption("[PAG] CFG Noise Interval Low", float, pag_apply_field("cfg_interval_low")),
+                        xyz_grid.AxisOption("[PAG] CFG Noise Interval High", float, pag_apply_field("cfg_interval_high")),
+                        xyz_grid.AxisOption("[PAG] CFG Schedule Type", str, pag_apply_override('cfg_interval_schedule', boolean=False), choices=lambda: SCHEDULES),
+                        #xyz_grid.AxisOption("[PAG] ctnms_alpha", float, pag_apply_field("pag_ctnms_alpha")),
                 }
                 return extra_axis_options
 
 
-def plot_attention_map(attention_map: torch.Tensor, title, x_label="X", y_label="Y", save_path=None, plot_type="default"):
-        """ Plots an attention map using matplotlib.pyplot
-                Arguments:
-                        attention_map: Tensor - The attention map to plot
-                        title: str - The title of the plot
-                        x_label: str (optional) - The x-axis label
-                        y_label: str (optional) - The y-axis label
-                        save_path: str (optional) - The path to save the plot
-                Returns:
-                        PIL.Image: The plot as a PIL image
+def combine_denoised_pass_conds_list(*args, **kwargs):
+        """ Hijacked function for combine_denoised in CFGDenoiser """
+        original_func = kwargs.get('original_func', None)
+        new_params = kwargs.get('pag_params', None)
+        scfg_params = kwargs.get('scfg_params', None)
+
+        if new_params is None:
+                logger.error("new_params is None")
+                return original_func(*args)
+
+        def new_combine_denoised(x_out, conds_list, uncond, cond_scale):
+                denoised_uncond = x_out[-uncond.shape[0]:]
+                denoised = torch.clone(denoised_uncond)
+
+                noise_level = calculate_noise_level(new_params.step, new_params.max_sampling_step)
+
+                # Calculate CFG Scale
+                cfg_scale = cond_scale
+                if new_params.cfg_interval_enable:
+                        if new_params.cfg_interval_schedule != 'Constant':
+                                # Calculate noise interval
+                                start = new_params.cfg_interval_low
+                                end = new_params.cfg_interval_high
+                                begin_range = start if start <= end else end
+                                end_range = end if start <= end else start
+                                # Scheduled CFG Value
+                                scheduled_cfg_scale = cfg_scheduler(new_params.cfg_interval_schedule, new_params.step, new_params.max_sampling_step, cond_scale)
+                                # Only apply CFG in the interval
+                                cfg_scale = scheduled_cfg_scale if begin_range <= noise_level <= end_range else 1.0
+
+                if incantations_debug:
+                        logger.debug(f"Schedule: {new_params.cfg_interval_schedule}, CFG Scale: {cfg_scale}, Noise_level: {round(noise_level,3)}")
+
+                for i, conds in enumerate(conds_list):
+                        for cond_index, weight in conds:
+                                if scfg_params is not None:
+                                        mask_t = scfg_params.mask_t
+                                        mask_fore = scfg_params.mask_fore
+
+                                        model_delta = (x_out[cond_index] - denoised_uncond[i]).unsqueeze(0)
+                                        model_delta_norm = model_delta.norm(dim=1, keepdim=True)
+                                        delta_mask_norms = (model_delta_norm * scfg_params.mask_t).sum([2,3])/(mask_t.sum([2,3])+1e-8)
+                                        upnormmax = delta_mask_norms.max(dim=1)[0]
+                                        upnormmax = upnormmax.unsqueeze(-1)
+
+                                        fore_norms = (model_delta_norm * mask_fore).sum([2,3])/(mask_fore.sum([2,3])+1e-8)
+
+                                        up = fore_norms
+                                        down = delta_mask_norms
+                                        
+
+                                        tmp_mask = (mask_t.sum([2,3])>0).float()
+                                        rate = up*(tmp_mask)/(down+1e-8) # b 257
+                                        rate = (rate.unsqueeze(-1).unsqueeze(-1)*mask_t).sum(dim=1, keepdim=True) # b 1, 64 64
+                                        
+                                        rate = torch.clamp(rate,min=0.8, max=3.0)
+                                        rate = torch.clamp_max(rate, 15.0/cfg_scale)
+
+                                        ###Gaussian Smoothing 
+                                        kernel_size = 3
+                                        sigma=0.5
+                                        smoothing = GaussianSmoothing(channels=1, kernel_size=kernel_size, sigma=sigma, dim=2).to(rate.device)
+                                        rate = F.pad(rate, (1, 1, 1, 1), mode='reflect')
+                                        rate = smoothing(rate)
+                                        rate = rate.to(x_out[cond_index].dtype)
+                                        denoised[i] += (x_out[cond_index] - denoised_uncond[i]) * rate.squeeze(0) * (weight * cfg_scale)
+
+                                else:
+                                        denoised[i] += (x_out[cond_index] - denoised_uncond[i]) * (weight * cfg_scale)
+
+                                # Apply PAG guidance only within interval
+                                if not new_params.pag_start_step <= new_params.step <= new_params.pag_end_step or new_params.pag_scale <= 0:
+                                        continue
+                                else:
+                                        try:
+                                                denoised[i] += (x_out[cond_index] - new_params.pag_x_out[i]) * (weight * new_params.pag_scale)
+                                        except TypeError:
+                                                logger.exception("TypeError in combine_denoised_pass_conds_list")
+                                        except IndexError:
+                                                logger.exception("IndexError in combine_denoised_pass_conds_list")
+                                        #logger.debug(f"added PAG guidance to denoised - pag_scale:{global_scale}")
+                return denoised
+        return new_combine_denoised(*args)
+
+
+# from modules/sd_samplers_cfg_denoiser.py:187-195
+def get_make_condition_dict_fn(text_uncond):
+        if shared.sd_model.model.conditioning_key == "crossattn-adm":
+                make_condition_dict = lambda c_crossattn, c_adm: {"c_crossattn": [c_crossattn], "c_adm": c_adm}
+        else:
+                if isinstance(text_uncond, dict):
+                        make_condition_dict = lambda c_crossattn, c_concat: {**c_crossattn, "c_concat": [c_concat]}
+                else:
+                        make_condition_dict = lambda c_crossattn, c_concat: {"c_crossattn": [c_crossattn], "c_concat": [c_concat]}
+        return make_condition_dict
+
+
+def calculate_noise_level(i, N, sigma_min=0.002, sigma_max=80.0, rho=3):
+    """
+    Calculate the noise level for a given sampling step index.
+
+    Parameters:
+    i (int): Index of the current sampling step (0-based index).
+    N (int): Total number of sampling steps.
+    sigma_min (float): Minimum sigma value for min noise level, default 0.002.
+    sigma_max (float): Maximum sigma value for max noise level, default 80.0.
+    rho (int): Discretization parameter, default 3 for SD-XL, 7 for EDM2.
+
+    Returns:
+    float: Calculated noise level for the given step.
+    """
+    if i == 0:
+        return sigma_max
+    if i >= N:
+        return 0.0
+    sigma_max_p = sigma_max ** (1/rho)
+    sigma_min_p = sigma_min ** (1/rho)
+    inner_term = sigma_max_p + (i / (N - 1)) * (sigma_min_p - sigma_max_p)
+    noise_level = inner_term ** rho
+
+    return noise_level
+
+
+def find_closest_index(noise_level: float, N: int, sigma_min=0.002, sigma_max=80.0, rho=3, tol=1e-6):
+    """
+    Given a noise level, find the closest integer index in the range [0, N-1] that corresponds to the noise level.
+
+    Parameters:
+    noise_level (float): Target noise level to find the closest index for.
+    N (int): Total number of sampling steps.
+    sigma_min (float): Minimum sigma value for min noise level, default 0.002.
+    sigma_max (float): Maximum sigma value for max noise level, default 80.0.
+    rho (int): Discretization parameter, default 3 for SD-XL, 7 for EDM2.
+
+    Returns:
+    int: The closest index to the specified noise level.
+    """
+    # Min/max noise levels for the given range
+    if noise_level <= sigma_min:
+        return N
+    if noise_level >= sigma_max:
+        return 0
+        #return N - 1
+    
+    low, high = 0, N - 1
+    while low <= high:
+        mid = (low + high) // 2
+        mid_nl = calculate_noise_level(mid, N)
+        if abs(mid_nl - noise_level) < tol:
+            return mid
+        elif mid_nl < noise_level:
+            high = mid - 1
+        else:
+            low = mid + 1
+    
+    # If exact match not found, return the index with noise level closest to the target
+    return low if abs(calculate_noise_level(low, N) - noise_level) < abs(calculate_noise_level(high, N) - noise_level) else high
+
+
+### CFG Schedulers
+
+
+# TODO: Refactor this into something cleaner
+def cfg_scheduler(schedule: str, step: int, max_steps: int, w0: float) -> float:
         """
-        if attention_map.dim() == 3:
-               attention_map = attention_map.squeeze(0).mean(2)
+        Constant scheduler for CFG guidance weight.
 
-        plot_tools.plot_attention_map(attention_map, title, x_label, y_label, save_path, plot_type)
+        Parameters:
+        step (int): Current sampling step.
+        max_steps (int): Total number of sampling steps.
+        w0 (float): Constant value for the guidance weight.
 
-def debug_plot_attention_map(attention_map):
-        """ Plots an attention map using matplotlib.pyplot
-                Arguments:
-                        attention_map: Tensor - The attention map to plot
-                        title: str - The title of the plot
-                        x_label: str (optional) - The x-axis label
-                        y_label: str (optional) - The y-axis label
-                        save_path: str (optional) - The path to save the plot
-                Returns:
-                        PIL.Image: The plot as a PIL image
+        Returns:
+        float: Scheduled guidance weight value.
         """
+        match schedule:
+                case 'Constant':
+                        return constant_schedule(step, max_steps, w0)
+                case 'Linear':
+                        return linear_schedule(step, max_steps, w0)
+                case 'Clamp-Linear (c=4.0)':
+                        return clamp_linear_schedule(step, max_steps, w0, 4.0)
+                case 'Clamp-Linear (c=2.0)':
+                        return clamp_linear_schedule(step, max_steps, w0, 2.0)
+                case 'Clamp-Linear (c=1.0)':
+                        return clamp_linear_schedule(step, max_steps, w0, 1.0)
+                case 'Inverse-Linear':
+                        return invlinear_schedule(step, max_steps, w0)
+                case 'PCS (s=0.01)':
+                        return powered_cosine_schedule(step, max_steps, w0, 0.01)
+                case 'PCS (s=0.1)':
+                        return powered_cosine_schedule(step, max_steps, w0, 0.1)
+                case 'PCS (s=1.0)':
+                        return powered_cosine_schedule(step, max_steps, w0, 1.0)
+                case 'PCS (s=2.0)':
+                        return powered_cosine_schedule(step, max_steps, w0, 2.0)
+                case 'PCS (s=4.0)':
+                        return powered_cosine_schedule(step, max_steps, w0, 4.0)
+                case 'Clamp-Cosine (c=4.0)':
+                        return clamp_cosine_schedule(step, max_steps, w0, 4.0)
+                case 'Clamp-Cosine (c=2.0)':
+                        return clamp_cosine_schedule(step, max_steps, w0, 2.0)
+                case 'Clamp-Cosine (c=1.0)':
+                        return clamp_cosine_schedule(step, max_steps, w0, 1.0)
+                case 'Cosine':
+                        return cosine_schedule(step, max_steps, w0)
+                case 'Sine':
+                        return sine_schedule(step, max_steps, w0)
+                case 'V-Shape':
+                        return v_shape_schedule(step, max_steps, w0)
+                case 'A-Shape':
+                        return a_shape_schedule(step, max_steps, w0)
+                case 'Interval':
+                        return interval_schedule(step, max_steps, w0, 0.25, 5.42)
+                case _:
+                        logger.error(f"Invalid CFG schedule: {schedule}")
+                        return constant_schedule(step, max_steps, w0)
 
-        plot_attention_map(
-                attention_map,
-                "Debug Output",
-                save_path="F:\\incant\\temp\\AAA_out_temp.png"
-        )
+
+def constant_schedule(step: int, max_steps: int, w0: float):
+        """
+        Constant scheduler for CFG guidance weight.
+        """
+        return w0
+
+
+def linear_schedule(step: int, max_steps: int, w0: float):
+        """
+        Normalized linear scheduler for CFG guidance weight.
+        Such that integral 0-> T ~ w(t) dt  = w*T
+        """
+        # return w0 * (1 - step / max_steps)
+        return w0 * 2 * (1 - step / max_steps)
+
+
+def clamp_linear_schedule(step: int, max_steps: int, w0: float, c: float):
+        """
+        Normalized clamp-linear scheduler for CFG guidance weight.
+        """
+        return max(c, linear_schedule(step, max_steps, w0))
+
+
+def clamp_cosine_schedule(step: int, max_steps: int, w0: float, c: float):
+        """
+        Normalized clamp-cosine scheduler for CFG guidance weight.
+        """
+        return max(c, cosine_schedule(step, max_steps, w0))
+
+
+def invlinear_schedule(step: int, max_steps: int, w0: float):
+        """ 
+        Normalized inverse linear scheduler for CFG guidance weight.
+        """
+        # return w0 * (step / max_steps)
+        return w0 * 2 * (step / max_steps)
+
+
+def powered_cosine_schedule(step: int, max_steps: int, w0: float, s: float):
+        """
+        Normalized cosine scheduler for CFG guidance weight.
+        """
+        return w0 * ((1 - math.cos(math.pi * ((max_steps - step) / max_steps)**s))/2.0)
+
+
+def cosine_schedule(step: int, max_steps: int, w0: float):
+        """
+        Normalized cosine scheduler for CFG guidance weight.
+        """
+        return w0 * (1 + math.cos(math.pi * step / max_steps))
+
+
+def sine_schedule(step: int, max_steps: int, w0: float):
+        """
+        Normalized sine scheduler for CFG guidance weight.
+        """
+        return w0 * (math.sin((math.pi * step / max_steps) - (math.pi / 2)) + 1) 
+
+
+def v_shape_schedule(step: int, max_steps: int, w0: float):
+        """
+        Normalized V-shape scheduler for CFG guidance weight.
+        """
+        if step < max_steps / 2:
+                return invlinear_schedule(step, max_steps, w0)
+        return linear_schedule(step, max_steps, w0)
+
+
+def a_shape_schedule(step: int, max_steps: int, w0: float):
+        """
+        Normalized A-shape scheduler for CFG guidance weight.
+        """
+        if step < max_steps / 2:
+                return linear_schedule(step, max_steps, w0)
+        return invlinear_schedule(step, max_steps, w0)
+
+
+def interval_schedule(step: int, max_steps: int, w0: float, low: float, high: float):
+        """
+        Normalized interval scheduler for CFG guidance weight.
+        """
+        if low <= step <= high:
+                return w0
+        return 1.0
+
 
 
 # XYZ Plot
 # Based on @mcmonkey4eva's XYZ Plot implementation here: https://github.com/mcmonkeyprojects/sd-dynamic-thresholding/blob/master/scripts/dynamic_thresholding.py
-def scfg_apply_override(field, boolean: bool = False):
+def pag_apply_override(field, boolean: bool = False):
     def fun(p, x, xs):
         if boolean:
             x = True if x.lower() == "true" else False
         setattr(p, field, x)
+        if not hasattr(p, "pag_active"):
+                setattr(p, "pag_active", True)
+        if 'cfg_interval_' in field and not hasattr(p, "cfg_interval_enable"):
+            setattr(p, "cfg_interval_enable", True)
     return fun
 
-def scfg_apply_field(field):
+
+def pag_apply_field(field):
     def fun(p, x, xs):
-        if not hasattr(p, "scfg_active"):
-                p.scfg_active = True
+        if not hasattr(p, "pag_active"):
+                setattr(p, "pag_active", True)
         setattr(p, field, x)
     return fun
-
-
-# taken from modules/ui.py
-def get_token_count(text, steps, is_positive: bool = True):
-    try:
-        text, _ = extra_networks.parse_prompt(text)
-
-        if is_positive:
-            _, prompt_flat_list, _ = prompt_parser.get_multicond_prompt_list([text])
-        else:
-            prompt_flat_list = [text]
-
-        prompt_schedules = prompt_parser.get_learned_conditioning_prompt_schedules(prompt_flat_list, steps)
-
-    except Exception:
-        # a parsing error can happen here during typing, and we don't want to bother the user with
-        # messages related to it in console
-        prompt_schedules = [[[steps, text]]]
-
-    flat_prompts = reduce(lambda list1, list2: list1+list2, prompt_schedules)
-    prompts = [prompt_text for step, prompt_text in flat_prompts]
-    token_count, max_length = max([sd_hijack.model_hijack.get_prompt_lengths(prompt) for prompt in prompts], key=lambda args: args[0])
-    return token_count, max_length
 
 
 # thanks torch; removing hooks DOESN'T WORK
@@ -682,7 +900,7 @@ def _remove_all_forward_hooks(
     def _remove_child_hooks(
         target_module: torch.nn.Module, hook_name: Optional[str] = None
     ) -> None:
-        for _, child in target_module._modules.items():
+        for name, child in target_module._modules.items():
             if child is not None:
                 _remove_hooks(child, hook_name)
                 _remove_child_hooks(child, hook_name)
@@ -692,3 +910,256 @@ def _remove_all_forward_hooks(
 
     # Remove hooks from the target module
     _remove_hooks(module, hook_fn_name)
+
+"""
+# below code modified from https://github.com/SmilesDZgk/S-CFG
+@inproceedings{shen2024rethinking,
+  title={Rethinking the Spatial Inconsistency in Classifier-Free Diffusion Guidancee},
+  author={Shen, Dazhong and Song, Guanglu and Xue, Zeyue and Wang, Fu-Yun and Liu, Yu},
+  booktitle={Proceedings of The IEEE/CVF Computer Vision and Pattern Recognition Conference (CVPR)},
+  year={2024}
+}
+"""
+
+import math
+import numbers
+import torch
+from torch import nn
+from torch.nn import functional as F
+
+
+class GaussianSmoothing(nn.Module):
+    """
+    Apply gaussian smoothing on a
+    1d, 2d or 3d tensor. Filtering is performed seperately for each channel
+    in the input using a depthwise convolution.
+    Arguments:
+        channels (int, sequence): Number of channels of the input tensors. Output will
+            have this number of channels as well.
+        kernel_size (int, sequence): Size of the gaussian kernel.
+        sigma (float, sequence): Standard deviation of the gaussian kernel.
+        dim (int, optional): The number of dimensions of the data.
+            Default value is 2 (spatial).
+    """
+    def __init__(self, channels, kernel_size, sigma, dim=2):
+        super(GaussianSmoothing, self).__init__()
+        if isinstance(kernel_size, numbers.Number):
+            kernel_size = [kernel_size] * dim
+        if isinstance(sigma, numbers.Number):
+            sigma = [sigma] * dim
+
+        # The gaussian kernel is the product of the
+        # gaussian function of each dimension.
+        kernel = 1
+        meshgrids = torch.meshgrid(
+            [
+                torch.arange(size, dtype=torch.float32)
+                for size in kernel_size
+            ]
+        )
+        for size, std, mgrid in zip(kernel_size, sigma, meshgrids):
+            mean = (size - 1) / 2
+            kernel *= 1 / (std * math.sqrt(2 * math.pi)) * \
+                      torch.exp(-((mgrid - mean) / (2 * std)) ** 2)
+
+        # Make sure sum of values in gaussian kernel equals 1.
+        kernel = kernel / torch.sum(kernel)
+
+        # Reshape to depthwise convolutional weight
+        kernel = kernel.view(1, 1, *kernel.size())
+        kernel = kernel.repeat(channels, *[1] * (kernel.dim() - 1))
+
+        self.register_buffer('weight', kernel)
+        self.groups = channels
+
+        if dim == 1:
+            self.conv = F.conv1d
+        elif dim == 2:
+            self.conv = F.conv2d
+        elif dim == 3:
+            self.conv = F.conv3d
+        else:
+            raise RuntimeError(
+                'Only 1, 2 and 3 dimensions are supported. Received {}.'.format(dim)
+            )
+
+    def forward(self, input):
+        """
+        Apply gaussian filter to input.
+        Arguments:
+            input (torch.Tensor): Input to apply gaussian filter on.
+        Returns:
+            filtered (torch.Tensor): Filtered output.
+        """
+        return self.conv(input, weight=self.weight.to(input.dtype), groups=self.groups)
+
+# based on diffusers/models/attention_processor.py Attention head_to_batch_dim
+def head_to_batch_dim(x, heads, out_dim=3):
+        head_size = heads
+        if x.ndim == 3:
+
+                batch_size, seq_len, dim = x.shape
+                extra_dim = 1
+        else:
+               batch_size, extra_dim, seq_len, dim = x.shape
+        x = x.reshape(batch_size, seq_len * extra_dim, head_size, dim // head_size)
+        x = x.permute(0, 2, 1, 3)
+        if out_dim == 3:
+               x = x.reshape(batch_size * head_size, seq_len * extra_dim, dim // head_size)
+        return x
+
+
+# based on diffusers/models/attention_processor.py Attention batch_to_head_dim
+def batch_to_head_dim(x, heads):
+        head_size = heads
+        batch_size, seq_len, dim = x.shape
+        x = x.reshape(batch_size // head_size, head_size, seq_len, dim)
+        x = x.permute(0, 2, 1, 3).reshape(batch_size // head_size, seq_len, dim * head_size)
+        return x
+
+
+def average_over_head_dim(x, heads):
+        x = rearrange(x, '(b h) s t -> b h s t', h=heads).mean(1)
+        return x
+
+
+import torch.nn.functional as F
+from einops import rearrange
+def get_mask(attn_modules, r: int=4):
+        """ Aggregates the attention across the different layers and heads at the specified resolution. """
+
+        key_corss = f"r{r}_cross"
+        key_self = f"r{r}_self"
+        curr_r = r
+
+        r_r = 1
+        new_ca = 0
+        new_fore=0
+        a_n=0
+        # corresponds to diffusers pipe.unet.config.sample_size
+        sample_size = 64
+        # get a layer wise mapping
+        attention_store_proxy = {"r2_cross": [], "r4_cross": [], "r8_cross": [], "r16_cross": [],
+                                 "r2_self": [], "r4_self": [], "r8_self": [], "r16_self": []}
+        for module in attn_modules:
+                module_type = 'cross' if 'attn2' in module.network_layer_name else 'self'
+
+                attn_map = getattr(module, 'scfg_last_attn_map', None)
+                to_q_map = getattr(module, 'scfg_last_to_q_map', None)
+                to_k_map = getattr(module, 'scfg_last_to_k_map', None)
+                to_v_map = getattr(module, 'scfg_last_to_v_map', None)
+                to_out_map = getattr(module, 'scfg_last_to_out_map', None)
+
+                to_q_map = head_to_batch_dim(to_q_map, module.heads)
+                to_q_map = average_over_head_dim(to_q_map, module.heads)
+                to_q_map = torch.stack([to_q_map[0], to_q_map[0]], dim=0)
+
+                to_k_map = head_to_batch_dim(to_k_map, module.heads)
+                to_k_map = average_over_head_dim(to_k_map, module.heads)
+                to_k_map = torch.stack([to_k_map[0], to_k_map[0]], dim=0)
+
+                #if getattr(module, 'scfg_last_context_map', None) is not None:
+                #        context_map = getattr(module, 'scfg_last_context_map', None)
+                #        attn_map = getattr(module, 'scfg_last_attn_map', None)
+                #        #attn_map = rearrange(attn_map, 'b n c h w -> b n (h w) c')
+                #        module_attn_size = int((attn_map.size(1)) ** (0.5))
+                #        r = int(sample_size / module_attn_size)
+                #else:
+                module_attn_size = int((attn_map.size(1)) ** (0.5))
+                r = int(sample_size / module_attn_size)
+                #r = int(module_attn_size)
+                module_key = f"r{r}_{module_type}"
+
+                batch_size, seq_len, inner_dim = to_out_map.size()
+                to_out_map = rearrange(to_out_map, 'b s (h t) -> b h s t', h=module.heads)
+                to_out_map = to_out_map.mean(dim=1)
+                if not r in [2, 4, 8, 16] or r < 2:
+                        continue
+                # based on diffusers models/attention.py "get_attention_scores"
+                #if module_type == 'self':
+                attn_scores = to_q_map @ to_k_map.transpose(-1, -2)
+                attn_probs = attn_scores.softmax(dim=-1)
+                del attn_scores
+                attn_probs = attn_probs.to(to_out_map.dtype)
+                #attention_store_proxy[module_key].append(attn_map)
+                try:
+                        attention_store_proxy[module_key].append(attn_probs)
+                        #attention_store_proxy[module_key].append(to_out_map)
+                except KeyError:
+                        continue
+
+        attention_maps = attention_store_proxy
+
+        #attention_maps = attention_store.get_average_attention()
+        while curr_r<=8:
+                key_corss = f"r{curr_r}_cross"
+                key_self = f"r{curr_r}_self"
+                # pdb.set_trace()
+
+
+                sa = torch.stack(attention_maps[key_self], dim=1)
+                ca = torch.stack(attention_maps[key_corss], dim=1)
+                attn_num = sa.size(1)
+                sa = rearrange(sa, 'b n h w -> (b n) h w')
+                ca = rearrange(ca, 'b n h w -> (b n) h w')
+
+                curr = 0 # b hw c=hw
+                curr +=sa
+                ssgc_sa = curr
+                ssgc_n =4
+                for _ in range(ssgc_n-1):
+                        curr = sa@sa
+                        ssgc_sa += curr
+                ssgc_sa/=ssgc_n
+                sa = ssgc_sa
+                ########smoothing ca
+                ca = sa@ca # b hw c
+
+                h=w = int(sa.size(1)**(0.5))
+
+                ca = rearrange(ca, 'b (h w) c -> b c h w', h=h )
+                if r_r>1:
+                        mode =  'bilinear' #'nearest' #
+                        ca = F.interpolate(ca, scale_factor=r_r, mode=mode) # b 77 32 32
+
+
+                #####Gaussian Smoothing
+                kernel_size = 3
+                sigma = 0.5
+                smoothing = GaussianSmoothing(channels=1, kernel_size=kernel_size, sigma=sigma, dim=2).to(ca.device)
+                channel = ca.size(1)
+                ca= rearrange(ca, ' b c h w -> (b c) h w' ).unsqueeze(1)
+                ca = F.pad(ca, (1, 1, 1, 1), mode='reflect')
+                ca = smoothing(ca.float()).squeeze(1)
+                ca = rearrange(ca, ' (b c) h w -> b c h w' , c= channel)
+                
+                ca_norm = ca/(ca.mean(dim=[2,3], keepdim=True)+1e-8) ### spatial  normlization 
+                
+                new_ca+=rearrange(ca_norm, '(b n) c h w -> b n c h w', n=attn_num).sum(1) 
+
+                fore_ca = torch.stack([ca[:,0],ca[:,1:].sum(dim=1)], dim=1)
+                froe_ca_norm = fore_ca/fore_ca.mean(dim=[2,3], keepdim=True) ### spatial  normlization 
+                new_fore += rearrange(froe_ca_norm, '(b n) c h w -> b n c h w', n=attn_num).sum(1)  
+                a_n+=attn_num
+
+                curr_r = int(curr_r*2)
+                r_r*=2
+        
+        new_ca = new_ca/a_n
+        new_fore = new_fore/a_n
+        _,new_ca   = new_ca.chunk(2, dim=0) #[1]
+        fore_ca, _ = new_fore.chunk(2, dim=0)
+
+
+        max_ca, inds = torch.max(new_ca[:,:], dim=1) 
+        max_ca = max_ca.unsqueeze(1) # 
+        ca_mask = (new_ca==max_ca).float() # b 77/10 16 16 
+
+
+        max_fore, inds = torch.max(fore_ca[:,:], dim=1) 
+        max_fore = max_fore.unsqueeze(1) # 
+        fore_mask = (fore_ca==max_fore).float() # b 77/10 16 16 
+        fore_mask = 1.0-fore_mask[:,:1] # b 1 16 16
+
+
+        return [ ca_mask, fore_mask]
