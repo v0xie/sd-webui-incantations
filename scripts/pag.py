@@ -132,6 +132,8 @@ class SCFGStateParams:
         def __init__(self):
                 self.all_crossattn_modules = []
                 self.max_out_dim = 1280
+                self.mask_t = None
+                self.mask_fore = None
 
 
 class PAGExtensionScript(UIWrapper):
@@ -524,7 +526,8 @@ class PAGExtensionScript(UIWrapper):
                                         *args,
                                         **kwargs,
                                         original_func = params.denoiser.combine_denoised_original,
-                                        pag_params = pag_params)
+                                        pag_params = pag_params,
+                                        scfg_params = scfg_params)
                                 pag_params.patched_combine_denoised = patches.patch(__name__, params.denoiser, "combine_denoised", pass_conds_func)
                                 setattr(params.denoiser, 'combine_denoised_patched', True)
                                 setattr(params.denoiser, 'combine_denoised_original', patches.original(__name__, params.denoiser, "combine_denoised"))
@@ -565,9 +568,13 @@ class PAGExtensionScript(UIWrapper):
                 """
                 # S-CFG
                 ca_mask, fore_mask = get_mask(scfg_params.all_crossattn_modules)
+
+                # todo parameterize this
                 R = 4
                 mask_t = F.interpolate(ca_mask, scale_factor=R, mode='nearest')
                 mask_fore = F.interpolate(fore_mask, scale_factor=R, mode='nearest')
+                scfg_params.mask_t = mask_t
+                scfg_params.mask_fore = mask_fore
 
                 # Run only within interval
                 if not pag_params.pag_start_step <= params.sampling_step <= pag_params.pag_end_step or pag_params.pag_scale <= 0:
@@ -624,6 +631,7 @@ def combine_denoised_pass_conds_list(*args, **kwargs):
         """ Hijacked function for combine_denoised in CFGDenoiser """
         original_func = kwargs.get('original_func', None)
         new_params = kwargs.get('pag_params', None)
+        scfg_params = kwargs.get('scfg_params', None)
 
         if new_params is None:
                 logger.error("new_params is None")
@@ -654,8 +662,38 @@ def combine_denoised_pass_conds_list(*args, **kwargs):
 
                 for i, conds in enumerate(conds_list):
                         for cond_index, weight in conds:
-                                if not new_params.cfg_interval_enable:
-                                        denoised[i] += (x_out[cond_index] - denoised_uncond[i]) * (weight * cfg_scale)
+                                if scfg_params is not None:
+                                        mask_t = scfg_params.mask_t
+                                        mask_fore = scfg_params.mask_fore
+
+                                        model_delta = (x_out[cond_index] - denoised_uncond[i]).unsqueeze(0)
+                                        model_delta_norm = model_delta.norm(dim=1, keepdim=True)
+                                        delta_mask_norms = (model_delta_norm * scfg_params.mask_t).sum([2,3])/(mask_t.sum([2,3])+1e-8)
+                                        upnormmax = delta_mask_norms.max(dim=1)[0]
+                                        upnormmax = upnormmax.unsqueeze(-1)
+
+                                        fore_norms = (model_delta_norm * mask_fore).sum([2,3])/(mask_fore.sum([2,3])+1e-8)
+
+                                        up = fore_norms
+                                        down = delta_mask_norms
+                                        
+
+                                        tmp_mask = (mask_t.sum([2,3])>0).float()
+                                        rate = up*(tmp_mask)/(down+1e-8) # b 257
+                                        rate = (rate.unsqueeze(-1).unsqueeze(-1)*mask_t).sum(dim=1, keepdim=True) # b 1, 64 64
+                                        
+                                        rate = torch.clamp(rate,min=0.8, max=3.0)
+                                        rate = torch.clamp_max(rate, 15.0/cfg_scale)
+
+                                        ###Gaussian Smoothing 
+                                        kernel_size = 3
+                                        sigma=0.5
+                                        smoothing = GaussianSmoothing(channels=1, kernel_size=kernel_size, sigma=sigma, dim=2).to(rate.device)
+                                        rate = F.pad(rate, (1, 1, 1, 1), mode='reflect')
+                                        rate = smoothing(rate)
+                                        rate = rate.to(x_out[cond_index].dtype)
+                                        denoised[i] += (x_out[cond_index] - denoised_uncond[i]) * rate.squeeze(0) * (weight * cfg_scale)
+
                                 else:
                                         denoised[i] += (x_out[cond_index] - denoised_uncond[i]) * (weight * cfg_scale)
 
@@ -1076,6 +1114,11 @@ def batch_to_head_dim(x, heads):
         return x
 
 
+def average_over_head_dim(x, heads):
+        x = rearrange(x, '(b h) s t -> b h s t', h=heads).mean(1)
+        return x
+
+
 import torch.nn.functional as F
 from einops import rearrange
 def get_mask(attn_modules, r: int=4):
@@ -1104,7 +1147,12 @@ def get_mask(attn_modules, r: int=4):
                 to_out_map = getattr(module, 'scfg_last_to_out_map', None)
 
                 to_q_map = head_to_batch_dim(to_q_map, module.heads)
+                to_q_map = average_over_head_dim(to_q_map, module.heads)
+                to_q_map = torch.stack([to_q_map[0], to_q_map[0]], dim=0)
+
                 to_k_map = head_to_batch_dim(to_k_map, module.heads)
+                to_k_map = average_over_head_dim(to_k_map, module.heads)
+                to_k_map = torch.stack([to_k_map[0], to_k_map[0]], dim=0)
 
                 #if getattr(module, 'scfg_last_context_map', None) is not None:
                 #        context_map = getattr(module, 'scfg_last_context_map', None)
