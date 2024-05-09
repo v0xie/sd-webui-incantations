@@ -187,6 +187,12 @@ class SCFGExtensionScript(UIWrapper):
                 scfg_params.denoiser = None
                 scfg_params.all_crossattn_modules = self.get_all_crossattn_modules()
                 scfg_params.max_sampling_steps = p.steps
+                scfg_params.scfg_scale = scfg_scale
+                scfg_params.rate_min = scfg_rate_min
+                scfg_params.rate_max = scfg_rate_max
+                scfg_params.rate_clamp = scfg_rate_clamp
+                scfg_params.start_step = start_step
+                scfg_params.end_step = end_step
 
                 # Use lambda to call the callback function with the parameters to avoid global variables
                 cfg_denoise_lambda = lambda callback_params: self.on_cfg_denoiser_callback(callback_params, scfg_params)
@@ -427,10 +433,11 @@ def combine_denoised_pass_conds_list(*args, **kwargs):
 
                 for i, conds in enumerate(conds_list):
                         for cond_index, weight in conds:
-                                if scfg_params.start_step <= step <= scfg_params.end_step:
-                                        return
+                                if not scfg_params.start_step <= step <= scfg_params.end_step:
+                                        return original_func(*args)
                                 mask_t = scfg_params.mask_t
                                 mask_fore = scfg_params.mask_fore
+                                scfg_scale = scfg_params.scfg_scale
                                 min_rate = scfg_params.rate_min
                                 max_rate = scfg_params.rate_max
                                 rate_clamp = scfg_params.rate_clamp
@@ -460,6 +467,9 @@ def combine_denoised_pass_conds_list(*args, **kwargs):
                                 rate = F.pad(rate, (1, 1, 1, 1), mode='reflect')
                                 rate = smoothing(rate)
                                 rate = rate.to(x_out[cond_index].dtype)
+
+                                rate = rate * scfg_scale
+
                                 denoised[i] += (x_out[cond_index] - denoised_uncond[i]) * rate.squeeze(0) * (weight * cfg_scale)
 
                 return denoised
