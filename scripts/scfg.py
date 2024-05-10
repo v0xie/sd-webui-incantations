@@ -394,13 +394,19 @@ class SCFGExtensionScript(UIWrapper):
                         return
 
                 # S-CFG
-                ca_mask, fore_mask = get_mask(scfg_params.all_crossattn_modules, scfg_params, r=scfg_params.R)
+                R = scfg_params.R
+                max_latent_size = [params.x.shape[-2] // R, params.x.shape[-1] // R]
+                ca_mask, fore_mask = get_mask(scfg_params.all_crossattn_modules,
+                                              scfg_params,
+                                              r = scfg_params.R,
+                                              latent_size = max_latent_size,
+                                              #latent_size = params.x.shape[2:] / R,
+                                        )
 
                 # todo parameterize this
-                R = scfg_params.R
                 mask_t = F.interpolate(ca_mask, scale_factor=R, mode='nearest')
                 mask_fore = F.interpolate(fore_mask, scale_factor=R, mode='nearest')
-                scfg_params.mask_t = mask_t
+                scfg_params.mask_t = mask_t 
                 scfg_params.mask_fore = mask_fore
 
         def get_xyz_axis_options(self) -> dict:
@@ -439,6 +445,12 @@ def combine_denoised_pass_conds_list(*args, **kwargs):
                         for cond_index, weight in conds:
                                 if not scfg_params.start_step <= step <= scfg_params.end_step:
                                         return original_func(*args)
+                                if scfg_params.mask_t is None:
+                                        logger.error("SCFG mask_t is None")
+                                        return original_func(*args)
+                                if scfg_params.mask_fore is None:
+                                        logger.error("SCFG mask_fore is None")
+                                        return original_func(*args)
                                 mask_t = scfg_params.mask_t
                                 mask_fore = scfg_params.mask_fore
                                 scfg_scale = scfg_params.scfg_scale
@@ -450,9 +462,11 @@ def combine_denoised_pass_conds_list(*args, **kwargs):
                                 model_delta_norm = model_delta.norm(dim=1, keepdim=True)
 
                                 # rescale map if necessary
-                                if mask_t.shape[2] != model_delta_norm.shape[2] or mask_t.shape[3] != model_delta_norm.shape[3]:
+                                if mask_t.shape[2:] != model_delta_norm.shape[2:]:
+                                        logger.debug('Rescaling mask_t from %s to %s', mask_t.shape[2:], model_delta_norm.shape[2:])
                                         mask_t = F.interpolate(mask_t, size=model_delta_norm.shape[2:], mode='bilinear')
-                                if mask_fore.shape[2] != model_delta_norm.shape[2] or mask_fore.shape[3] != model_delta_norm.shape[3]:
+                                if mask_fore.shape[-2] != model_delta_norm.shape[-2]:
+                                        logger.debug('Rescaling mask_fore from %s to %s', mask_fore.shape[2:], model_delta_norm.shape[2:])
                                         mask_fore = F.interpolate(mask_fore, size=model_delta_norm.shape[2:], mode='bilinear')
 
                                 delta_mask_norms = (model_delta_norm * mask_t).sum([2,3])/(mask_t.sum([2,3])+1e-8)
@@ -673,16 +687,27 @@ def average_over_head_dim(x, heads):
 
 import torch.nn.functional as F
 from einops import rearrange
-def get_mask(attn_modules, scfg_params: SCFGStateParams, r: int=4):
-        """ Aggregates the attention across the different layers and heads at the specified resolution. """
+def get_mask(attn_modules, scfg_params: SCFGStateParams, r, latent_size):
+        """ Aggregates the attention across the different layers and heads at the specified resolution. 
+        In the original paper, r is set to 4.
+        We modify so that r represents the number of the smallest attention map sizes to aggregate.
+        
+        
+        """
         height = scfg_params.height
         width = scfg_params.width
         max_dims = height * width
+        latent_size = latent_size[-2:]
+        module_attn_sizes = set()
 
         key_corss = f"r{r}_cross"
         key_self = f"r{r}_self"
+
         curr_r = r
-        max_r = 2
+        max_r = r
+
+        current_attn_map_size = 0
+        max_attn_map_size = 0
 
         r_r = 1
         new_ca = 0
@@ -711,23 +736,29 @@ def get_mask(attn_modules, scfg_params: SCFGStateParams, r: int=4):
                 to_k_map = torch.stack([to_k_map[0], to_k_map[0]], dim=0)
 
                 module_attn_size = attn_map.size(1)
+                module_attn_sizes.add(module_attn_size)
                 downscale_ratio = int(max_dims / module_attn_size)
                 downscale_h = int((module_attn_size * (height / width)) ** 0.5)
                 downscale_w = module_attn_size // downscale_h
+                downscale_ratio_h = height // downscale_h
+                downscale_ratio_w = width // downscale_w
                 #downscale_w = width // downscale_ratio
 
                 # h is smaller than w
-                h_smaller_w = True if downscale_h / downscale_w <= 1 else False
-                if h_smaller_w:
-                       module_attn_size = downscale_h if downscale_h % 2 == 0 else downscale_w
-                else:
-                       module_attn_size = downscale_w if downscale_w % 2 == 0 else downscale_h
+                # h_smaller_w = True if downscale_h / downscale_w <= 1 else False
+                # if h_smaller_w:
+                #        module_attn_size = downscale_h if downscale_h % 2 == 0 else downscale_w
+                # else:
+                #        module_attn_size = downscale_w if downscale_w % 2 == 0 else downscale_h
 
                 #module_attn_size = int((attn_map.size(1)) ** (0.5))
                 #module_attn_size = int((attn_map.size(1)) ** (0.5))
-                r = int(sample_size // module_attn_size)
+                #if module_attn_size > sample_size:
+                #       r = 1
+                #else:
+                #        r = int(sample_size // module_attn_size)
 
-                module_key = f"r{r}_{module_type}"
+                module_key = f"r{module_attn_size}_{module_type}"
 
                 batch_size, seq_len, inner_dim = to_out_map.size()
 
@@ -750,19 +781,35 @@ def get_mask(attn_modules, scfg_params: SCFGStateParams, r: int=4):
                 except KeyError:
                         continue
 
+        module_attn_sizes = sorted(list(module_attn_sizes))
         attention_maps = attention_store_proxy
 
-        while curr_r<=max_r:
+        min_r = min(module_attn_sizes)
+        max_r = max(module_attn_sizes)
+        r_r = 1 # scale factor from map to map
+
+        curr_r = module_attn_sizes.pop()
+        #next_r = curr_r
+        while curr_r != None:
+        #while curr_r<=max_r:
                 key_corss = f"r{curr_r}_cross"
                 key_self = f"r{curr_r}_self"
 
                 if key_self not in attention_maps.keys() or key_corss not in attention_maps.keys():
-                        curr_r = int(curr_r*2)
-                        r_r*=2
+                        next_r = module_attn_sizes.pop()
+                        #curr_r = int(curr_r*2)
+                        #r_r = r_r * (curr_r//next_r)
+                        r_r *= 2
+                        curr_r = next_r
+                        #r_r*=2
                         continue
                 if len(attention_maps[key_self]) == 0 or len(attention_maps[key_corss]) == 0:
-                        curr_r = int(curr_r*2)
-                        r_r*=2
+                        curr_r = module_attn_sizes.pop()
+                        #curr_r = int(curr_r*2)
+                        #r_r = r_r * (curr_r//next_r)
+                        r_r *= 2
+                        curr_r = next_r
+                        #r_r*=2
                         continue
                 # pdb.set_trace()
 
@@ -793,9 +840,16 @@ def get_mask(attn_modules, scfg_params: SCFGStateParams, r: int=4):
                 downscale_w = hw // downscale_h
 
                 ca = rearrange(ca, 'b (h w) c -> b c h w', h=downscale_h )
-                if r_r>1:
-                        mode =  'bilinear' #'nearest' #
-                        ca = F.interpolate(ca, scale_factor=r_r, mode=mode) # b 77 32 32
+                #if r_r>1:
+                        # limit the size of the attention map
+                max_size = latent_size
+                # rescaled_size = ca.shape[2:] * r_r
+                scale_factor = [
+                        max_size[0] / ca.shape[-2],
+                        max_size[1] / ca.shape[-1]
+                ]
+                mode =  'bilinear' #'nearest' #
+                ca = F.interpolate(ca, scale_factor=scale_factor, mode=mode) # b 77 32 32
 
 
                 #####Gaussian Smoothing
@@ -817,8 +871,17 @@ def get_mask(attn_modules, scfg_params: SCFGStateParams, r: int=4):
                 new_fore += rearrange(froe_ca_norm, '(b n) c h w -> b n c h w', n=attn_num).sum(1)  
                 a_n+=attn_num
 
-                curr_r = int(curr_r*2)
-                r_r*=2
+                if len(module_attn_sizes) > 0:
+                        curr_r = module_attn_sizes.pop()
+                else:
+                        curr_r = None
+                #curr_r = int(curr_r*2)
+                #r_r = r_r * (curr_r//next_r)
+                r_r *= 2
+                #curr_r = next_r
+
+                # curr_r = int(curr_r*2)
+                # r_r*=2
         
         new_ca = new_ca/a_n
         new_fore = new_fore/a_n
