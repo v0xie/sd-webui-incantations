@@ -83,6 +83,8 @@ class SCFGStateParams:
 
                 self.max_sampling_steps = -1
                 self.current_step = 0
+                self.height = -1 
+                self.width = -1 
 
                 self.mask_t = None
                 self.mask_fore = None
@@ -193,6 +195,8 @@ class SCFGExtensionScript(UIWrapper):
                 scfg_params.start_step = start_step
                 scfg_params.end_step = end_step
                 scfg_params.R = scfg_r
+                scfg_params.height = p.height
+                scfg_params.width = p.width
 
                 # Use lambda to call the callback function with the parameters to avoid global variables
                 cfg_denoise_lambda = lambda callback_params: self.on_cfg_denoiser_callback(callback_params, scfg_params)
@@ -390,7 +394,7 @@ class SCFGExtensionScript(UIWrapper):
                         return
 
                 # S-CFG
-                ca_mask, fore_mask = get_mask(scfg_params.all_crossattn_modules, r=scfg_params.R)
+                ca_mask, fore_mask = get_mask(scfg_params.all_crossattn_modules, scfg_params, r=scfg_params.R)
 
                 # todo parameterize this
                 R = scfg_params.R
@@ -669,8 +673,11 @@ def average_over_head_dim(x, heads):
 
 import torch.nn.functional as F
 from einops import rearrange
-def get_mask(attn_modules, r: int=4):
+def get_mask(attn_modules, scfg_params: SCFGStateParams, r: int=4):
         """ Aggregates the attention across the different layers and heads at the specified resolution. """
+        height = scfg_params.height
+        width = scfg_params.width
+        max_dims = height * width
 
         key_corss = f"r{r}_cross"
         key_self = f"r{r}_self"
@@ -703,15 +710,29 @@ def get_mask(attn_modules, r: int=4):
                 to_k_map = average_over_head_dim(to_k_map, module.heads)
                 to_k_map = torch.stack([to_k_map[0], to_k_map[0]], dim=0)
 
-                module_attn_size = int((attn_map.size(1)) ** (0.5))
-                r = int(sample_size / module_attn_size)
+                module_attn_size = attn_map.size(1)
+                downscale_ratio = int(max_dims / module_attn_size)
+                downscale_h = int((module_attn_size * (height / width)) ** 0.5)
+                downscale_w = module_attn_size // downscale_h
+                #downscale_w = width // downscale_ratio
+
+                # h is smaller than w
+                h_smaller_w = True if downscale_h / downscale_w <= 1 else False
+                if h_smaller_w:
+                       module_attn_size = downscale_h if downscale_h % 2 == 0 else downscale_w
+                else:
+                       module_attn_size = downscale_w if downscale_w % 2 == 0 else downscale_h
+
+                #module_attn_size = int((attn_map.size(1)) ** (0.5))
+                #module_attn_size = int((attn_map.size(1)) ** (0.5))
+                r = int(sample_size // module_attn_size)
 
                 module_key = f"r{r}_{module_type}"
 
                 batch_size, seq_len, inner_dim = to_out_map.size()
 
-                if not r in [2, 4, 8, 16] or r < 2:
-                        continue
+                # if not r in [2, 4, 8, 16] or r < 2:
+                #         continue
 
                 if r > max_r:
                        max_r = r
@@ -734,6 +755,15 @@ def get_mask(attn_modules, r: int=4):
         while curr_r<=max_r:
                 key_corss = f"r{curr_r}_cross"
                 key_self = f"r{curr_r}_self"
+
+                if key_self not in attention_maps.keys() or key_corss not in attention_maps.keys():
+                        curr_r = int(curr_r*2)
+                        r_r*=2
+                        continue
+                if len(attention_maps[key_self]) == 0 or len(attention_maps[key_corss]) == 0:
+                        curr_r = int(curr_r*2)
+                        r_r*=2
+                        continue
                 # pdb.set_trace()
 
 
@@ -755,9 +785,14 @@ def get_mask(attn_modules, r: int=4):
                 ########smoothing ca
                 ca = sa@ca # b hw c
 
-                h=w = int(sa.size(1)**(0.5))
+                #h=w = int(sa.size(1)**(0.5))
+                max_dims = height * width
+                hw = ca.size(1)
+                downscale_ratio = max_dims / hw
+                downscale_h = round((hw * (height / width)) ** 0.5)
+                downscale_w = hw // downscale_h
 
-                ca = rearrange(ca, 'b (h w) c -> b c h w', h=h )
+                ca = rearrange(ca, 'b (h w) c -> b c h w', h=downscale_h )
                 if r_r>1:
                         mode =  'bilinear' #'nearest' #
                         ca = F.interpolate(ca, scale_factor=r_r, mode=mode) # b 77 32 32
