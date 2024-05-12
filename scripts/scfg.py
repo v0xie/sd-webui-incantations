@@ -438,6 +438,7 @@ def combine_denoised_pass_conds_list(*args, **kwargs):
                                 
                                 rate = torch.clamp(rate,min=min_rate, max=max_rate)
                                 rate = torch.clamp_max(rate, rate_clamp/cfg_scale)
+                                rate = rate * scfg_scale
 
                                 ###Gaussian Smoothing 
                                 kernel_size = 3
@@ -446,8 +447,6 @@ def combine_denoised_pass_conds_list(*args, **kwargs):
                                 rate = F.pad(rate, (1, 1, 1, 1), mode='reflect')
                                 rate = smoothing(rate)
                                 rate = rate.to(x_out[cond_index].dtype)
-
-                                rate = rate * scfg_scale
 
                                 denoised[i] += (x_out[cond_index] - denoised_uncond[i]) * rate.squeeze(0) * (weight * cfg_scale)
 
@@ -694,8 +693,8 @@ def get_mask(attn_modules, scfg_params: SCFGStateParams, r, latent_size):
 
                 module_key = f"r{module_attn_size}_{module_type}"
 
-                if r > max_r:
-                       max_r = r
+                #if r > max_r:
+                #       max_r = r
 
                 # based on diffusers models/attention.py "get_attention_scores"
                 attn_scores = to_q_map @ to_k_map.transpose(-1, -2)
@@ -713,7 +712,7 @@ def get_mask(attn_modules, scfg_params: SCFGStateParams, r, latent_size):
         module_attn_sizes = sorted(list(module_attn_sizes))
         attention_maps = attention_store_proxy
 
-        max_r = max(module_attn_sizes)
+        # max_r = max(module_attn_sizes)
         r_r = 1 # scale factor from map to map
 
         curr_r = module_attn_sizes.pop(0)
@@ -742,8 +741,10 @@ def get_mask(attn_modules, scfg_params: SCFGStateParams, r, latent_size):
 
                 curr = 0 # b hw c=hw
                 curr +=sa
+
+                # 4.1.2 Self-Attentiion
                 ssgc_sa = curr
-                ssgc_n =4
+                ssgc_n = max_r
                 for _ in range(ssgc_n-1):
                         curr = sa@sa
                         ssgc_sa += curr
