@@ -220,33 +220,19 @@ class SCFGExtensionScript(UIWrapper):
                 active = getattr(p, "scfg_active", active)
                 if active is False:
                         return
+                self.remove_all_hooks()
 
         def remove_all_hooks(self):
                 all_crossattn_modules = self.get_all_crossattn_modules()
                 for module in all_crossattn_modules:
-                        # self.remove_field_cross_attn_modules(module, 'scfg_last_attn_map')
-                        # self.remove_field_cross_attn_modules(module, 'scfg_last_context_map')
                         self.remove_field_cross_attn_modules(module, 'scfg_last_to_q_map')
                         self.remove_field_cross_attn_modules(module, 'scfg_last_to_k_map')
-                        # self.remove_field_cross_attn_modules(module, 'scfg_last_to_v_map')
-                        # self.remove_field_cross_attn_modules(module, 'scfg_last_to_out_map')
-                        # self.remove_field_cross_attn_modules(module, 'scfg_attn_size')
-                        # _remove_all_forward_hooks(module, 'scfg_hook')
-                        # _remove_all_forward_hooks(module, 'scfg_pre_hook')
-                        # to_v = getattr(module, 'to_v', None)
-                        # _remove_all_forward_hooks(to_v, 'scfg_to_v_hook')
                         if hasattr(module, 'to_q'):
                                 handle_scfg_to_q = _remove_all_forward_hooks(module.to_q, 'scfg_to_q_hook')
                                 self.remove_field_cross_attn_modules(module.to_q, 'scfg_parent_module')
                         if hasattr(module, 'to_k'):
                                 handle_scfg_to_q = _remove_all_forward_hooks(module.to_k, 'scfg_to_k_hook')
                                 self.remove_field_cross_attn_modules(module.to_k, 'scfg_parent_module')
-                        # if hasattr(module, 'to_v'):
-                        #         handle_scfg_to_v = _remove_all_forward_hooks(module.to_v, 'scfg_to_v_hook')
-                        #         self.remove_field_cross_attn_modules(module.to_v, 'scfg_parent_module')
-                        # if hasattr(module, 'to_out'):
-                        #         handle_scfg_to_out = _remove_all_forward_hooks(module.to_out[0], 'scfg_to_out_hook')
-                        #         self.remove_field_cross_attn_modules(module.to_out[0], 'scfg_parent_module')
 
         def unhook_callbacks(self, scfg_params: SCFGStateParams):
                 global handles
@@ -274,62 +260,28 @@ class SCFGExtensionScript(UIWrapper):
                 Copies the output of the to_v module to the parent module
                 Then applies the PAG perturbation to the output of the cross attention module (multiplication by identity)
                 """
-                        
-                for module in all_crossattn_modules:
-                        # self.add_field_cross_attn_modules(module, 'scfg_last_attn_map', None)
-                        # self.add_field_cross_attn_modules(module, 'scfg_last_context_map', None)
-                        self.add_field_cross_attn_modules(module, 'scfg_last_to_q_map', None)
-                        self.add_field_cross_attn_modules(module, 'scfg_last_to_k_map', None)
-                        # self.add_field_cross_attn_modules(module, 'scfg_last_to_v_map', None)
-                        # self.add_field_cross_attn_modules(module, 'scfg_last_to_out_map', None)
-                        self.add_field_cross_attn_modules(module, 'scfg_attn_size', -1)
-                        for submodule in SCFG_MODULES:
-                                sub_module = getattr(module, submodule, None)
-                                self.add_field_cross_attn_modules(sub_module, 'scfg_parent_module', [module])
-                        if hasattr(module, 'to_out'):
-                                self.add_field_cross_attn_modules(module.to_out[0], 'scfg_parent_module', [module])
-
-                def to_v_pre_hook(module, input, kwargs, output):
-                        """ Copy the output of the to_v module to the parent module """
-                        parent_module = getattr(module, 'pag_parent_module', None)
-                        # copy the output of the to_v module to the parent module
-                        setattr(parent_module[0], 'pag_last_to_v', output.detach().clone())
 
                 def scfg_to_q_hook(module, input, kwargs, output):
                         setattr(module.scfg_parent_module[0], 'scfg_last_to_q_map', output.detach().clone())
 
                 def scfg_to_k_hook(module, input, kwargs, output):
                         setattr(module.scfg_parent_module[0], 'scfg_last_to_k_map', output.detach().clone())
-
-                def scfg_to_v_hook(module, input, kwargs, output):
-                        setattr(module.scfg_parent_module[0], 'scfg_last_to_v_map', output.detach().clone())
-
-                def scfg_to_out_hook(module, input, kwargs, output):
-                        setattr(module.scfg_parent_module[0], 'scfg_last_to_out_map', output.detach().clone())
-
-                def scfg_pre_hook(module, args, kwargs):
-                        if not hasattr(module, 'scfg_last_attn_map'):
-                                return
-
-                def scfg_hook(module, input, kwargs, output):
-                        pass
-                        # if not hasattr(module, 'scfg_last_attn_map'):
-                        #         return
-                        # if kwargs.get('context', None) is not None:
-                        #         setattr(module, 'scfg_last_context_map', kwargs.get('context').detach().clone())
-                        # setattr(module, 'scfg_last_attn_map', output.detach().clone())
-                
+                        
                 for module in all_crossattn_modules:
-                        # handle_scfg = module.register_forward_hook(scfg_hook, with_kwargs=True)
-                        # handle_scfg_pre = module.register_forward_pre_hook(scfg_pre_hook, with_kwargs=True)
+                        self.add_field_cross_attn_modules(module, 'scfg_last_to_q_map', None)
+                        self.add_field_cross_attn_modules(module, 'scfg_last_to_k_map', None)
+                        for submodule in SCFG_MODULES:
+                                sub_module = getattr(module, submodule, None)
+                                self.add_field_cross_attn_modules(sub_module, 'scfg_parent_module', [module])
+
+                for module in all_crossattn_modules:
+                        if not hasattr(module, 'to_q') or not hasattr(module, 'to_k'):
+                                logger.error("CrossAttention module '%s' does not have to_q or to_k", module.network_layer_name)
+                                continue
                         if hasattr(module, 'to_q'):
                                 handle_scfg_to_q = module.to_q.register_forward_hook(scfg_to_q_hook, with_kwargs=True)
                         if hasattr(module, 'to_k'):
                                 handle_scfg_to_k = module.to_k.register_forward_hook(scfg_to_k_hook, with_kwargs=True)
-                        # if hasattr(module, 'to_v'):
-                        #         handle_scfg_to_v= module.to_v.register_forward_hook(scfg_to_v_hook, with_kwargs=True)
-                        # if hasattr(module, 'to_out'):
-                        #         handle_scfg_to_out = module.to_out[0].register_forward_hook(scfg_to_out_hook, with_kwargs=True)
 
         def get_all_crossattn_modules(self):
                 """ 
@@ -707,26 +659,20 @@ def get_mask(attn_modules, scfg_params: SCFGStateParams, r, latent_size):
         curr_r = r
         max_r = r
 
-        current_attn_map_size = 0
-        max_attn_map_size = 0
-
         r_r = 1
         new_ca = 0
         new_fore=0
         a_n=0
         # corresponds to diffusers pipe.unet.config.sample_size
-        sample_size = 64
+        # sample_size = 64
         # get a layer wise mapping
         attention_store_proxy = {"r2_cross": [], "r4_cross": [], "r8_cross": [], "r16_cross": [],
                                  "r2_self": [], "r4_self": [], "r8_self": [], "r16_self": []}
         for module in attn_modules:
                 module_type = 'cross' if 'attn2' in module.network_layer_name else 'self'
 
-                # attn_map = getattr(module, 'scfg_last_attn_map', None)
                 to_q_map = getattr(module, 'scfg_last_to_q_map', None)
                 to_k_map = getattr(module, 'scfg_last_to_k_map', None)
-                # to_v_map = getattr(module, 'scfg_last_to_v_map', None)
-                # to_out_map = getattr(module, 'scfg_last_to_out_map', None)
 
                 to_q_map = head_to_batch_dim(to_q_map, module.heads)
                 to_q_map = average_over_head_dim(to_q_map, module.heads)
@@ -737,44 +683,20 @@ def get_mask(attn_modules, scfg_params: SCFGStateParams, r, latent_size):
                 to_k_map = torch.stack([to_k_map[0], to_k_map[0]], dim=0)
 
                 module_attn_size = to_q_map.size(1)
-                #module_attn_size = attn_map.size(1)
                 module_attn_sizes.add(module_attn_size)
-                downscale_ratio = int(max_dims / module_attn_size)
                 downscale_h = int((module_attn_size * (height / width)) ** 0.5)
                 downscale_w = module_attn_size // downscale_h
-                downscale_ratio_h = height // downscale_h
-                downscale_ratio_w = width // downscale_w
-                #downscale_w = width // downscale_ratio
-
-                # h is smaller than w
-                # h_smaller_w = True if downscale_h / downscale_w <= 1 else False
-                # if h_smaller_w:
-                #        module_attn_size = downscale_h if downscale_h % 2 == 0 else downscale_w
-                # else:
-                #        module_attn_size = downscale_w if downscale_w % 2 == 0 else downscale_h
-
-                #module_attn_size = int((attn_map.size(1)) ** (0.5))
-                #module_attn_size = int((attn_map.size(1)) ** (0.5))
-                #if module_attn_size > sample_size:
-                #       r = 1
-                #else:
-                #        r = int(sample_size // module_attn_size)
 
                 module_key = f"r{module_attn_size}_{module_type}"
 
-                # batch_size, seq_len, inner_dim = to_out_map.size()
-
-                # if not r in [2, 4, 8, 16] or r < 2:
-                #         continue
-
                 if r > max_r:
                        max_r = r
+
                 # based on diffusers models/attention.py "get_attention_scores"
-                #if module_type == 'self':
                 attn_scores = to_q_map @ to_k_map.transpose(-1, -2)
-                attn_probs = attn_scores.softmax(dim=-1)
+                attn_probs = attn_scores.softmax(dim=-1).to(device=shared.device, dtype=to_q_map.dtype)
+                del to_q_map, to_k_map
                 del attn_scores
-                attn_probs = attn_probs.to(to_q_map.dtype)
 
                 if module_key not in attention_store_proxy:
                         attention_store_proxy[module_key] = []
@@ -786,35 +708,24 @@ def get_mask(attn_modules, scfg_params: SCFGStateParams, r, latent_size):
         module_attn_sizes = sorted(list(module_attn_sizes))
         attention_maps = attention_store_proxy
 
-        min_r = min(module_attn_sizes)
         max_r = max(module_attn_sizes)
         r_r = 1 # scale factor from map to map
 
         curr_r = module_attn_sizes.pop()
-        #next_r = curr_r
         while curr_r != None:
-        #while curr_r<=max_r:
                 key_corss = f"r{curr_r}_cross"
                 key_self = f"r{curr_r}_self"
 
                 if key_self not in attention_maps.keys() or key_corss not in attention_maps.keys():
                         next_r = module_attn_sizes.pop()
-                        #curr_r = int(curr_r*2)
-                        #r_r = r_r * (curr_r//next_r)
                         r_r *= 2
                         curr_r = next_r
-                        #r_r*=2
                         continue
                 if len(attention_maps[key_self]) == 0 or len(attention_maps[key_corss]) == 0:
                         curr_r = module_attn_sizes.pop()
-                        #curr_r = int(curr_r*2)
-                        #r_r = r_r * (curr_r//next_r)
                         r_r *= 2
                         curr_r = next_r
-                        #r_r*=2
                         continue
-                # pdb.set_trace()
-
 
                 sa = torch.stack(attention_maps[key_self], dim=1)
                 ca = torch.stack(attention_maps[key_corss], dim=1)
@@ -831,28 +742,26 @@ def get_mask(attn_modules, scfg_params: SCFGStateParams, r, latent_size):
                         ssgc_sa += curr
                 ssgc_sa/=ssgc_n
                 sa = ssgc_sa
+
                 ########smoothing ca
                 ca = sa@ca # b hw c
 
-                #h=w = int(sa.size(1)**(0.5))
                 max_dims = height * width
                 hw = ca.size(1)
-                downscale_ratio = max_dims / hw
+
                 downscale_h = round((hw * (height / width)) ** 0.5)
-                downscale_w = hw // downscale_h
+                # downscale_w = hw // downscale_h
 
                 ca = rearrange(ca, 'b (h w) c -> b c h w', h=downscale_h )
-                #if r_r>1:
-                        # limit the size of the attention map
+
+                # Scale the attention map to the expected size
                 max_size = latent_size
-                # rescaled_size = ca.shape[2:] * r_r
                 scale_factor = [
                         max_size[0] / ca.shape[-2],
                         max_size[1] / ca.shape[-1]
                 ]
                 mode =  'bilinear' #'nearest' #
                 ca = F.interpolate(ca, scale_factor=scale_factor, mode=mode) # b 77 32 32
-
 
                 #####Gaussian Smoothing
                 kernel_size = 3
@@ -877,29 +786,20 @@ def get_mask(attn_modules, scfg_params: SCFGStateParams, r, latent_size):
                         curr_r = module_attn_sizes.pop()
                 else:
                         curr_r = None
-                #curr_r = int(curr_r*2)
-                #r_r = r_r * (curr_r//next_r)
                 r_r *= 2
-                #curr_r = next_r
-
-                # curr_r = int(curr_r*2)
-                # r_r*=2
         
         new_ca = new_ca/a_n
         new_fore = new_fore/a_n
         _,new_ca   = new_ca.chunk(2, dim=0) #[1]
         fore_ca, _ = new_fore.chunk(2, dim=0)
 
-
         max_ca, inds = torch.max(new_ca[:,:], dim=1) 
         max_ca = max_ca.unsqueeze(1) # 
         ca_mask = (new_ca==max_ca).float() # b 77/10 16 16 
-
 
         max_fore, inds = torch.max(fore_ca[:,:], dim=1) 
         max_fore = max_fore.unsqueeze(1) # 
         fore_mask = (fore_ca==max_fore).float() # b 77/10 16 16 
         fore_mask = 1.0-fore_mask[:,:1] # b 1 16 16
-
 
         return [ ca_mask, fore_mask]
