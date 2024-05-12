@@ -224,29 +224,29 @@ class SCFGExtensionScript(UIWrapper):
         def remove_all_hooks(self):
                 all_crossattn_modules = self.get_all_crossattn_modules()
                 for module in all_crossattn_modules:
-                        self.remove_field_cross_attn_modules(module, 'scfg_last_attn_map')
-                        self.remove_field_cross_attn_modules(module, 'scfg_last_context_map')
+                        # self.remove_field_cross_attn_modules(module, 'scfg_last_attn_map')
+                        # self.remove_field_cross_attn_modules(module, 'scfg_last_context_map')
                         self.remove_field_cross_attn_modules(module, 'scfg_last_to_q_map')
                         self.remove_field_cross_attn_modules(module, 'scfg_last_to_k_map')
-                        self.remove_field_cross_attn_modules(module, 'scfg_last_to_v_map')
-                        self.remove_field_cross_attn_modules(module, 'scfg_last_to_out_map')
-                        self.remove_field_cross_attn_modules(module, 'scfg_attn_size')
-                        _remove_all_forward_hooks(module, 'scfg_hook')
-                        _remove_all_forward_hooks(module, 'scfg_pre_hook')
-                        to_v = getattr(module, 'to_v', None)
-                        _remove_all_forward_hooks(to_v, 'scfg_to_v_hook')
+                        # self.remove_field_cross_attn_modules(module, 'scfg_last_to_v_map')
+                        # self.remove_field_cross_attn_modules(module, 'scfg_last_to_out_map')
+                        # self.remove_field_cross_attn_modules(module, 'scfg_attn_size')
+                        # _remove_all_forward_hooks(module, 'scfg_hook')
+                        # _remove_all_forward_hooks(module, 'scfg_pre_hook')
+                        # to_v = getattr(module, 'to_v', None)
+                        # _remove_all_forward_hooks(to_v, 'scfg_to_v_hook')
                         if hasattr(module, 'to_q'):
                                 handle_scfg_to_q = _remove_all_forward_hooks(module.to_q, 'scfg_to_q_hook')
                                 self.remove_field_cross_attn_modules(module.to_q, 'scfg_parent_module')
                         if hasattr(module, 'to_k'):
                                 handle_scfg_to_q = _remove_all_forward_hooks(module.to_k, 'scfg_to_k_hook')
                                 self.remove_field_cross_attn_modules(module.to_k, 'scfg_parent_module')
-                        if hasattr(module, 'to_v'):
-                                handle_scfg_to_v = _remove_all_forward_hooks(module.to_v, 'scfg_to_v_hook')
-                                self.remove_field_cross_attn_modules(module.to_v, 'scfg_parent_module')
-                        if hasattr(module, 'to_out'):
-                                handle_scfg_to_out = _remove_all_forward_hooks(module.to_out[0], 'scfg_to_out_hook')
-                                self.remove_field_cross_attn_modules(module.to_out[0], 'scfg_parent_module')
+                        # if hasattr(module, 'to_v'):
+                        #         handle_scfg_to_v = _remove_all_forward_hooks(module.to_v, 'scfg_to_v_hook')
+                        #         self.remove_field_cross_attn_modules(module.to_v, 'scfg_parent_module')
+                        # if hasattr(module, 'to_out'):
+                        #         handle_scfg_to_out = _remove_all_forward_hooks(module.to_out[0], 'scfg_to_out_hook')
+                        #         self.remove_field_cross_attn_modules(module.to_out[0], 'scfg_parent_module')
 
         def unhook_callbacks(self, scfg_params: SCFGStateParams):
                 global handles
@@ -276,12 +276,12 @@ class SCFGExtensionScript(UIWrapper):
                 """
                         
                 for module in all_crossattn_modules:
-                        self.add_field_cross_attn_modules(module, 'scfg_last_attn_map', None)
-                        self.add_field_cross_attn_modules(module, 'scfg_last_context_map', None)
+                        # self.add_field_cross_attn_modules(module, 'scfg_last_attn_map', None)
+                        # self.add_field_cross_attn_modules(module, 'scfg_last_context_map', None)
                         self.add_field_cross_attn_modules(module, 'scfg_last_to_q_map', None)
                         self.add_field_cross_attn_modules(module, 'scfg_last_to_k_map', None)
-                        self.add_field_cross_attn_modules(module, 'scfg_last_to_v_map', None)
-                        self.add_field_cross_attn_modules(module, 'scfg_last_to_out_map', None)
+                        # self.add_field_cross_attn_modules(module, 'scfg_last_to_v_map', None)
+                        # self.add_field_cross_attn_modules(module, 'scfg_last_to_out_map', None)
                         self.add_field_cross_attn_modules(module, 'scfg_attn_size', -1)
                         for submodule in SCFG_MODULES:
                                 sub_module = getattr(module, submodule, None)
@@ -312,23 +312,24 @@ class SCFGExtensionScript(UIWrapper):
                                 return
 
                 def scfg_hook(module, input, kwargs, output):
-                        if not hasattr(module, 'scfg_last_attn_map'):
-                                return
-                        if kwargs.get('context', None) is not None:
-                                setattr(module, 'scfg_last_context_map', kwargs.get('context').detach().clone())
-                        setattr(module, 'scfg_last_attn_map', output.detach().clone())
+                        pass
+                        # if not hasattr(module, 'scfg_last_attn_map'):
+                        #         return
+                        # if kwargs.get('context', None) is not None:
+                        #         setattr(module, 'scfg_last_context_map', kwargs.get('context').detach().clone())
+                        # setattr(module, 'scfg_last_attn_map', output.detach().clone())
                 
                 for module in all_crossattn_modules:
-                        handle_scfg = module.register_forward_hook(scfg_hook, with_kwargs=True)
-                        handle_scfg_pre = module.register_forward_pre_hook(scfg_pre_hook, with_kwargs=True)
+                        # handle_scfg = module.register_forward_hook(scfg_hook, with_kwargs=True)
+                        # handle_scfg_pre = module.register_forward_pre_hook(scfg_pre_hook, with_kwargs=True)
                         if hasattr(module, 'to_q'):
                                 handle_scfg_to_q = module.to_q.register_forward_hook(scfg_to_q_hook, with_kwargs=True)
                         if hasattr(module, 'to_k'):
                                 handle_scfg_to_k = module.to_k.register_forward_hook(scfg_to_k_hook, with_kwargs=True)
-                        if hasattr(module, 'to_v'):
-                                handle_scfg_to_v= module.to_v.register_forward_hook(scfg_to_v_hook, with_kwargs=True)
-                        if hasattr(module, 'to_out'):
-                                handle_scfg_to_out = module.to_out[0].register_forward_hook(scfg_to_out_hook, with_kwargs=True)
+                        # if hasattr(module, 'to_v'):
+                        #         handle_scfg_to_v= module.to_v.register_forward_hook(scfg_to_v_hook, with_kwargs=True)
+                        # if hasattr(module, 'to_out'):
+                        #         handle_scfg_to_out = module.to_out[0].register_forward_hook(scfg_to_out_hook, with_kwargs=True)
 
         def get_all_crossattn_modules(self):
                 """ 
@@ -721,11 +722,11 @@ def get_mask(attn_modules, scfg_params: SCFGStateParams, r, latent_size):
         for module in attn_modules:
                 module_type = 'cross' if 'attn2' in module.network_layer_name else 'self'
 
-                attn_map = getattr(module, 'scfg_last_attn_map', None)
+                # attn_map = getattr(module, 'scfg_last_attn_map', None)
                 to_q_map = getattr(module, 'scfg_last_to_q_map', None)
                 to_k_map = getattr(module, 'scfg_last_to_k_map', None)
-                to_v_map = getattr(module, 'scfg_last_to_v_map', None)
-                to_out_map = getattr(module, 'scfg_last_to_out_map', None)
+                # to_v_map = getattr(module, 'scfg_last_to_v_map', None)
+                # to_out_map = getattr(module, 'scfg_last_to_out_map', None)
 
                 to_q_map = head_to_batch_dim(to_q_map, module.heads)
                 to_q_map = average_over_head_dim(to_q_map, module.heads)
@@ -735,7 +736,8 @@ def get_mask(attn_modules, scfg_params: SCFGStateParams, r, latent_size):
                 to_k_map = average_over_head_dim(to_k_map, module.heads)
                 to_k_map = torch.stack([to_k_map[0], to_k_map[0]], dim=0)
 
-                module_attn_size = attn_map.size(1)
+                module_attn_size = to_q_map.size(1)
+                #module_attn_size = attn_map.size(1)
                 module_attn_sizes.add(module_attn_size)
                 downscale_ratio = int(max_dims / module_attn_size)
                 downscale_h = int((module_attn_size * (height / width)) ** 0.5)
@@ -760,7 +762,7 @@ def get_mask(attn_modules, scfg_params: SCFGStateParams, r, latent_size):
 
                 module_key = f"r{module_attn_size}_{module_type}"
 
-                batch_size, seq_len, inner_dim = to_out_map.size()
+                # batch_size, seq_len, inner_dim = to_out_map.size()
 
                 # if not r in [2, 4, 8, 16] or r < 2:
                 #         continue
