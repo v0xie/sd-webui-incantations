@@ -269,7 +269,8 @@ class SCFGExtensionScript(UIWrapper):
                         
                 for module in all_crossattn_modules:
                         self.add_field_cross_attn_modules(module, 'scfg_last_to_q_map', None)
-                        self.add_field_cross_attn_modules(module, 'scfg_last_to_k_map', None)
+                        if module.network_layer_name.endswith('attn2'): # self attention doesn't need to_k
+                                self.add_field_cross_attn_modules(module, 'scfg_last_to_k_map', None)
                         for submodule in SCFG_MODULES:
                                 sub_module = getattr(module, submodule, None)
                                 self.add_field_cross_attn_modules(sub_module, 'scfg_parent_module', [module])
@@ -280,7 +281,9 @@ class SCFGExtensionScript(UIWrapper):
                                 continue
                         if hasattr(module, 'to_q'):
                                 handle_scfg_to_q = module.to_q.register_forward_hook(scfg_to_q_hook, with_kwargs=True)
-                        if hasattr(module, 'to_k'):
+                        #if hasattr(module, 'to_k'):
+                        if module.network_layer_name.endswith('attn2'): # self attention doesn't need to_k
+                                self.add_field_cross_attn_modules(module, 'scfg_last_to_k_map', None)
                                 handle_scfg_to_k = module.to_k.register_forward_hook(scfg_to_k_hook, with_kwargs=True)
 
         def get_all_crossattn_modules(self):
@@ -677,6 +680,8 @@ def get_mask(attn_modules, scfg_params: SCFGStateParams, r, latent_size):
 
                 to_q_map = getattr(module, 'scfg_last_to_q_map', None)
                 to_k_map = getattr(module, 'scfg_last_to_k_map', None)
+                if to_k_map is None:
+                        to_k_map = to_q_map
 
                 to_q_map = head_to_batch_dim(to_q_map, module.heads)
                 to_q_map = average_over_head_dim(to_q_map, module.heads)
