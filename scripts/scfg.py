@@ -118,7 +118,7 @@ class SCFGExtensionScript(UIWrapper):
                         with gr.Row():
                                 start_step = gr.Slider(value = 0, minimum = 0, maximum = 150, step = 1, label="Start Step", elem_id = 'scfg_start_step', info="")
                                 end_step = gr.Slider(value = 150, minimum = 0, maximum = 150, step = 1, label="End Step", elem_id = 'scfg_end_step', info="")
-                                scfg_r = gr.Slider(value = 4, minimum = 2, maximum = 16, step = 1, label="SCFG R", elem_id = 'scfg_r', info="Must be 2, 4, 8, or 16")
+                                scfg_r = gr.Slider(value = 4, minimum = 1, maximum = 16, step = 1, label="SCFG R", elem_id = 'scfg_r', info="The number of the smallest attention map sizes to aggregate.")
                                 
                 active.do_not_save_to_config = True
                 scfg_scale.do_not_save_to_config = True
@@ -372,6 +372,7 @@ class SCFGExtensionScript(UIWrapper):
                         xyz_grid.AxisOption("[SCFG] SCFG Rate Clamp", float, scfg_apply_field("scfg_rate_clamp")),
                         xyz_grid.AxisOption("[SCFG] SCFG Start Step", int, scfg_apply_field("scfg_start_step")),
                         xyz_grid.AxisOption("[SCFG] SCFG End Step", int, scfg_apply_field("scfg_end_step")),
+                        xyz_grid.AxisOption("[SCFG] SCFG R", int, scfg_apply_field("scfg_r")),
                         #xyz_grid.AxisOption("[PAG] ctnms_alpha", float, pag_apply_field("pag_ctnms_alpha")),
                 }
                 return extra_axis_options
@@ -656,8 +657,12 @@ def get_mask(attn_modules, scfg_params: SCFGStateParams, r, latent_size):
         key_corss = f"r{r}_cross"
         key_self = f"r{r}_self"
 
-        curr_r = r
+
+        # The maximum value of the sizes of attention map to aggregate
         max_r = r
+
+        # The current number of attention map resolutions aggregated
+        attnmap_r = 0
 
         r_r = 1
         new_ca = 0
@@ -711,18 +716,20 @@ def get_mask(attn_modules, scfg_params: SCFGStateParams, r, latent_size):
         max_r = max(module_attn_sizes)
         r_r = 1 # scale factor from map to map
 
-        curr_r = module_attn_sizes.pop()
-        while curr_r != None:
+        curr_r = module_attn_sizes.pop(0)
+        while curr_r != None and attnmap_r < max_r:
                 key_corss = f"r{curr_r}_cross"
                 key_self = f"r{curr_r}_self"
 
                 if key_self not in attention_maps.keys() or key_corss not in attention_maps.keys():
-                        next_r = module_attn_sizes.pop()
+                        next_r = module_attn_sizes.pop(0)
+                        attnmap_r += 1
                         r_r *= 2
                         curr_r = next_r
                         continue
                 if len(attention_maps[key_self]) == 0 or len(attention_maps[key_corss]) == 0:
-                        curr_r = module_attn_sizes.pop()
+                        curr_r = module_attn_sizes.pop(0)
+                        attnmap_r += 1
                         r_r *= 2
                         curr_r = next_r
                         continue
@@ -783,9 +790,10 @@ def get_mask(attn_modules, scfg_params: SCFGStateParams, r, latent_size):
                 a_n+=attn_num
 
                 if len(module_attn_sizes) > 0:
-                        curr_r = module_attn_sizes.pop()
+                        curr_r = module_attn_sizes.pop(0)
                 else:
                         curr_r = None
+                attnmap_r += 1
                 r_r *= 2
         
         new_ca = new_ca/a_n
