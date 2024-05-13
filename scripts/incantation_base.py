@@ -31,13 +31,18 @@ class SubmoduleInfo:
                 self.num_args: int = num_args # the length of arg list
                 self.arg_idx: int = arg_idx # where the list of args starts
 
+# main scripts
 submodules: list[SubmoduleInfo] = [
         SubmoduleInfo(module=SCFGExtensionScript()),
         SubmoduleInfo(module=PAGExtensionScript()),
         SubmoduleInfo(module=T2I0ExtensionScript()),
         SubmoduleInfo(module=IncantExtensionScript()),
-        SubmoduleInfo(module=SaveAttentionMapsScript()),
 ]
+# debug scripts
+if environ.get("INCANT_DEBUG", default=False) != False:
+        submodules.append(SubmoduleInfo(module=SaveAttentionMapsScript()))
+else:
+        logger.info("Incantation: Debug scripts are disabled. Set INCANT_DEBUG environment variable to enable them.")
                 
 class IncantBaseExtensionScript(scripts.Script):
         def __init__(self):

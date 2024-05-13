@@ -102,18 +102,21 @@ class SaveAttentionMapsScript(UIWrapper):
     def postprocess_batch(self, p: StableDiffusionProcessing, active, module_name_filter, class_name_filter, save_every_n_step, *args, **kwargs):
         module_list = self.get_modules_by_filter(module_name_filter, class_name_filter)
 
+        if getattr(p, 'savemaps_token_count', None) is None:
+            self.unhook_modules(module_list, copy.deepcopy(module_field_map))
+            return
+
         save_image_path = os.path.join(p.outpath_samples, 'attention_maps')
 
-        latent_shape = [p.height // p.rng.shape[1], p.width // p.rng.shape[2]] # (height, width)
         max_dims = p.height * p.width
         token_count = p.savemaps_token_count
         token_indices = [x+1 for x in range(token_count)]
 
-        #max_dims = latent_shape[0] * latent_shape[1]
         for module in module_list:
             if not hasattr(module, 'savemaps_batch') or module.savemaps_batch is None:
                 logger.error(f"No attention maps found for module: {module.network_layer_name}")
                 continue
+
             attn_maps = module.savemaps_batch # (attn_map num, 2 * batch_num, height * width, sequence_len)
 
             attn_map_num, batch_num, hw, seq_len = attn_maps.shape
