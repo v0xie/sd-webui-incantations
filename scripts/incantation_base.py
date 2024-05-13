@@ -11,6 +11,7 @@ from scripts.ui_wrapper import UIWrapper
 from scripts.incant import IncantExtensionScript
 from scripts.t2i_zero import T2I0ExtensionScript
 from scripts.pag import PAGExtensionScript
+from scripts.save_attn_maps import SaveAttentionMapsScript
 
 logger = logging.getLogger(__name__)
 logger.setLevel(environ.get("SD_WEBUI_LOG_LEVEL", logging.INFO))
@@ -29,11 +30,17 @@ class SubmoduleInfo:
                 self.num_args: int = num_args # the length of arg list
                 self.arg_idx: int = arg_idx # where the list of args starts
 
+# main scripts
 submodules: list[SubmoduleInfo] = [
         SubmoduleInfo(module=PAGExtensionScript()),
         SubmoduleInfo(module=T2I0ExtensionScript()),
         SubmoduleInfo(module=IncantExtensionScript()),
 ]
+# debug scripts
+if environ.get("INCANT_DEBUG", default=False) != False:
+        submodules.append(SubmoduleInfo(module=SaveAttentionMapsScript()))
+else:
+        logger.info("Incantation: Debug scripts are disabled. Set INCANT_DEBUG environment variable to enable them.")
                 
 class IncantBaseExtensionScript(scripts.Script):
         def __init__(self):
