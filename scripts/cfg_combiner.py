@@ -1,10 +1,11 @@
 import gradio as gr
 import logging
 import torch
-from modules import scripts, patches, script_callbacks
+from modules import shared, scripts, patches, script_callbacks
 from modules.script_callbacks import CFGDenoiserParams
 from modules.processing import StableDiffusionProcessing
 from scripts.incantation_base import UIWrapper
+from scripts.scfg import scfg_combine_denoised
 
 logger = logging.getLogger(__name__)
 
@@ -146,9 +147,9 @@ def combine_denoised_pass_conds_list(*args, **kwargs):
         Currently relies on the original function not having any kwargs
         If any of the params are not None, it will apply the corresponding guidance
         The order of guidance is:
-            1. Regular CFG guidance
-            2. PAG guidance
-            3. S-CFG guidance - not implemented yet
+            1. CFG and S-CFG are combined multiplicatively
+            2. PAG guidance is added to the result
+            3. ...
             ...
         """
         original_func = kwargs.get('original_func', None)
@@ -184,28 +185,33 @@ def combine_denoised_pass_conds_list(*args, **kwargs):
                 for i, conds in enumerate(conds_list):
                         for cond_index, weight in conds:
 
-                            # 0/1. Regular CFG guidance / Scheduled CFG
-                            denoised[i] += (x_out[cond_index] - denoised_uncond[i]) * (weight * cfg_scale)
+                                model_delta = x_out[cond_index] - denoised_uncond[i]
 
-                            # 2. PAG
-                            # PAG is added like CFG
-                            if pag_params is not None:
-                                    # Within step interval? 
-                                    if pag_params.pag_start_step <= pag_params.step <= pag_params.pag_end_step:
-                                            pass
-                                    # Scale non-zero?
-                                    elif pag_scale <= 0:
-                                            pass
-                                    else:
-                                            try:
-                                                    denoised[i] += (x_out[cond_index] - pag_x_out[i]) * (weight * pag_scale)
-                                            except Exception as e:
-                                                    logger.exception("Exception in combine_denoised_pass_conds_list - %s", e)
-                            
-                            # 3. S-CFG
-                            # Not implemented yet
-                            if scfg_params is not None:
-                                    pass
+                                rate = 1.0
+                                if scfg_params is not None:
+                                        rate = scfg_combine_denoised(
+                                                        model_delta = model_delta,
+                                                        cfg_scale = cfg_scale,
+                                                        scfg_params = scfg_params,
+                                        ).to(device=shared.device, dtype=model_delta.dtype)
+
+                                # 1. Experimental formulation for S-CFG combined with CFG
+                                denoised[i] += (model_delta) * rate * (weight * cfg_scale)
+
+                                # 2. PAG
+                                # PAG is added like CFG
+                                if pag_params is not None:
+                                        # Within step interval? 
+                                        if pag_params.pag_start_step <= pag_params.step <= pag_params.pag_end_step:
+                                                pass
+                                        # Scale non-zero?
+                                        elif pag_scale <= 0:
+                                                pass
+                                        else:
+                                                try:
+                                                        denoised[i] += (x_out[cond_index] - pag_x_out[i]) * (weight * pag_scale)
+                                                except Exception as e:
+                                                        logger.exception("Exception in combine_denoised_pass_conds_list - %s", e)
 
                 return denoised
         return new_combine_denoised(*args)

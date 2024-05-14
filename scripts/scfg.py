@@ -185,6 +185,12 @@ class SCFGExtensionScript(UIWrapper):
         def create_hook(self, p: StableDiffusionProcessing, active, scfg_scale, scfg_rate_min, scfg_rate_max, scfg_rate_clamp, start_step, end_step, scfg_r):
                 # Create a list of parameters for each concept
                 scfg_params = SCFGStateParams()
+
+                # Add to p
+                if not hasattr(p, 'incant_cfg_params'):
+                        logger.error("No incant_cfg_params found in p")
+                p.incant_cfg_params['scfg_params'] = scfg_params
+
                 scfg_params.denoiser = None
                 scfg_params.all_crossattn_modules = self.get_all_crossattn_modules()
                 scfg_params.max_sampling_steps = p.steps
@@ -199,14 +205,14 @@ class SCFGExtensionScript(UIWrapper):
                 scfg_params.width = p.width
 
                 # Use lambda to call the callback function with the parameters to avoid global variables
-                cfg_denoise_lambda = lambda callback_params: self.on_cfg_denoiser_callback(callback_params, scfg_params)
+                #cfg_denoise_lambda = lambda callback_params: self.on_cfg_denoiser_callback(callback_params, scfg_params)
                 cfg_denoised_lambda = lambda callback_params: self.on_cfg_denoised_callback(callback_params, scfg_params)
                 unhook_lambda = lambda _: self.unhook_callbacks(scfg_params)
 
                 self.ready_hijack_forward(scfg_params.all_crossattn_modules)
 
                 logger.debug('Hooked callbacks')
-                script_callbacks.on_cfg_denoiser(cfg_denoise_lambda)
+                #script_callbacks.on_cfg_denoiser(cfg_denoise_lambda)
                 script_callbacks.on_cfg_denoised(cfg_denoised_lambda)
                 script_callbacks.on_script_unloaded(unhook_lambda)
 
@@ -238,21 +244,21 @@ class SCFGExtensionScript(UIWrapper):
                 global handles
 
                 if scfg_params is None:
-                       logger.error("PAG params is None")
+                       logger.error("SCFG params is None")
                        return
 
-                if scfg_params.denoiser is not None:
-                        denoiser = scfg_params.denoiser
-                        setattr(denoiser, 'combine_denoised_patched_scfg', False)
-                        try:
-                                patches.undo(__name__, denoiser, "combine_denoised")
-                        except KeyError:
-                                logger.exception("KeyError unhooking combine_denoised")
-                                pass
-                        except RuntimeError:
-                                logger.exception("RuntimeError unhooking combine_denoised")
-                                pass
-                        scfg_params.denoiser = None
+                #if scfg_params.denoiser is not None:
+                #        denoiser = scfg_params.denoiser
+                #        setattr(denoiser, 'combine_denoised_patched_scfg', False)
+                #        try:
+                #                patches.undo(__name__, denoiser, "combine_denoised")
+                #        except KeyError:
+                #                logger.exception("KeyError unhooking combine_denoised")
+                #                pass
+                #        except RuntimeError:
+                #                logger.exception("RuntimeError unhooking combine_denoised")
+                #                pass
+                #        scfg_params.denoiser = None
 
 
         def ready_hijack_forward(self, all_crossattn_modules):
@@ -317,26 +323,26 @@ class SCFGExtensionScript(UIWrapper):
                 self.unhook_callbacks(scfg_params)
 
                 # patch combine_denoised
-                if scfg_params.denoiser is None:
-                        scfg_params.denoiser = params.denoiser
-                if getattr(params.denoiser, 'combine_denoised_patched_scfg', False) is False:
-                        try:
-                                setattr(params.denoiser, 'combine_denoised_original_scfg', params.denoiser.combine_denoised)
-                                # create patch that references the original function
-                                pass_conds_func = lambda *args, **kwargs: combine_denoised_pass_conds_list(
-                                        *args,
-                                        **kwargs,
-                                        original_func = params.denoiser.combine_denoised_original_scfg,
-                                        scfg_params = scfg_params)
-                                scfg_params.patched_combine_denoised = patches.patch(__name__, params.denoiser, "combine_denoised", pass_conds_func)
-                                setattr(params.denoiser, 'combine_denoised_patched_scfg', True)
-                                setattr(params.denoiser, 'combine_denoised_original_scfg', patches.original(__name__, params.denoiser, "combine_denoised"))
-                        except KeyError:
-                                logger.exception("KeyError patching combine_denoised")
-                                pass
-                        except RuntimeError:
-                                logger.exception("RuntimeError patching combine_denoised")
-                                pass
+                # if scfg_params.denoiser is None:
+                #         scfg_params.denoiser = params.denoiser
+                # if getattr(params.denoiser, 'combine_denoised_patched_scfg', False) is False:
+                #         try:
+                #                 setattr(params.denoiser, 'combine_denoised_original_scfg', params.denoiser.combine_denoised)
+                #                 # create patch that references the original function
+                #                 pass_conds_func = lambda *args, **kwargs: combine_denoised_pass_conds_list(
+                #                         *args,
+                #                         **kwargs,
+                #                         original_func = params.denoiser.combine_denoised_original_scfg,
+                #                         scfg_params = scfg_params)
+                #                 scfg_params.patched_combine_denoised = patches.patch(__name__, params.denoiser, "combine_denoised", pass_conds_func)
+                #                 setattr(params.denoiser, 'combine_denoised_patched_scfg', True)
+                #                 setattr(params.denoiser, 'combine_denoised_original_scfg', patches.original(__name__, params.denoiser, "combine_denoised"))
+                #         except KeyError:
+                #                 logger.exception("KeyError patching combine_denoised")
+                #                 pass
+                #         except RuntimeError:
+                #                 logger.exception("RuntimeError patching combine_denoised")
+                #                 pass
 
         def on_cfg_denoised_callback(self, params: CFGDenoisedParams, scfg_params: SCFGStateParams):
                 """ Callback function for the CFGDenoisedParams 
