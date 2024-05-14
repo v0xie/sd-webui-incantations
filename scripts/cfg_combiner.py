@@ -212,12 +212,13 @@ def combine_denoised_pass_conds_list(*args, **kwargs):
                                 # 2. PAG
                                 # PAG is added like CFG
                                 if pag_params is not None:
-                                        # Within step interval? 
-                                        if pag_params.pag_start_step <= pag_params.step <= pag_params.pag_end_step:
+                                        # Not within step interval? 
+                                        if not pag_params.pag_start_step <= pag_params.step <= pag_params.pag_end_step:
                                                 pass
-                                        # Scale non-zero?
+                                        # Scale is zero?
                                         elif pag_scale <= 0:
                                                 pass
+                                        # do pag
                                         else:
                                                 try:
                                                         denoised[i] += (x_out[cond_index] - pag_x_out[i]) * (weight * pag_scale)
