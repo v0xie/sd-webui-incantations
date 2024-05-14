@@ -395,8 +395,16 @@ def scfg_combine_denoised(model_delta, cfg_scale, scfg_params: SCFGStateParams):
                 scfg_params: SCFGStateParams - the state parameters for the S-CFG denoiser
         
         Returns:
-                torch.Tensor - the rate map for the current step 
+                int or torch.Tensor - 1.0 if not within interval, else the rate map tensor
         """
+
+        current_step = scfg_params.current_step
+        start_step = scfg_params.start_step
+        end_step = scfg_params.end_step
+
+        if not start_step <= current_step <= end_step:
+                return 1.0
+
         mask_t = scfg_params.mask_t
         mask_fore = scfg_params.mask_fore
         scfg_scale = scfg_params.scfg_scale
@@ -404,7 +412,8 @@ def scfg_combine_denoised(model_delta, cfg_scale, scfg_params: SCFGStateParams):
         max_rate = scfg_params.rate_max
         rate_clamp = scfg_params.rate_clamp
 
-        model_delta = model_delta
+
+        model_delta = model_delta.unsqueeze(0)
         model_delta_norm = model_delta.norm(dim=1, keepdim=True)
 
         # rescale map if necessary

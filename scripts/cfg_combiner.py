@@ -187,13 +187,23 @@ def combine_denoised_pass_conds_list(*args, **kwargs):
 
                                 model_delta = x_out[cond_index] - denoised_uncond[i]
 
+                                # S-CFG
                                 rate = 1.0
                                 if scfg_params is not None:
                                         rate = scfg_combine_denoised(
                                                         model_delta = model_delta,
                                                         cfg_scale = cfg_scale,
                                                         scfg_params = scfg_params,
-                                        ).to(device=shared.device, dtype=model_delta.dtype)
+                                        )
+                                        # If rate is not an int, convert to tensor
+                                        if rate is None:
+                                               logger.error("scfg_combine_denoised returned None, using default rate of 1.0")
+                                               rate = 1.0
+                                        elif not isinstance(rate, int):
+                                               rate = rate.to(device=shared.device, dtype=model_delta.dtype)
+                                        else:
+                                               # rate is tensor, probably
+                                               pass
 
                                 # 1. Experimental formulation for S-CFG combined with CFG
                                 denoised[i] += (model_delta) * rate * (weight * cfg_scale)
