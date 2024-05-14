@@ -295,6 +295,7 @@ class PAGExtensionScript(UIWrapper):
 
         def unhook_callbacks(self, pag_params: PAGStateParams):
                 global handles
+                return
 
                 if pag_params is None:
                        logger.error("PAG params is None")
@@ -396,27 +397,27 @@ class PAGExtensionScript(UIWrapper):
 
                 pag_params.step = params.sampling_step
 
-                # patch combine_denoised
-                if pag_params.denoiser is None:
-                        pag_params.denoiser = params.denoiser
-                if getattr(params.denoiser, 'combine_denoised_patched', False) is False:
-                        try:
-                                setattr(params.denoiser, 'combine_denoised_original', params.denoiser.combine_denoised)
-                                # create patch that references the original function
-                                pass_conds_func = lambda *args, **kwargs: combine_denoised_pass_conds_list(
-                                        *args,
-                                        **kwargs,
-                                        original_func = params.denoiser.combine_denoised_original,
-                                        pag_params = pag_params)
-                                pag_params.patched_combine_denoised = patches.patch(__name__, params.denoiser, "combine_denoised", pass_conds_func)
-                                setattr(params.denoiser, 'combine_denoised_patched', True)
-                                setattr(params.denoiser, 'combine_denoised_original', patches.original(__name__, params.denoiser, "combine_denoised"))
-                        except KeyError:
-                                logger.exception("KeyError patching combine_denoised")
-                                pass
-                        except RuntimeError:
-                                logger.exception("RuntimeError patching combine_denoised")
-                                pass
+                # # patch combine_denoised
+                # if pag_params.denoiser is None:
+                #         pag_params.denoiser = params.denoiser
+                # if getattr(params.denoiser, 'combine_denoised_patched', False) is False:
+                #         try:
+                #                 setattr(params.denoiser, 'combine_denoised_original', params.denoiser.combine_denoised)
+                #                 # create patch that references the original function
+                #                 pass_conds_func = lambda *args, **kwargs: combine_denoised_pass_conds_list(
+                #                         *args,
+                #                         **kwargs,
+                #                         original_func = params.denoiser.combine_denoised_original,
+                #                         pag_params = pag_params)
+                #                 pag_params.patched_combine_denoised = patches.patch(__name__, params.denoiser, "combine_denoised", pass_conds_func)
+                #                 setattr(params.denoiser, 'combine_denoised_patched', True)
+                #                 setattr(params.denoiser, 'combine_denoised_original', patches.original(__name__, params.denoiser, "combine_denoised"))
+                #         except KeyError:
+                #                 logger.exception("KeyError patching combine_denoised")
+                #                 pass
+                #         except RuntimeError:
+                #                 logger.exception("RuntimeError patching combine_denoised")
+                #                 pass
 
                 # Run only within interval
                 if not pag_params.pag_start_step <= params.sampling_step <= pag_params.pag_end_step or pag_params.pag_scale <= 0:

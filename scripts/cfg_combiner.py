@@ -88,18 +88,15 @@ class CFGCombinerScript(UIWrapper):
                     cfg_dict['denoiser'] = params.denoiser
             else:
                     self.unpatch_cfg_denoiser(cfg_dict)
-            self.patch_cfg_denoiser(params, cfg_dict)
+            self.patch_cfg_denoiser(params.denoiser, cfg_dict)
 
-        def patch_cfg_denoiser(self, p: StableDiffusionProcessing, cfg_dict: dict):
+        def patch_cfg_denoiser(self, denoiser, cfg_dict: dict):
             """ Patch the CFG Denoiser combine_denoised function """
-            cfg_dict = getattr(p, 'incant_cfg_params', None)
             if not cfg_dict:
-                    logger.error("Unable to patch CFG Denoiser, no incant_cfg_params found in processing object")
+                    logger.error("Unable to patch CFG Denoiser, no dict passed as cfg_dict")
                     return
-
-            denoiser = cfg_dict.get('denoiser', None)
-            if denoiser is None:
-                    logger.error("Unable to patch CFG Denoiser, no denoiser found in processing object")
+            if not denoiser:
+                    logger.error("Unable to patch CFG Denoiser, denoiser is None")
                     return
 
             if getattr(denoiser, 'combine_denoised_patched', False) is False:
@@ -123,11 +120,14 @@ class CFGCombinerScript(UIWrapper):
                             logger.exception("RuntimeError patching combine_denoised")
                             pass
 
-        def unpatch_cfg_denoiser(self, cfg_dict: dict):
+        def unpatch_cfg_denoiser(self, cfg_dict = None):
             """ Unpatch the CFG Denoiser combine_denoised function """
+            if cfg_dict is None:
+                    return
             denoiser = cfg_dict.get('denoiser', None)
             if denoiser is None:
-                return
+                    return
+
             setattr(denoiser, 'combine_denoised_patched', False)
             try:
                     patches.undo(__name__, denoiser, "combine_denoised")
@@ -137,12 +137,14 @@ class CFGCombinerScript(UIWrapper):
             except RuntimeError:
                     logger.exception("RuntimeError unhooking combine_denoised")
                     pass
+
             cfg_dict['denoiser'] = None
 
 
 def combine_denoised_pass_conds_list(*args, **kwargs):
         """ Hijacked function for combine_denoised in CFGDenoiser 
         Currently relies on the original function not having any kwargs
+        If any of the params are not None, it will apply the corresponding guidance
         
         """
         original_func = kwargs.get('original_func', None)
