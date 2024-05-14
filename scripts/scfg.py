@@ -381,6 +381,63 @@ class SCFGExtensionScript(UIWrapper):
                 return extra_axis_options
 
 
+def scfg_combine_denoised(model_delta, cfg_scale, scfg_params: SCFGStateParams):
+        """ The inner loop of the S-CFG denoiser 
+        Arguments:
+                model_delta: torch.Tensor - defined by `x_out[cond_index] - denoised_uncond[i]`
+                cfg_scale: float - guidance scale
+                scfg_params: SCFGStateParams - the state parameters for the S-CFG denoiser
+        
+        Returns:
+                torch.Tensor - the rate map for the current step 
+        """
+        mask_t = scfg_params.mask_t
+        mask_fore = scfg_params.mask_fore
+        scfg_scale = scfg_params.scfg_scale
+        min_rate = scfg_params.rate_min
+        max_rate = scfg_params.rate_max
+        rate_clamp = scfg_params.rate_clamp
+
+        model_delta = model_delta
+        model_delta_norm = model_delta.norm(dim=1, keepdim=True)
+
+        # rescale map if necessary
+        if mask_t.shape[2:] != model_delta_norm.shape[2:]:
+                logger.debug('Rescaling mask_t from %s to %s', mask_t.shape[2:], model_delta_norm.shape[2:])
+                mask_t = F.interpolate(mask_t, size=model_delta_norm.shape[2:], mode='bilinear')
+        if mask_fore.shape[-2] != model_delta_norm.shape[-2]:
+                logger.debug('Rescaling mask_fore from %s to %s', mask_fore.shape[2:], model_delta_norm.shape[2:])
+                mask_fore = F.interpolate(mask_fore, size=model_delta_norm.shape[2:], mode='bilinear')
+
+        delta_mask_norms = (model_delta_norm * mask_t).sum([2,3])/(mask_t.sum([2,3])+1e-8)
+        upnormmax = delta_mask_norms.max(dim=1)[0]
+        upnormmax = upnormmax.unsqueeze(-1)
+
+        fore_norms = (model_delta_norm * mask_fore).sum([2,3])/(mask_fore.sum([2,3])+1e-8)
+
+        up = fore_norms
+        down = delta_mask_norms
+
+        tmp_mask = (mask_t.sum([2,3])>0).float()
+        rate = up*(tmp_mask)/(down+1e-8) # b 257
+        rate = (rate.unsqueeze(-1).unsqueeze(-1)*mask_t).sum(dim=1, keepdim=True) # b 1, 64 64
+        
+        # should this go before or after the gaussian blur, or before/after the rate
+        rate = rate * scfg_scale
+
+        rate = torch.clamp(rate,min=min_rate, max=max_rate)
+        rate = torch.clamp_max(rate, rate_clamp/cfg_scale)
+
+        ###Gaussian Smoothing 
+        kernel_size = 3
+        sigma=0.5
+        smoothing = GaussianSmoothing(channels=1, kernel_size=kernel_size, sigma=sigma, dim=2).to(rate.device)
+        rate = F.pad(rate, (1, 1, 1, 1), mode='reflect')
+        rate = smoothing(rate)
+
+        return rate.squeeze(0)
+
+
 def combine_denoised_pass_conds_list(*args, **kwargs):
         """ Hijacked function for combine_denoised in CFGDenoiser """
         original_func = kwargs.get('original_func', None)
