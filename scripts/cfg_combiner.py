@@ -55,7 +55,7 @@ class CFGCombinerScript(UIWrapper):
             """ Process the batch and hook the CFG denoiser if PAG or S-CFG is active """
             logger.debug("CFGCombinerScript process_batch")
             pag_active = p.extra_generation_params.get('PAG Active', False)
-            scfg_active = p.extra_generation_params.get('S-CFG Active', False)
+            scfg_active = p.extra_generation_params.get('SCFG Active', False)
 
             if not any([
                         pag_active,
