@@ -224,6 +224,12 @@ class PAGExtensionScript(UIWrapper):
         def create_hook(self, p: StableDiffusionProcessing, active, pag_scale, start_step, end_step, cfg_interval_enable, cfg_schedule, cfg_interval_low, cfg_interval_high, *args, **kwargs):
                 # Create a list of parameters for each concept
                 pag_params = PAGStateParams()
+
+                # Add to p's incant_cfg_params
+                if not hasattr(p, 'incant_cfg_params'):
+                        logger.error("No incant_cfg_params found in p")
+                p.incant_cfg_params['pag_params'] = pag_params
+                
                 pag_params.pag_scale = pag_scale
                 pag_params.pag_start_step = start_step
                 pag_params.pag_end_step = end_step
@@ -263,6 +269,8 @@ class PAGExtensionScript(UIWrapper):
                 script_callbacks.on_cfg_denoised(cfg_denoised_lambda)
                 #script_callbacks.on_cfg_after_cfg(after_cfg_lambda)
                 script_callbacks.on_script_unloaded(unhook_lambda)
+
+
 
         def postprocess_batch(self, p, *args, **kwargs):
                 self.pag_postprocess_batch(p, *args, **kwargs)
@@ -517,6 +525,10 @@ def combine_denoised_pass_conds_list(*args, **kwargs):
                                 scheduled_cfg_scale = cfg_scheduler(new_params.cfg_interval_schedule, new_params.step, new_params.max_sampling_step, cond_scale)
                                 # Only apply CFG in the interval
                                 cfg_scale = scheduled_cfg_scale if begin_range <= noise_level <= end_range else 1.0
+
+                # This may be temporarily necessary for compatibility with scfg
+                # if not new_params.pag_start_step <= new_params.step <= new_params.pag_end_step:
+                #        return original_func(*args)
 
                 if incantations_debug:
                         logger.debug(f"Schedule: {new_params.cfg_interval_schedule}, CFG Scale: {cfg_scale}, Noise_level: {round(noise_level,3)}")

@@ -43,7 +43,7 @@ if environ.get("INCANT_DEBUG", default=False) != False:
 else:
         logger.info("Incantation: Debug scripts are disabled. Set INCANT_DEBUG environment variable to enable them.")
 # run these after submodules
-end_submodules = list[SubmoduleInfo] = [
+end_submodules: list[SubmoduleInfo] = [
         SubmoduleInfo(module=CFGCombinerScript())
 ]
 submodules = submodules + end_submodules
