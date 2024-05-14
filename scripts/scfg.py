@@ -423,6 +423,8 @@ def scfg_combine_denoised(model_delta, cfg_scale, scfg_params: SCFGStateParams):
         model_delta = model_delta.unsqueeze(0)
         model_delta_norm = model_delta.norm(dim=1, keepdim=True)
 
+        eps = lambda dtype: torch.finfo(dtype).eps 
+
         # rescale map if necessary
         if mask_t.shape[2:] != model_delta_norm.shape[2:]:
                 logger.debug('Rescaling mask_t from %s to %s', mask_t.shape[2:], model_delta_norm.shape[2:])
@@ -431,17 +433,17 @@ def scfg_combine_denoised(model_delta, cfg_scale, scfg_params: SCFGStateParams):
                 logger.debug('Rescaling mask_fore from %s to %s', mask_fore.shape[2:], model_delta_norm.shape[2:])
                 mask_fore = F.interpolate(mask_fore, size=model_delta_norm.shape[2:], mode='bilinear')
 
-        delta_mask_norms = (model_delta_norm * mask_t).sum([2,3])/(mask_t.sum([2,3])+1e-8)
+        delta_mask_norms = (model_delta_norm * mask_t).sum([2,3])/(mask_t.sum([2,3])+eps(mask_t.dtype))
         upnormmax = delta_mask_norms.max(dim=1)[0]
         upnormmax = upnormmax.unsqueeze(-1)
 
-        fore_norms = (model_delta_norm * mask_fore).sum([2,3])/(mask_fore.sum([2,3])+1e-8)
+        fore_norms = (model_delta_norm * mask_fore).sum([2,3])/(mask_fore.sum([2,3])+eps(mask_fore.dtype))
 
         up = fore_norms
         down = delta_mask_norms
 
         tmp_mask = (mask_t.sum([2,3])>0).float()
-        rate = up*(tmp_mask)/(down+1e-8) # b 257
+        rate = up*(tmp_mask)/(down+eps(down.dtype)) # b 257
         rate = (rate.unsqueeze(-1).unsqueeze(-1)*mask_t).sum(dim=1, keepdim=True) # b 1, 64 64
         del model_delta_norm, delta_mask_norms, upnormmax, fore_norms, up, down, tmp_mask
         
@@ -877,8 +879,8 @@ def get_mask(attn_modules, scfg_params: SCFGStateParams, r, latent_size):
                 ca = smoothing(ca.float()).squeeze(1)
                 ca = rearrange(ca, ' (b c) h w -> b c h w' , c= channel)
                 
-                ca_norm = ca/(ca.mean(dim=[2,3], keepdim=True)+1e-8) ### spatial  normlization 
-                
+                ca_norm = ca/(ca.mean(dim=[2,3], keepdim=True)+torch.finfo(ca.dtype).eps) ### spatial  normlization 
+               
                 new_ca+=rearrange(ca_norm, '(b n) c h w -> b n c h w', n=attn_num).sum(1) 
 
                 fore_ca = torch.stack([ca[:,0],ca[:,1:].sum(dim=1)], dim=1)
