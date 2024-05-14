@@ -12,6 +12,7 @@ from scripts.incant import IncantExtensionScript
 from scripts.t2i_zero import T2I0ExtensionScript
 from scripts.pag import PAGExtensionScript
 from scripts.save_attn_maps import SaveAttentionMapsScript
+from scripts.cfg_combiner import CFGCombinerScript
 
 logger = logging.getLogger(__name__)
 logger.setLevel(environ.get("SD_WEBUI_LOG_LEVEL", logging.INFO))
@@ -41,7 +42,13 @@ if environ.get("INCANT_DEBUG", default=False) != False:
         submodules.append(SubmoduleInfo(module=SaveAttentionMapsScript()))
 else:
         logger.info("Incantation: Debug scripts are disabled. Set INCANT_DEBUG environment variable to enable them.")
-                
+# run these after submodules
+end_submodules = list[SubmoduleInfo] = [
+        SubmoduleInfo(module=CFGCombinerScript())
+]
+submodules = submodules + end_submodules
+
+
 class IncantBaseExtensionScript(scripts.Script):
         def __init__(self):
                 pass
