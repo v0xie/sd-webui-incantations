@@ -199,7 +199,7 @@ def combine_denoised_pass_conds_list(*args, **kwargs):
                                         if rate is None:
                                                logger.error("scfg_combine_denoised returned None, using default rate of 1.0")
                                                rate = 1.0
-                                        elif not isinstance(rate, int):
+                                        elif not isinstance(rate, int) and not isinstance(rate, float):
                                                rate = rate.to(device=shared.device, dtype=model_delta.dtype)
                                         else:
                                                # rate is tensor, probably
@@ -207,6 +207,7 @@ def combine_denoised_pass_conds_list(*args, **kwargs):
 
                                 # 1. Experimental formulation for S-CFG combined with CFG
                                 denoised[i] += (model_delta) * rate * (weight * cfg_scale)
+                                del rate
 
                                 # 2. PAG
                                 # PAG is added like CFG
@@ -222,6 +223,8 @@ def combine_denoised_pass_conds_list(*args, **kwargs):
                                                         denoised[i] += (x_out[cond_index] - pag_x_out[i]) * (weight * pag_scale)
                                                 except Exception as e:
                                                         logger.exception("Exception in combine_denoised_pass_conds_list - %s", e)
+
+                                #torch.cuda.empty_cache()
 
                 return denoised
         return new_combine_denoised(*args)

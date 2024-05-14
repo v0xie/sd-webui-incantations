@@ -354,6 +354,9 @@ class SCFGExtensionScript(UIWrapper):
                 # Run only within interval
                 if not scfg_params.start_step <= params.sampling_step <= scfg_params.end_step:
                         return
+                
+                if scfg_params.scfg_scale <= 0:
+                        return
 
                 # S-CFG
                 R = scfg_params.R
@@ -395,19 +398,23 @@ def scfg_combine_denoised(model_delta, cfg_scale, scfg_params: SCFGStateParams):
                 scfg_params: SCFGStateParams - the state parameters for the S-CFG denoiser
         
         Returns:
-                int or torch.Tensor - 1.0 if not within interval, else the rate map tensor
+                int or torch.Tensor - 1.0 if not within interval or scale is 0, else the rate map tensor
         """
 
         current_step = scfg_params.current_step
         start_step = scfg_params.start_step
         end_step = scfg_params.end_step
+        scfg_scale = scfg_params.scfg_scale
 
         if not start_step <= current_step <= end_step:
                 return 1.0
 
+        if scfg_scale <= 0:
+                return 1.0
+
+
         mask_t = scfg_params.mask_t
         mask_fore = scfg_params.mask_fore
-        scfg_scale = scfg_params.scfg_scale
         min_rate = scfg_params.rate_min
         max_rate = scfg_params.rate_max
         rate_clamp = scfg_params.rate_clamp
@@ -436,6 +443,7 @@ def scfg_combine_denoised(model_delta, cfg_scale, scfg_params: SCFGStateParams):
         tmp_mask = (mask_t.sum([2,3])>0).float()
         rate = up*(tmp_mask)/(down+1e-8) # b 257
         rate = (rate.unsqueeze(-1).unsqueeze(-1)*mask_t).sum(dim=1, keepdim=True) # b 1, 64 64
+        del model_delta_norm, delta_mask_norms, upnormmax, fore_norms, up, down, tmp_mask
         
         # should this go before or after the gaussian blur, or before/after the rate
         rate = rate * scfg_scale
