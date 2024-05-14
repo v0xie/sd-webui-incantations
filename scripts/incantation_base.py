@@ -129,7 +129,11 @@ def callback_before_ui():
         try:
                 for module_info in submodules:
                         module = module_info.module
-                        extra_axis_options = module.get_xyz_axis_options()
+                        try:
+                                extra_axis_options = module.get_xyz_axis_options()
+                        except NotImplementedError:
+                                logger.warning(f"Module {module.title()} does not implement get_xyz_axis_options")
+                                extra_axis_options = {}
                         make_axis_options(extra_axis_options)
         except:
                 logger.exception("Incantation: Error while making axis options")

@@ -145,7 +145,11 @@ def combine_denoised_pass_conds_list(*args, **kwargs):
         """ Hijacked function for combine_denoised in CFGDenoiser 
         Currently relies on the original function not having any kwargs
         If any of the params are not None, it will apply the corresponding guidance
-        
+        The order of guidance is:
+            1. Regular CFG guidance
+            2. PAG guidance
+            3. S-CFG guidance - not implemented yet
+            ...
         """
         original_func = kwargs.get('original_func', None)
         pag_params = kwargs.get('pag_params', None)
@@ -159,29 +163,48 @@ def combine_denoised_pass_conds_list(*args, **kwargs):
                 denoised_uncond = x_out[-uncond.shape[0]:]
                 denoised = torch.clone(denoised_uncond)
 
-                # noise_level = calculate_noise_level(new_params.step, new_params.max_sampling_step)
-
-                # CFG Interval
+                ### Variables
+                # 0. Standard CFG Value
                 cfg_scale = cond_scale
 
-                # PAG
+                # 1. CFG Interval
+                # Overrides cfg_scale if pag_params is not None
+                if pag_params is not None:
+                        if pag_params.cfg_interval_enable:
+                                cfg_scale = pag_params.cfg_interval_scheduled_value
 
-                # S-CFG
+                # 2. PAG
+                pag_x_out = None
+                pag_scale = None
+                if pag_params is not None:
+                        pag_x_out = pag_params.pag_x_out
+                        pag_scale = pag_params.pag_scale
 
+                ### Combine Denoised
                 for i, conds in enumerate(conds_list):
                         for cond_index, weight in conds:
-                            # Regular CFG guidance
+
+                            # 0/1. Regular CFG guidance / Scheduled CFG
                             denoised[i] += (x_out[cond_index] - denoised_uncond[i]) * (weight * cfg_scale)
 
-                            # Apply PAG guidance only within interval
-                            if not pag_params.pag_start_step <= pag_params.step <= pag_params.pag_end_step or pag_params.pag_scale <= 0:
-                                    continue
-                            else:
-                                    try:
-                                            denoised[i] += (x_out[cond_index] - pag_params.pag_x_out[i]) * (weight * pag_params.pag_scale)
-                                    except TypeError:
-                                            logger.exception("TypeError in combine_denoised_pass_conds_list")
-                                    except IndexError:
-                                            logger.exception("IndexError in combine_denoised_pass_conds_list")
+                            # 2. PAG
+                            if pag_params is not None:
+                                    # Within step interval? 
+                                    if pag_params.pag_start_step <= pag_params.step <= pag_params.pag_end_step:
+                                            pass
+                                    # Scale non-zero?
+                                    elif pag_scale <= 0:
+                                            pass
+                                    else:
+                                            try:
+                                                    denoised[i] += (x_out[cond_index] - pag_x_out[i]) * (weight * pag_scale)
+                                            except Exception as e:
+                                                    logger.exception("Exception in combine_denoised_pass_conds_list - %s", e)
+                            
+                            # 3. S-CFG
+                            # Not implemented yet
+                            if scfg_params is not None:
+                                    pass
+
                 return denoised
         return new_combine_denoised(*args)
