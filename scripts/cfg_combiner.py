@@ -1,7 +1,7 @@
 import gradio as gr
 import logging
 import torch
-from modules import shared, scripts, patches, script_callbacks
+from modules import shared, scripts, devices, patches, script_callbacks
 from modules.script_callbacks import CFGDenoiserParams
 from modules.processing import StableDiffusionProcessing
 from scripts.incantation_base import UIWrapper
@@ -225,6 +225,7 @@ def combine_denoised_pass_conds_list(*args, **kwargs):
                                                         logger.exception("Exception in combine_denoised_pass_conds_list - %s", e)
 
                                 #torch.cuda.empty_cache()
+                                devices.torch_gc()
 
                 return denoised
         return new_combine_denoised(*args)
