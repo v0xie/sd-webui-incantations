@@ -185,6 +185,12 @@ class SCFGExtensionScript(UIWrapper):
         def create_hook(self, p: StableDiffusionProcessing, active, scfg_scale, scfg_rate_min, scfg_rate_max, scfg_rate_clamp, start_step, end_step, scfg_r):
                 # Create a list of parameters for each concept
                 scfg_params = SCFGStateParams()
+
+                # Add to p
+                if not hasattr(p, 'incant_cfg_params'):
+                        logger.error("No incant_cfg_params found in p")
+                p.incant_cfg_params['scfg_params'] = scfg_params
+
                 scfg_params.denoiser = None
                 scfg_params.all_crossattn_modules = self.get_all_crossattn_modules()
                 scfg_params.max_sampling_steps = p.steps
@@ -199,14 +205,14 @@ class SCFGExtensionScript(UIWrapper):
                 scfg_params.width = p.width
 
                 # Use lambda to call the callback function with the parameters to avoid global variables
-                cfg_denoise_lambda = lambda callback_params: self.on_cfg_denoiser_callback(callback_params, scfg_params)
+                #cfg_denoise_lambda = lambda callback_params: self.on_cfg_denoiser_callback(callback_params, scfg_params)
                 cfg_denoised_lambda = lambda callback_params: self.on_cfg_denoised_callback(callback_params, scfg_params)
                 unhook_lambda = lambda _: self.unhook_callbacks(scfg_params)
 
                 self.ready_hijack_forward(scfg_params.all_crossattn_modules)
 
                 logger.debug('Hooked callbacks')
-                script_callbacks.on_cfg_denoiser(cfg_denoise_lambda)
+                #script_callbacks.on_cfg_denoiser(cfg_denoise_lambda)
                 script_callbacks.on_cfg_denoised(cfg_denoised_lambda)
                 script_callbacks.on_script_unloaded(unhook_lambda)
 
@@ -238,21 +244,21 @@ class SCFGExtensionScript(UIWrapper):
                 global handles
 
                 if scfg_params is None:
-                       logger.error("PAG params is None")
+                       logger.error("SCFG params is None")
                        return
 
-                if scfg_params.denoiser is not None:
-                        denoiser = scfg_params.denoiser
-                        setattr(denoiser, 'combine_denoised_patched_scfg', False)
-                        try:
-                                patches.undo(__name__, denoiser, "combine_denoised")
-                        except KeyError:
-                                logger.exception("KeyError unhooking combine_denoised")
-                                pass
-                        except RuntimeError:
-                                logger.exception("RuntimeError unhooking combine_denoised")
-                                pass
-                        scfg_params.denoiser = None
+                #if scfg_params.denoiser is not None:
+                #        denoiser = scfg_params.denoiser
+                #        setattr(denoiser, 'combine_denoised_patched_scfg', False)
+                #        try:
+                #                patches.undo(__name__, denoiser, "combine_denoised")
+                #        except KeyError:
+                #                logger.exception("KeyError unhooking combine_denoised")
+                #                pass
+                #        except RuntimeError:
+                #                logger.exception("RuntimeError unhooking combine_denoised")
+                #                pass
+                #        scfg_params.denoiser = None
 
 
         def ready_hijack_forward(self, all_crossattn_modules):
@@ -317,26 +323,26 @@ class SCFGExtensionScript(UIWrapper):
                 self.unhook_callbacks(scfg_params)
 
                 # patch combine_denoised
-                if scfg_params.denoiser is None:
-                        scfg_params.denoiser = params.denoiser
-                if getattr(params.denoiser, 'combine_denoised_patched_scfg', False) is False:
-                        try:
-                                setattr(params.denoiser, 'combine_denoised_original_scfg', params.denoiser.combine_denoised)
-                                # create patch that references the original function
-                                pass_conds_func = lambda *args, **kwargs: combine_denoised_pass_conds_list(
-                                        *args,
-                                        **kwargs,
-                                        original_func = params.denoiser.combine_denoised_original_scfg,
-                                        scfg_params = scfg_params)
-                                scfg_params.patched_combine_denoised = patches.patch(__name__, params.denoiser, "combine_denoised", pass_conds_func)
-                                setattr(params.denoiser, 'combine_denoised_patched_scfg', True)
-                                setattr(params.denoiser, 'combine_denoised_original_scfg', patches.original(__name__, params.denoiser, "combine_denoised"))
-                        except KeyError:
-                                logger.exception("KeyError patching combine_denoised")
-                                pass
-                        except RuntimeError:
-                                logger.exception("RuntimeError patching combine_denoised")
-                                pass
+                # if scfg_params.denoiser is None:
+                #         scfg_params.denoiser = params.denoiser
+                # if getattr(params.denoiser, 'combine_denoised_patched_scfg', False) is False:
+                #         try:
+                #                 setattr(params.denoiser, 'combine_denoised_original_scfg', params.denoiser.combine_denoised)
+                #                 # create patch that references the original function
+                #                 pass_conds_func = lambda *args, **kwargs: combine_denoised_pass_conds_list(
+                #                         *args,
+                #                         **kwargs,
+                #                         original_func = params.denoiser.combine_denoised_original_scfg,
+                #                         scfg_params = scfg_params)
+                #                 scfg_params.patched_combine_denoised = patches.patch(__name__, params.denoiser, "combine_denoised", pass_conds_func)
+                #                 setattr(params.denoiser, 'combine_denoised_patched_scfg', True)
+                #                 setattr(params.denoiser, 'combine_denoised_original_scfg', patches.original(__name__, params.denoiser, "combine_denoised"))
+                #         except KeyError:
+                #                 logger.exception("KeyError patching combine_denoised")
+                #                 pass
+                #         except RuntimeError:
+                #                 logger.exception("RuntimeError patching combine_denoised")
+                #                 pass
 
         def on_cfg_denoised_callback(self, params: CFGDenoisedParams, scfg_params: SCFGStateParams):
                 """ Callback function for the CFGDenoisedParams 
@@ -347,6 +353,9 @@ class SCFGExtensionScript(UIWrapper):
 
                 # Run only within interval
                 if not scfg_params.start_step <= params.sampling_step <= scfg_params.end_step:
+                        return
+                
+                if scfg_params.scfg_scale <= 0:
                         return
 
                 # S-CFG
@@ -379,6 +388,79 @@ class SCFGExtensionScript(UIWrapper):
                         #xyz_grid.AxisOption("[PAG] ctnms_alpha", float, pag_apply_field("pag_ctnms_alpha")),
                 }
                 return extra_axis_options
+
+
+def scfg_combine_denoised(model_delta, cfg_scale, scfg_params: SCFGStateParams):
+        """ The inner loop of the S-CFG denoiser 
+        Arguments:
+                model_delta: torch.Tensor - defined by `x_out[cond_index] - denoised_uncond[i]`
+                cfg_scale: float - guidance scale
+                scfg_params: SCFGStateParams - the state parameters for the S-CFG denoiser
+        
+        Returns:
+                int or torch.Tensor - 1.0 if not within interval or scale is 0, else the rate map tensor
+        """
+
+        current_step = scfg_params.current_step
+        start_step = scfg_params.start_step
+        end_step = scfg_params.end_step
+        scfg_scale = scfg_params.scfg_scale
+
+        if not start_step <= current_step <= end_step:
+                return 1.0
+
+        if scfg_scale <= 0:
+                return 1.0
+
+
+        mask_t = scfg_params.mask_t
+        mask_fore = scfg_params.mask_fore
+        min_rate = scfg_params.rate_min
+        max_rate = scfg_params.rate_max
+        rate_clamp = scfg_params.rate_clamp
+
+
+        model_delta = model_delta.unsqueeze(0)
+        model_delta_norm = model_delta.norm(dim=1, keepdim=True)
+
+        eps = lambda dtype: torch.finfo(dtype).eps 
+
+        # rescale map if necessary
+        if mask_t.shape[2:] != model_delta_norm.shape[2:]:
+                logger.debug('Rescaling mask_t from %s to %s', mask_t.shape[2:], model_delta_norm.shape[2:])
+                mask_t = F.interpolate(mask_t, size=model_delta_norm.shape[2:], mode='bilinear')
+        if mask_fore.shape[-2] != model_delta_norm.shape[-2]:
+                logger.debug('Rescaling mask_fore from %s to %s', mask_fore.shape[2:], model_delta_norm.shape[2:])
+                mask_fore = F.interpolate(mask_fore, size=model_delta_norm.shape[2:], mode='bilinear')
+
+        delta_mask_norms = (model_delta_norm * mask_t).sum([2,3])/(mask_t.sum([2,3])+eps(mask_t.dtype))
+        upnormmax = delta_mask_norms.max(dim=1)[0]
+        upnormmax = upnormmax.unsqueeze(-1)
+
+        fore_norms = (model_delta_norm * mask_fore).sum([2,3])/(mask_fore.sum([2,3])+eps(mask_fore.dtype))
+
+        up = fore_norms
+        down = delta_mask_norms
+
+        tmp_mask = (mask_t.sum([2,3])>0).float()
+        rate = up*(tmp_mask)/(down+eps(down.dtype)) # b 257
+        rate = (rate.unsqueeze(-1).unsqueeze(-1)*mask_t).sum(dim=1, keepdim=True) # b 1, 64 64
+        del model_delta_norm, delta_mask_norms, upnormmax, fore_norms, up, down, tmp_mask
+        
+        # should this go before or after the gaussian blur, or before/after the rate
+        rate = rate * scfg_scale
+
+        rate = torch.clamp(rate,min=min_rate, max=max_rate)
+        rate = torch.clamp_max(rate, rate_clamp/cfg_scale)
+
+        ###Gaussian Smoothing 
+        kernel_size = 3
+        sigma=0.5
+        smoothing = GaussianSmoothing(channels=1, kernel_size=kernel_size, sigma=sigma, dim=2).to(rate.device)
+        rate = F.pad(rate, (1, 1, 1, 1), mode='reflect')
+        rate = smoothing(rate)
+
+        return rate.squeeze(0)
 
 
 def combine_denoised_pass_conds_list(*args, **kwargs):
@@ -797,8 +879,8 @@ def get_mask(attn_modules, scfg_params: SCFGStateParams, r, latent_size):
                 ca = smoothing(ca.float()).squeeze(1)
                 ca = rearrange(ca, ' (b c) h w -> b c h w' , c= channel)
                 
-                ca_norm = ca/(ca.mean(dim=[2,3], keepdim=True)+1e-8) ### spatial  normlization 
-                
+                ca_norm = ca/(ca.mean(dim=[2,3], keepdim=True)+torch.finfo(ca.dtype).eps) ### spatial  normlization 
+               
                 new_ca+=rearrange(ca_norm, '(b n) c h w -> b n c h w', n=attn_num).sum(1) 
 
                 fore_ca = torch.stack([ca[:,0],ca[:,1:].sum(dim=1)], dim=1)

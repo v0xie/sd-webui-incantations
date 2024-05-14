@@ -13,6 +13,7 @@ from scripts.t2i_zero import T2I0ExtensionScript
 from scripts.scfg import SCFGExtensionScript
 from scripts.pag import PAGExtensionScript
 from scripts.save_attn_maps import SaveAttentionMapsScript
+from scripts.cfg_combiner import CFGCombinerScript
 
 logger = logging.getLogger(__name__)
 logger.setLevel(environ.get("SD_WEBUI_LOG_LEVEL", logging.INFO))
@@ -43,7 +44,13 @@ if environ.get("INCANT_DEBUG", default=False) != False:
         submodules.append(SubmoduleInfo(module=SaveAttentionMapsScript()))
 else:
         logger.info("Incantation: Debug scripts are disabled. Set INCANT_DEBUG environment variable to enable them.")
-                
+# run these after submodules
+end_submodules: list[SubmoduleInfo] = [
+        SubmoduleInfo(module=CFGCombinerScript())
+]
+submodules = submodules + end_submodules
+
+
 class IncantBaseExtensionScript(scripts.Script):
         def __init__(self):
                 pass
@@ -124,7 +131,11 @@ def callback_before_ui():
         try:
                 for module_info in submodules:
                         module = module_info.module
-                        extra_axis_options = module.get_xyz_axis_options()
+                        try:
+                                extra_axis_options = module.get_xyz_axis_options()
+                        except NotImplementedError:
+                                logger.warning(f"Module {module.title()} does not implement get_xyz_axis_options")
+                                extra_axis_options = {}
                         make_axis_options(extra_axis_options)
         except:
                 logger.exception("Incantation: Error while making axis options")
