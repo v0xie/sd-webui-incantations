@@ -645,9 +645,12 @@ import torch.nn.functional as F
 from einops import rearrange
 def get_mask(attn_modules, scfg_params: SCFGStateParams, r, latent_size):
         """ Aggregates the attention across the different layers and heads at the specified resolution. 
-        In the original paper, r is set to 4.
-        We modify so that r represents the number of the smallest attention map sizes to aggregate.
-        
+        In the original paper, r is a hyper-parameter set to 4.
+        Arguments:
+                attn_modules: List of attention modules
+                scfg_params: SCFGStateParams
+                r: int - 
+                latent_size: tuple 
         
         """
         height = scfg_params.height
@@ -750,11 +753,19 @@ def get_mask(attn_modules, scfg_params: SCFGStateParams, r, latent_size):
                 # 4.1.2 Self-Attentiion
                 ssgc_sa = curr
                 ssgc_n = max_r
-                for _ in range(ssgc_n-1):
-                        curr = sa@sa
+
+                # summation from r=2 to R, we set ssgc_sa to curr which would be sa^1
+                for r_value in range(1, ssgc_n):
+                        r_pow = r_value + 1
+                        curr = torch.linalg.matrix_power(sa, r_pow) # sa^r
                         ssgc_sa += curr
+
                 ssgc_sa/=ssgc_n
                 sa = ssgc_sa
+
+                # for _ in range(ssgc_n-1):
+                #         curr = sa@sa
+                #         ssgc_sa += curr
 
                 ########smoothing ca
                 ca = sa@ca # b hw c
