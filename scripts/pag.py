@@ -536,6 +536,10 @@ def combine_denoised_pass_conds_list(*args, **kwargs):
                 # if not new_params.pag_start_step <= new_params.step <= new_params.pag_end_step:
                 #        return original_func(*args)
 
+                # This may be temporarily necessary for compatibility with scfg
+                # if not new_params.pag_start_step <= new_params.step <= new_params.pag_end_step:
+                #        return original_func(*args)
+
                 if incantations_debug:
                         logger.debug(f"Schedule: {new_params.cfg_interval_schedule}, CFG Scale: {cfg_scale}, Noise_level: {round(noise_level,3)}")
 
