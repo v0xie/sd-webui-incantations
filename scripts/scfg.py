@@ -26,14 +26,14 @@ from typing import Callable, Dict, Optional
 from collections import OrderedDict
 import torch
 
-from pytorch_memlab import LineProfiler, MemReporter
-reporter = MemReporter()
-lineprofiler = LineProfiler()
+# from pytorch_memlab import LineProfiler, MemReporter
+# reporter = MemReporter()
 
 logger = logging.getLogger(__name__)
 logger.setLevel(environ.get("SD_WEBUI_LOG_LEVEL", logging.INFO))
 
 incantations_debug = environ.get("INCANTAIONS_DEBUG", False)
+
 
 """
 An unofficial implementation of "Rethinking the Spatial Inconsistency in Classifier-Free Diffusion Guidancee" for Automatic1111 WebUI.
@@ -375,14 +375,15 @@ class SCFGExtensionScript(UIWrapper):
                 R = scfg_params.R
                 max_latent_size = [params.x.shape[-2] // R, params.x.shape[-1] // R]
 
-                with LineProfiler(get_mask) as lp:
-                        ca_mask, fore_mask = get_mask(scfg_params.all_crossattn_modules,
-                                                scfg_params,
-                                                r = scfg_params.R,
-                                                latent_size = max_latent_size,
-                                                #latent_size = params.x.shape[2:] / R,
-                                                )
-                        lp.print_stats()
+                #with LineProfiler(get_mask) as lp:
+
+                ca_mask, fore_mask = get_mask(scfg_params.all_crossattn_modules,
+                                        scfg_params,
+                                        r = scfg_params.R,
+                                        latent_size = max_latent_size,
+                                        #latent_size = params.x.shape[2:] / R,
+                                )
+                #        lp.print_stats()
                         #lp.display(get_mask)
 
                 # todo parameterize this
@@ -420,8 +421,6 @@ def scfg_combine_denoised(model_delta, cfg_scale, scfg_params: SCFGStateParams):
         Returns:
                 int or torch.Tensor - 1.0 if not within interval or scale is 0, else the rate map tensor
         """
-        #logger.debug('========== before combine denoised ==========')
-        # reporter.report(verbose=True)
 
         current_step = scfg_params.current_step
         start_step = scfg_params.start_step
@@ -434,13 +433,11 @@ def scfg_combine_denoised(model_delta, cfg_scale, scfg_params: SCFGStateParams):
         if scfg_scale <= 0:
                 return 1.0
 
-
         mask_t = scfg_params.mask_t
         mask_fore = scfg_params.mask_fore
         min_rate = scfg_params.rate_min
         max_rate = scfg_params.rate_max
         rate_clamp = scfg_params.rate_clamp
-
 
         model_delta = model_delta.unsqueeze(0)
         model_delta_norm = model_delta.norm(dim=1, keepdim=True)
