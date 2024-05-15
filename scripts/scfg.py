@@ -116,9 +116,9 @@ class SCFGExtensionScript(UIWrapper):
                         active = gr.Checkbox(value=False, default=False, label="Active", elem_id='scfg_active')
                         with gr.Row():
                                 scfg_scale = gr.Slider(value = 1.0, minimum = 0, maximum = 30.0, step = 0.1, label="SCFG Scale", elem_id = 'scfg_scale', info="")
-                                scfg_rate_min = gr.Slider(value = 0.8, minimum = 0, maximum = 30.0, step = 0.1, label="Min CFG", elem_id = 'scfg_min_rate', info="")
-                                scfg_rate_max = gr.Slider(value = 3.0, minimum = 0, maximum = 30.0, step = 0.1, label="Max CFG", elem_id = 'scfg_max_rate', info="")
-                                scfg_rate_clamp = gr.Slider(value = 15.0, minimum = 0, maximum = 30.0, step = 0.1, label="Clamp CFG", elem_id = 'scfg_clamp_rate', info="")
+                                scfg_rate_min = gr.Slider(value = 0.8, minimum = 0, maximum = 30.0, step = 0.1, label="Min CFG", elem_id = 'scfg_rate_min', info="")
+                                scfg_rate_max = gr.Slider(value = 3.0, minimum = 0, maximum = 30.0, step = 0.1, label="Max CFG", elem_id = 'scfg_rate_max', info="")
+                                scfg_rate_clamp = gr.Slider(value = 15.0, minimum = 0, maximum = 30.0, step = 0.1, label="Clamp CFG", elem_id = 'scfg_rate_clamp', info="")
                         with gr.Row():
                                 start_step = gr.Slider(value = 0, minimum = 0, maximum = 150, step = 1, label="Start Step", elem_id = 'scfg_start_step', info="")
                                 end_step = gr.Slider(value = 150, minimum = 0, maximum = 150, step = 1, label="End Step", elem_id = 'scfg_end_step', info="")
