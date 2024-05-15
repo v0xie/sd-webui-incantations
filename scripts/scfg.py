@@ -26,6 +26,10 @@ from typing import Callable, Dict, Optional
 from collections import OrderedDict
 import torch
 
+from pytorch_memlab import LineProfiler, MemReporter
+reporter = MemReporter()
+lineprofiler = LineProfiler()
+
 logger = logging.getLogger(__name__)
 logger.setLevel(environ.get("SD_WEBUI_LOG_LEVEL", logging.INFO))
 
@@ -226,6 +230,10 @@ class SCFGExtensionScript(UIWrapper):
                 active = getattr(p, "scfg_active", active)
                 if active is False:
                         return
+
+                logger.debug('========== postprocess_batch ==========')
+                #reporter.report(verbose=True)
+
                 self.remove_all_hooks()
 
         def remove_all_hooks(self):
@@ -268,10 +276,12 @@ class SCFGExtensionScript(UIWrapper):
                 """
 
                 def scfg_to_q_hook(module, input, kwargs, output):
-                        setattr(module.scfg_parent_module[0], 'scfg_last_to_q_map', output.detach().clone())
+                        scfg_q_map = output.detach().clone()
+                        setattr(module.scfg_parent_module[0], 'scfg_last_to_q_map', scfg_q_map)
 
                 def scfg_to_k_hook(module, input, kwargs, output):
-                        setattr(module.scfg_parent_module[0], 'scfg_last_to_k_map', output.detach().clone())
+                        scfg_k_map = output.detach().clone()
+                        setattr(module.scfg_parent_module[0], 'scfg_last_to_k_map', scfg_k_map)
                         
                 for module in all_crossattn_modules:
                         self.add_field_cross_attn_modules(module, 'scfg_last_to_q_map', None)
@@ -358,21 +368,31 @@ class SCFGExtensionScript(UIWrapper):
                 if scfg_params.scfg_scale <= 0:
                         return
 
+                logger.debug('==========before get_mask ===========') 
+                #reporter.report(verbose=True)
+
                 # S-CFG
                 R = scfg_params.R
                 max_latent_size = [params.x.shape[-2] // R, params.x.shape[-1] // R]
-                ca_mask, fore_mask = get_mask(scfg_params.all_crossattn_modules,
-                                              scfg_params,
-                                              r = scfg_params.R,
-                                              latent_size = max_latent_size,
-                                              #latent_size = params.x.shape[2:] / R,
-                                        )
+
+                with LineProfiler(get_mask) as lp:
+                        ca_mask, fore_mask = get_mask(scfg_params.all_crossattn_modules,
+                                                scfg_params,
+                                                r = scfg_params.R,
+                                                latent_size = max_latent_size,
+                                                #latent_size = params.x.shape[2:] / R,
+                                                )
+                        lp.print_stats()
+                        #lp.display(get_mask)
 
                 # todo parameterize this
                 mask_t = F.interpolate(ca_mask, scale_factor=R, mode='nearest')
                 mask_fore = F.interpolate(fore_mask, scale_factor=R, mode='nearest')
                 scfg_params.mask_t = mask_t 
                 scfg_params.mask_fore = mask_fore
+
+                logger.debug('========== after get_mask ===========') 
+                #reporter.report(verbose=True)
 
         def get_xyz_axis_options(self) -> dict:
                 xyz_grid = [x for x in scripts.scripts_data if x.script_class.__module__ in ("xyz_grid.py", "scripts.xyz_grid")][0].module
@@ -400,6 +420,8 @@ def scfg_combine_denoised(model_delta, cfg_scale, scfg_params: SCFGStateParams):
         Returns:
                 int or torch.Tensor - 1.0 if not within interval or scale is 0, else the rate map tensor
         """
+        #logger.debug('========== before combine denoised ==========')
+        # reporter.report(verbose=True)
 
         current_step = scfg_params.current_step
         start_step = scfg_params.start_step
@@ -852,11 +874,9 @@ def get_mask(attn_modules, scfg_params: SCFGStateParams, r, latent_size):
                 ########smoothing ca
                 ca = sa@ca # b hw c
 
-                max_dims = height * width
                 hw = ca.size(1)
 
                 downscale_h = round((hw * (height / width)) ** 0.5)
-                # downscale_w = hw // downscale_h
 
                 ca = rearrange(ca, 'b (h w) c -> b c h w', h=downscale_h )
 
@@ -894,7 +914,14 @@ def get_mask(attn_modules, scfg_params: SCFGStateParams, r, latent_size):
                         curr_r = None
                 attnmap_r += 1
                 r_r *= 2
+
+                for attnmap in attention_maps[key_self] + attention_maps[key_corss]:
+                        del attnmap
+                del sa, ca, ssgc_sa, ssgc_n, curr
+                del ca_norm, froe_ca_norm, fore_ca
         
+        # variables used from above:
+        # new_ca, new_fore, a_n
         new_ca = new_ca/a_n
         new_fore = new_fore/a_n
         _,new_ca   = new_ca.chunk(2, dim=0) #[1]
@@ -908,5 +935,7 @@ def get_mask(attn_modules, scfg_params: SCFGStateParams, r, latent_size):
         max_fore = max_fore.unsqueeze(1) # 
         fore_mask = (fore_ca==max_fore).float() # b 77/10 16 16 
         fore_mask = 1.0-fore_mask[:,:1] # b 1 16 16
+
+        del new_ca, new_fore, a_n, max_ca, max_fore, inds
 
         return [ ca_mask, fore_mask]
