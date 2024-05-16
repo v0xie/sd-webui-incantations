@@ -26,8 +26,8 @@ from typing import Callable, Dict, Optional
 from collections import OrderedDict
 import torch
 
-from pytorch_memlab import LineProfiler, MemReporter
-reporter = MemReporter()
+# from pytorch_memlab import LineProfiler, MemReporter
+# reporter = MemReporter()
 
 logger = logging.getLogger(__name__)
 logger.setLevel(environ.get("SD_WEBUI_LOG_LEVEL", logging.INFO))
@@ -338,14 +338,13 @@ class SCFGExtensionScript(UIWrapper):
                 R = scfg_params.R
                 max_latent_size = [params.x.shape[-2] // R, params.x.shape[-1] // R]
 
-                with LineProfiler(get_mask) as lp:
-                        ca_mask, fore_mask = get_mask(scfg_params.all_crossattn_modules,
-                                                scfg_params,
-                                                r = scfg_params.R,
-                                                latent_size = max_latent_size,
-                                                #latent_size = params.x.shape[2:] / R,
-                                        )
-                        lp.print_stats()
+                #with LineProfiler(get_mask) as lp:
+                ca_mask, fore_mask = get_mask(scfg_params.all_crossattn_modules,
+                                        scfg_params,
+                                        r = scfg_params.R,
+                                        latent_size = max_latent_size,
+                                )
+                        #lp.print_stats()
 
                 # todo parameterize this
                 mask_t = F.interpolate(ca_mask, scale_factor=R, mode='nearest')
