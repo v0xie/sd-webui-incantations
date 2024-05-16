@@ -1,6 +1,32 @@
 # sd-webui-incantations
 This extension implements multiple novel algorithms that enhance image quality, prompt following, and more.
 
+## What is This?
+The `sd-webui-incantations` extension is designed to enhance the capabilities of the Stable Diffusion web UI by integrating advanced algorithms that improve image generation quality and fidelity to prompts. These algorithms include Perturbed Attention Guidance, CFG Interval/Scheduler, Multi-Concept T2I-Zero/Attention Regulation, and more. By incorporating state-of-the-art research, this extension allows users to achieve higher-quality images with more accurate prompt adherence and improved sampling techniques.
+
+## Installation
+To install the `sd-webui-incantations` extension, follow these steps:
+
+1. **Clone the Repository**:
+   ```bash
+   git clone https://github.com/v0xie/sd-webui-incantations.git
+2. **Navigate to the Directory**:
+    ```bash
+    cd sd-webui-incantations
+    
+3. **Install Dependencies**: Ensure you have all required dependencies installed. You can do this via `pip`:
+   ```bash 
+   pip install -r requirements.txt
+    
+4. **Add to Stable Diffusion Web UI**:
+   Add the path to this extension in your Stable Diffusion Web UI configuration or place the cloned directory in the extensions folder of your web UI.
+    
+5. **Restart the Web UI**:
+    Restart your Stable Diffusion Web UI to load the new extension.
+
+
+
+
 ## COMPATIBILITY NOTICES:
 #### Currently incompatible with stable-diffusion-webui-forge 
 Use this extension with Forge: https://github.com/pamparamm/sd-perturbed-attention
