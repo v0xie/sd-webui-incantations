@@ -26,8 +26,8 @@ from typing import Callable, Dict, Optional
 from collections import OrderedDict
 import torch
 
-# from pytorch_memlab import LineProfiler, MemReporter
-# reporter = MemReporter()
+from pytorch_memlab import LineProfiler, MemReporter
+reporter = MemReporter()
 
 logger = logging.getLogger(__name__)
 logger.setLevel(environ.get("SD_WEBUI_LOG_LEVEL", logging.INFO))
@@ -72,7 +72,7 @@ GitHub URL: https://github.com/v0xie/sd-webui-incantations
 handles = []
 global_scale = 1
 
-SCFG_MODULES = ['to_q', 'to_v', 'to_k']
+SCFG_MODULES = ['to_q', 'to_k']
 
 
 class SCFGStateParams:
@@ -375,15 +375,14 @@ class SCFGExtensionScript(UIWrapper):
                 R = scfg_params.R
                 max_latent_size = [params.x.shape[-2] // R, params.x.shape[-1] // R]
 
-                #with LineProfiler(get_mask) as lp:
-
-                ca_mask, fore_mask = get_mask(scfg_params.all_crossattn_modules,
-                                        scfg_params,
-                                        r = scfg_params.R,
-                                        latent_size = max_latent_size,
-                                        #latent_size = params.x.shape[2:] / R,
-                                )
-                #        lp.print_stats()
+                with LineProfiler(get_mask) as lp:
+                        ca_mask, fore_mask = get_mask(scfg_params.all_crossattn_modules,
+                                                scfg_params,
+                                                r = scfg_params.R,
+                                                latent_size = max_latent_size,
+                                                #latent_size = params.x.shape[2:] / R,
+                                        )
+                        lp.print_stats()
                         #lp.display(get_mask)
 
                 # todo parameterize this
@@ -766,6 +765,7 @@ def get_mask(attn_modules, scfg_params: SCFGStateParams, r, latent_size):
 
         # The maximum value of the sizes of attention map to aggregate
         max_r = r
+        max_sizes = r
 
         # The current number of attention map resolutions aggregated
         attnmap_r = 0
@@ -782,19 +782,20 @@ def get_mask(attn_modules, scfg_params: SCFGStateParams, r, latent_size):
         for module in attn_modules:
                 module_type = 'cross' if 'attn2' in module.network_layer_name else 'self'
 
-                to_q_map = getattr(module, 'scfg_last_to_q_map', None)
-                to_k_map = getattr(module, 'scfg_last_to_k_map', None)
-                if to_k_map is None:
-                        to_k_map = to_q_map
+                #to_q_map = getattr(module, 'scfg_last_to_q_map', None)
+                #to_k_map = getattr(module, 'scfg_last_to_k_map', None)
+                #if to_k_map is None:
+                #        to_k_map = to_q_map
 
-                to_q_map = head_to_batch_dim(to_q_map, module.heads)
-                to_q_map = average_over_head_dim(to_q_map, module.heads)
-                to_q_map = torch.stack([to_q_map[0], to_q_map[0]], dim=0)
+                #to_q_map = head_to_batch_dim(to_q_map, module.heads)
+                #to_q_map = average_over_head_dim(to_q_map, module.heads)
+                #to_q_map = torch.stack([to_q_map[0], to_q_map[0]], dim=0)
+                #to_k_map = head_to_batch_dim(to_k_map, module.heads)
+                #to_k_map = average_over_head_dim(to_k_map, module.heads)
+                #to_k_map = torch.stack([to_k_map[0], to_k_map[0]], dim=0)
 
-                to_k_map = head_to_batch_dim(to_k_map, module.heads)
-                to_k_map = average_over_head_dim(to_k_map, module.heads)
-                to_k_map = torch.stack([to_k_map[0], to_k_map[0]], dim=0)
-
+                to_q_map = prepare_attn_map(to_q_map, module.heads)
+                to_k_map = prepare_attn_map(to_k_map, module.heads)
                 module_attn_size = to_q_map.size(1)
                 module_attn_sizes.add(module_attn_size)
                 downscale_h = int((module_attn_size * (height / width)) ** 0.5)
@@ -806,15 +807,23 @@ def get_mask(attn_modules, scfg_params: SCFGStateParams, r, latent_size):
                 #       max_r = r
 
                 # based on diffusers models/attention.py "get_attention_scores"
-                attn_scores = to_q_map @ to_k_map.transpose(-1, -2)
-                attn_probs = attn_scores.softmax(dim=-1).to(device=shared.device, dtype=to_q_map.dtype)
-                del to_q_map, to_k_map
-                del attn_scores
+                # in place operations to save memory: https://stackoverflow.com/questions/53732209/torch-in-place-operations-to-save-memory-softmax
+                # 512x: 2.65G -> 2.47G
+
+                attn_probs = get_attention_scores(to_q_map, to_k_map)
+
+                #attn_probs = attn_scores.softmax(dim=-1).to(device=shared.device, dtype=to_q_map.dtype)
+
+                if module_type == 'self':
+                       del module.scfg_last_to_q_map
+                else:
+                       del module.scfg_last_to_q_map, module.scfg_last_to_k_map
 
                 if module_key not in attention_store_proxy:
                         attention_store_proxy[module_key] = []
                 try:
                         attention_store_proxy[module_key].append(attn_probs)
+                        #attention_store_proxy[module_key].append(qv_map)
                 except KeyError:
                         continue
 
@@ -822,23 +831,23 @@ def get_mask(attn_modules, scfg_params: SCFGStateParams, r, latent_size):
         attention_maps = attention_store_proxy
 
         # max_r = max(module_attn_sizes)
-        r_r = 1 # scale factor from map to map
+        # r_r = 1 # scale factor from map to map
 
         curr_r = module_attn_sizes.pop(0)
-        while curr_r != None and attnmap_r < max_r:
+        while curr_r != None and attnmap_r < max_sizes:
                 key_corss = f"r{curr_r}_cross"
                 key_self = f"r{curr_r}_self"
 
                 if key_self not in attention_maps.keys() or key_corss not in attention_maps.keys():
                         next_r = module_attn_sizes.pop(0)
                         attnmap_r += 1
-                        r_r *= 2
+                        # r_r *= 2
                         curr_r = next_r
                         continue
                 if len(attention_maps[key_self]) == 0 or len(attention_maps[key_corss]) == 0:
                         curr_r = module_attn_sizes.pop(0)
                         attnmap_r += 1
-                        r_r *= 2
+                        # r_r *= 2
                         curr_r = next_r
                         continue
 
@@ -856,9 +865,14 @@ def get_mask(attn_modules, scfg_params: SCFGStateParams, r, latent_size):
                 ssgc_n = max_r
 
                 # summation from r=2 to R, we set ssgc_sa to curr which would be sa^1
+                # major memory hog
+                #    active_bytes peak from 3.41G to 4.04G
+                #    reserved_bytes peak from 3.70G to 4.64G
+                # optimization 1: active 4.03G -> 3.72G = 0.31G, reserved 4.64G -> 4.16G = 0.48G
                 for r_value in range(1, ssgc_n):
                         r_pow = r_value + 1
-                        curr = torch.linalg.matrix_power(sa, r_pow) # sa^r
+                        curr @= sa  # optimization 1
+#                        curr = torch.linalg.matrix_power(sa, r_pow) # sa^r
                         ssgc_sa += curr
 
                 ssgc_sa/=ssgc_n
@@ -910,12 +924,17 @@ def get_mask(attn_modules, scfg_params: SCFGStateParams, r, latent_size):
                 else:
                         curr_r = None
                 attnmap_r += 1
-                r_r *= 2
+                # r_r *= 2
 
-                for attnmap in attention_maps[key_self] + attention_maps[key_corss]:
-                        del attnmap
-                del sa, ca, ssgc_sa, ssgc_n, curr
+
+                # optimization 2: memory savings: 3.09G - 2.47G = 0.62G
                 del ca_norm, froe_ca_norm, fore_ca
+
+        # no memory savings
+        #for attnmap in attention_maps[key_self] + attention_maps[key_corss]:
+        #        del attnmap
+        del attention_maps
+        del sa, ca, ssgc_sa, ssgc_n, curr
         
         # variables used from above:
         # new_ca, new_fore, a_n
@@ -933,6 +952,28 @@ def get_mask(attn_modules, scfg_params: SCFGStateParams, r, latent_size):
         fore_mask = (fore_ca==max_fore).float() # b 77/10 16 16 
         fore_mask = 1.0-fore_mask[:,:1] # b 1 16 16
 
+        # no memory savings
         del new_ca, new_fore, a_n, max_ca, max_fore, inds
 
         return [ ca_mask, fore_mask]
+
+def prepare_attn_map(to_k_map, heads):
+    to_k_map = head_to_batch_dim(to_k_map, heads)
+    to_k_map = average_over_head_dim(to_k_map, heads)
+    to_k_map = torch.stack([to_k_map[0], to_k_map[0]], dim=0)
+    return to_k_map
+
+
+def get_attention_scores(to_q_map, to_k_map):
+        """ Calculate the attention scores for the given query and key maps
+        Arguments:
+                to_q_map: torch.Tensor - query map
+                to_k_map: torch.Tensor - key map
+        Returns:
+                torch.Tensor - attention scores 
+        """
+        attn_probs = to_q_map @ to_k_map.transpose(-1, -2)
+        torch.exp(attn_probs, out = attn_probs)
+        summed = attn_probs.sum(dim=-1, keepdim=True)
+        attn_probs /= summed
+        return attn_probs
