@@ -98,6 +98,7 @@ SCHEDULES = [
 
 class PAGStateParams:
         def __init__(self):
+                self.pag_active: bool = False      # PAG guidance scale
                 self.pag_scale: int = -1      # PAG guidance scale
                 self.pag_start_step: int = 0
                 self.pag_end_step: int = 150 
@@ -149,17 +150,18 @@ class PAGExtensionScript(UIWrapper):
                         with gr.Row():
                                 start_step = gr.Slider(value = 0, minimum = 0, maximum = 150, step = 1, label="Start Step", elem_id = 'pag_start_step', info="")
                                 end_step = gr.Slider(value = 150, minimum = 0, maximum = 150, step = 1, label="End Step", elem_id = 'pag_end_step', info="")
+
+                with gr.Accordion('CFG Scheduler', open=False):
+                        cfg_interval_enable = gr.Checkbox(value=False, default=False, label="Enable CFG Scheduler", elem_id='cfg_interval_enable', info="If enabled, applies CFG only within noise interval with the selected schedule type. PAG must be enabled (scale can be 0). SDXL recommend CFG=15; CFG interval (0.28, 5.42]")
                         with gr.Row():
-                                cfg_interval_enable = gr.Checkbox(value=False, default=False, label="Enable CFG Scheduler", elem_id='cfg_interval_enable', info="If enabled, applies CFG only within noise interval with the selected schedule type. PAG must be enabled (scale can be 0). SDXL recommend CFG=15; CFG interval (0.28, 5.42]")
                                 cfg_schedule = gr.Dropdown(
                                         value='Constant',
                                         choices= SCHEDULES,
                                         label="CFG Schedule Type", 
                                         elem_id='cfg_interval_schedule', 
                                 )
-                                with gr.Row():
-                                        cfg_interval_low = gr.Slider(value = 0, minimum = 0, maximum = 100, step = 0.01, label="CFG Noise Interval Low", elem_id = 'cfg_interval_low', info="")
-                                        cfg_interval_high = gr.Slider(value = 100, minimum = 0, maximum = 100, step = 0.01, label="CFG Noise Interval High", elem_id = 'cfg_interval_high', info="")
+                                cfg_interval_low = gr.Slider(value = 0, minimum = 0, maximum = 100, step = 0.1, label="CFG Noise Interval Low", elem_id = 'cfg_interval_low', info="")
+                                cfg_interval_high = gr.Slider(value = 100, minimum = 0, maximum = 100, step = 0.1, label="CFG Noise Interval High", elem_id = 'cfg_interval_high', info="")
                                 
                 active.do_not_save_to_config = True
                 pag_scale.do_not_save_to_config = True
@@ -200,27 +202,31 @@ class PAGExtensionScript(UIWrapper):
                 self.remove_all_hooks()
 
                 active = getattr(p, "pag_active", active)
-                if active is False:
+                cfg_interval_enable = getattr(p, "cfg_interval_enable", cfg_interval_enable)
+                if active is False and cfg_interval_enable is False:
                         return
                 pag_scale = getattr(p, "pag_scale", pag_scale)
                 start_step = getattr(p, "pag_start_step", start_step)
                 end_step = getattr(p, "pag_end_step", end_step)
 
-                cfg_interval_enable = getattr(p, "cfg_interval_enable", cfg_interval_enable)
                 cfg_schedule = getattr(p, "cfg_interval_schedule", cfg_schedule)
                 cfg_interval_low = getattr(p, "cfg_interval_low", cfg_interval_low)
                 cfg_interval_high = getattr(p, "cfg_interval_high", cfg_interval_high)
 
-                p.extra_generation_params.update({
-                        "PAG Active": active,
-                        "PAG Scale": pag_scale,
-                        "PAG Start Step": start_step,
-                        "PAG End Step": end_step,
-                        "CFG Interval Enable": cfg_interval_enable,
-                        "CFG Interval Schedule": cfg_schedule,
-                        "CFG Interval Low": cfg_interval_low,
-                        "CFG Interval High": cfg_interval_high
-                })
+                if active:
+                        p.extra_generation_params.update({
+                                "PAG Active": active,
+                                "PAG Scale": pag_scale,
+                                "PAG Start Step": start_step,
+                                "PAG End Step": end_step,
+                        })
+                if cfg_interval_enable:
+                        p.extra_generation_params.update({
+                                "CFG Interval Enable": cfg_interval_enable,
+                                "CFG Interval Schedule": cfg_schedule,
+                                "CFG Interval Low": cfg_interval_low,
+                                "CFG Interval High": cfg_interval_high
+                        })
                 self.create_hook(p, active, pag_scale, start_step, end_step, cfg_interval_enable, cfg_schedule, cfg_interval_low, cfg_interval_high)
 
         def create_hook(self, p: StableDiffusionProcessing, active, pag_scale, start_step, end_step, cfg_interval_enable, cfg_schedule, cfg_interval_low, cfg_interval_high, *args, **kwargs):
@@ -232,6 +238,7 @@ class PAGExtensionScript(UIWrapper):
                         logger.error("No incant_cfg_params found in p")
                 p.incant_cfg_params['pag_params'] = pag_params
                 
+                pag_params.pag_active = active 
                 pag_params.pag_scale = pag_scale
                 pag_params.pag_start_step = start_step
                 pag_params.pag_end_step = end_step
@@ -265,7 +272,8 @@ class PAGExtensionScript(UIWrapper):
                 #after_cfg_lambda = lambda x: self.cfg_after_cfg_callback(x, params)
                 unhook_lambda = lambda _: self.unhook_callbacks(pag_params)
 
-                self.ready_hijack_forward(pag_params.crossattn_modules, pag_scale)
+                if pag_params.pag_active:
+                        self.ready_hijack_forward(pag_params.crossattn_modules, pag_scale)
 
                 logger.debug('Hooked callbacks')
                 script_callbacks.on_cfg_denoiser(cfg_denoise_lambda)
@@ -419,7 +427,9 @@ class PAGExtensionScript(UIWrapper):
 
                                 pag_params.cfg_interval_scheduled_value = scheduled_cfg_scale if begin_range <= pag_params.current_noise_level <= end_range else 1.0
 
-                # Run only within interval
+                # Run PAG only if active and within interval
+                if not pag_params.pag_active or pag_params.pag_scale <= 0:
+                        return
                 if not pag_params.pag_start_step <= params.sampling_step <= pag_params.pag_end_step or pag_params.pag_scale <= 0:
                         return
 
@@ -448,6 +458,9 @@ class PAGExtensionScript(UIWrapper):
                 
                 """
                 # Run only within interval
+                # Run PAG only if active and within interval
+                if not pag_params.pag_active or pag_params.pag_scale <= 0:
+                        return
                 if not pag_params.pag_start_step <= params.sampling_step <= pag_params.pag_end_step or pag_params.pag_scale <= 0:
                         return
 
@@ -477,8 +490,6 @@ class PAGExtensionScript(UIWrapper):
                 # set pag_enable to False
                 for module in pag_params.crossattn_modules:
                         setattr(module, 'pag_enable', False)
-                
-
         
         def cfg_after_cfg_callback(self, params: AfterCFGCallbackParams, pag_params: PAGStateParams):
                 #self.unhook_callbacks(pag_params)

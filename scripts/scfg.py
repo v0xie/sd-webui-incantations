@@ -26,10 +26,16 @@ from typing import Callable, Dict, Optional
 from collections import OrderedDict
 import torch
 
+from scripts.incant_utils import module_hooks
+
+# from pytorch_memlab import LineProfiler, MemReporter
+# reporter = MemReporter()
+
 logger = logging.getLogger(__name__)
 logger.setLevel(environ.get("SD_WEBUI_LOG_LEVEL", logging.INFO))
 
 incantations_debug = environ.get("INCANTAIONS_DEBUG", False)
+
 
 """
 An unofficial implementation of "Rethinking the Spatial Inconsistency in Classifier-Free Diffusion Guidancee" for Automatic1111 WebUI.
@@ -68,7 +74,7 @@ GitHub URL: https://github.com/v0xie/sd-webui-incantations
 handles = []
 global_scale = 1
 
-SCFG_MODULES = ['to_q', 'to_v', 'to_k']
+SCFG_MODULES = ['to_q', 'to_k']
 
 
 class SCFGStateParams:
@@ -111,14 +117,15 @@ class SCFGExtensionScript(UIWrapper):
                 with gr.Accordion('S-CFG', open=False):
                         active = gr.Checkbox(value=False, default=False, label="Active", elem_id='scfg_active')
                         with gr.Row():
-                                scfg_scale = gr.Slider(value = 1.0, minimum = 0, maximum = 30.0, step = 0.1, label="SCFG Scale", elem_id = 'scfg_scale', info="")
-                                scfg_rate_min = gr.Slider(value = 0.8, minimum = 0, maximum = 30.0, step = 0.1, label="Min CFG", elem_id = 'scfg_min_rate', info="")
-                                scfg_rate_max = gr.Slider(value = 3.0, minimum = 0, maximum = 30.0, step = 0.1, label="Max CFG", elem_id = 'scfg_max_rate', info="")
-                                scfg_rate_clamp = gr.Slider(value = 15.0, minimum = 0, maximum = 30.0, step = 0.1, label="Clamp CFG", elem_id = 'scfg_clamp_rate', info="")
+                                scfg_scale = gr.Slider(value = 1.0, minimum = 0, maximum = 10.0, step = 0.1, label="SCFG Scale", elem_id = 'scfg_scale', info="")
+                                scfg_r = gr.Slider(value = 4, minimum = 1, maximum = 16, step = 1, label="SCFG R", elem_id = 'scfg_r', info="Scale factor. Greater R uses more memory.")
+                        with gr.Row():
+                                scfg_rate_min = gr.Slider(value = 0.8, minimum = 0, maximum = 30.0, step = 0.1, label="Min Rate", elem_id = 'scfg_rate_min', info="")
+                                scfg_rate_max = gr.Slider(value = 3.0, minimum = 0, maximum = 30.0, step = 0.1, label="Max Rate", elem_id = 'scfg_rate_max', info="")
+                                scfg_rate_clamp = gr.Slider(value = 0.0, minimum = 0, maximum = 30.0, step = 0.1, label="Clamp Rate", elem_id = 'scfg_rate_clamp', info="If > 0, clamp max rate to Clamp Rate / CFG Scale. Overrides max rate.")
                         with gr.Row():
                                 start_step = gr.Slider(value = 0, minimum = 0, maximum = 150, step = 1, label="Start Step", elem_id = 'scfg_start_step', info="")
                                 end_step = gr.Slider(value = 150, minimum = 0, maximum = 150, step = 1, label="End Step", elem_id = 'scfg_end_step', info="")
-                                scfg_r = gr.Slider(value = 4, minimum = 1, maximum = 16, step = 1, label="SCFG R", elem_id = 'scfg_r', info="The number of the smallest attention map sizes to aggregate.")
                                 
                 active.do_not_save_to_config = True
                 scfg_scale.do_not_save_to_config = True
@@ -226,6 +233,7 @@ class SCFGExtensionScript(UIWrapper):
                 active = getattr(p, "scfg_active", active)
                 if active is False:
                         return
+
                 self.remove_all_hooks()
 
         def remove_all_hooks(self):
@@ -237,112 +245,81 @@ class SCFGExtensionScript(UIWrapper):
                                 handle_scfg_to_q = _remove_all_forward_hooks(module.to_q, 'scfg_to_q_hook')
                                 self.remove_field_cross_attn_modules(module.to_q, 'scfg_parent_module')
                         if hasattr(module, 'to_k'):
-                                handle_scfg_to_q = _remove_all_forward_hooks(module.to_k, 'scfg_to_k_hook')
+                                handle_scfg_to_k = _remove_all_forward_hooks(module.to_k, 'scfg_to_k_hook')
                                 self.remove_field_cross_attn_modules(module.to_k, 'scfg_parent_module')
 
         def unhook_callbacks(self, scfg_params: SCFGStateParams):
-                global handles
-
-                if scfg_params is None:
-                       logger.error("SCFG params is None")
-                       return
-
-                #if scfg_params.denoiser is not None:
-                #        denoiser = scfg_params.denoiser
-                #        setattr(denoiser, 'combine_denoised_patched_scfg', False)
-                #        try:
-                #                patches.undo(__name__, denoiser, "combine_denoised")
-                #        except KeyError:
-                #                logger.exception("KeyError unhooking combine_denoised")
-                #                pass
-                #        except RuntimeError:
-                #                logger.exception("RuntimeError unhooking combine_denoised")
-                #                pass
-                #        scfg_params.denoiser = None
-
+                pass
 
         def ready_hijack_forward(self, all_crossattn_modules):
                 """ Create hooks in the forward pass of the cross attention modules
                 Copies the output of the to_v module to the parent module
-                Then applies the PAG perturbation to the output of the cross attention module (multiplication by identity)
                 """
 
+                def scfg_self_attn_hook(module, input, kwargs, output):
+                        # scfg_q_map = output.detach().clone()
+                        scfg_q_map = prepare_attn_map(output, module.scfg_heads)
+                        attn_scores = get_attention_scores(scfg_q_map, scfg_q_map)
+                        setattr(module.scfg_parent_module[0], 'scfg_last_qv_map', attn_scores)
+
+                def scfg_cross_attn_hook(module, input, kwargs, output):
+                        scfg_q_map = prepare_attn_map(module.scfg_parent_module[0].scfg_last_to_q_map, module.scfg_heads)
+                        scfg_k_map = prepare_attn_map(output, module.scfg_heads)
+                        #scfg_k_map = output.detach().clone()
+                        attn_scores = get_attention_scores(scfg_q_map, scfg_k_map)
+                        setattr(module.scfg_parent_module[0], 'scfg_last_qv_map', attn_scores)
+                        # del module.parent_module[0].scfg_last_to_q_map
+
                 def scfg_to_q_hook(module, input, kwargs, output):
-                        setattr(module.scfg_parent_module[0], 'scfg_last_to_q_map', output.detach().clone())
+                        setattr(module.scfg_parent_module[0], 'scfg_last_to_q_map', output)
 
                 def scfg_to_k_hook(module, input, kwargs, output):
-                        setattr(module.scfg_parent_module[0], 'scfg_last_to_k_map', output.detach().clone())
-                        
-                for module in all_crossattn_modules:
-                        self.add_field_cross_attn_modules(module, 'scfg_last_to_q_map', None)
-                        if module.network_layer_name.endswith('attn2'): # self attention doesn't need to_k
-                                self.add_field_cross_attn_modules(module, 'scfg_last_to_k_map', None)
-                        for submodule in SCFG_MODULES:
-                                sub_module = getattr(module, submodule, None)
-                                self.add_field_cross_attn_modules(sub_module, 'scfg_parent_module', [module])
+                        setattr(module.scfg_parent_module[0], 'scfg_last_to_k_map', output)
 
                 for module in all_crossattn_modules:
                         if not hasattr(module, 'to_q') or not hasattr(module, 'to_k'):
                                 logger.error("CrossAttention module '%s' does not have to_q or to_k", module.network_layer_name)
                                 continue
-                        if hasattr(module, 'to_q'):
-                                handle_scfg_to_q = module.to_q.register_forward_hook(scfg_to_q_hook, with_kwargs=True)
-                        #if hasattr(module, 'to_k'):
-                        if module.network_layer_name.endswith('attn2'): # self attention doesn't need to_k
-                                self.add_field_cross_attn_modules(module, 'scfg_last_to_k_map', None)
-                                handle_scfg_to_k = module.to_k.register_forward_hook(scfg_to_k_hook, with_kwargs=True)
+
+                        # to_q
+                        self.add_field_cross_attn_modules(module.to_q, 'scfg_parent_module', [module])
+                        self.add_field_cross_attn_modules(module.to_q, 'scfg_last_to_q_map', None)
+                        handle_scfg_to_q = module_hooks.module_add_forward_hook(
+                                module.to_q,
+                                scfg_to_q_hook,
+                                with_kwargs=True
+                        )
+
+                        # to_k
+                        self.add_field_cross_attn_modules(module.to_k, 'scfg_parent_module', [module])
+                        if module.network_layer_name.endswith('attn2'): # cross attn
+                                self.add_field_cross_attn_modules(module.to_k, 'scfg_last_to_k_map', None)
+                                handle_scfg_to_k = module_hooks.module_add_forward_hook(
+                                        module.to_k,
+                                        scfg_to_k_hook,
+                                        with_kwargs=True
+                                )
 
         def get_all_crossattn_modules(self):
                 """ 
                 Get ALL attention modules
                 """
-                try:
-                        m = shared.sd_model
-                        nlm = m.network_layer_mapping
-                        middle_block_modules = [m for m in nlm.values() if 'CrossAttention' in m.__class__.__name__]
-                        return middle_block_modules
-                except AttributeError:
-                        logger.exception("AttributeError in get_middle_block_modules", stack_info=True)
-                        return []
-                except Exception:
-                        logger.exception("Exception in get_middle_block_modules", stack_info=True)
-                        return []
+                modules = module_hooks.get_modules(
+                       module_name_filter='CrossAttention'
+                )
+                return modules
 
         def add_field_cross_attn_modules(self, module, field, value):
                 """ Add a field to a module if it doesn't exist """
-                if not hasattr(module, field):
-                        setattr(module, field, value)
+                module_hooks.modules_add_field(module, field, value)
         
         def remove_field_cross_attn_modules(self, module, field):
                 """ Remove a field from a module if it exists """
-                if hasattr(module, field):
-                        delattr(module, field)
+                module_hooks.modules_remove_field(module, field)
 
         def on_cfg_denoiser_callback(self, params: CFGDenoiserParams, scfg_params: SCFGStateParams):
                 # always unhook
                 self.unhook_callbacks(scfg_params)
-
-                # patch combine_denoised
-                # if scfg_params.denoiser is None:
-                #         scfg_params.denoiser = params.denoiser
-                # if getattr(params.denoiser, 'combine_denoised_patched_scfg', False) is False:
-                #         try:
-                #                 setattr(params.denoiser, 'combine_denoised_original_scfg', params.denoiser.combine_denoised)
-                #                 # create patch that references the original function
-                #                 pass_conds_func = lambda *args, **kwargs: combine_denoised_pass_conds_list(
-                #                         *args,
-                #                         **kwargs,
-                #                         original_func = params.denoiser.combine_denoised_original_scfg,
-                #                         scfg_params = scfg_params)
-                #                 scfg_params.patched_combine_denoised = patches.patch(__name__, params.denoiser, "combine_denoised", pass_conds_func)
-                #                 setattr(params.denoiser, 'combine_denoised_patched_scfg', True)
-                #                 setattr(params.denoiser, 'combine_denoised_original_scfg', patches.original(__name__, params.denoiser, "combine_denoised"))
-                #         except KeyError:
-                #                 logger.exception("KeyError patching combine_denoised")
-                #                 pass
-                #         except RuntimeError:
-                #                 logger.exception("RuntimeError patching combine_denoised")
-                #                 pass
 
         def on_cfg_denoised_callback(self, params: CFGDenoisedParams, scfg_params: SCFGStateParams):
                 """ Callback function for the CFGDenoisedParams 
@@ -361,18 +338,21 @@ class SCFGExtensionScript(UIWrapper):
                 # S-CFG
                 R = scfg_params.R
                 max_latent_size = [params.x.shape[-2] // R, params.x.shape[-1] // R]
+
+                #with LineProfiler(get_mask) as lp:
                 ca_mask, fore_mask = get_mask(scfg_params.all_crossattn_modules,
-                                              scfg_params,
-                                              r = scfg_params.R,
-                                              latent_size = max_latent_size,
-                                              #latent_size = params.x.shape[2:] / R,
-                                        )
+                                        scfg_params,
+                                        r = scfg_params.R,
+                                        latent_size = max_latent_size,
+                                )
+                        #lp.print_stats()
 
                 # todo parameterize this
                 mask_t = F.interpolate(ca_mask, scale_factor=R, mode='nearest')
                 mask_fore = F.interpolate(fore_mask, scale_factor=R, mode='nearest')
                 scfg_params.mask_t = mask_t 
                 scfg_params.mask_fore = mask_fore
+
 
         def get_xyz_axis_options(self) -> dict:
                 xyz_grid = [x for x in scripts.scripts_data if x.script_class.__module__ in ("xyz_grid.py", "scripts.xyz_grid")][0].module
@@ -385,7 +365,6 @@ class SCFGExtensionScript(UIWrapper):
                         xyz_grid.AxisOption("[SCFG] SCFG Start Step", int, scfg_apply_field("scfg_start_step")),
                         xyz_grid.AxisOption("[SCFG] SCFG End Step", int, scfg_apply_field("scfg_end_step")),
                         xyz_grid.AxisOption("[SCFG] SCFG R", int, scfg_apply_field("scfg_r")),
-                        #xyz_grid.AxisOption("[PAG] ctnms_alpha", float, pag_apply_field("pag_ctnms_alpha")),
                 }
                 return extra_axis_options
 
@@ -412,13 +391,11 @@ def scfg_combine_denoised(model_delta, cfg_scale, scfg_params: SCFGStateParams):
         if scfg_scale <= 0:
                 return 1.0
 
-
         mask_t = scfg_params.mask_t
         mask_fore = scfg_params.mask_fore
         min_rate = scfg_params.rate_min
         max_rate = scfg_params.rate_max
         rate_clamp = scfg_params.rate_clamp
-
 
         model_delta = model_delta.unsqueeze(0)
         model_delta_norm = model_delta.norm(dim=1, keepdim=True)
@@ -451,7 +428,9 @@ def scfg_combine_denoised(model_delta, cfg_scale, scfg_params: SCFGStateParams):
         rate = rate * scfg_scale
 
         rate = torch.clamp(rate,min=min_rate, max=max_rate)
-        rate = torch.clamp_max(rate, rate_clamp/cfg_scale)
+
+        if rate_clamp > 0:
+                rate = torch.clamp_max(rate, rate_clamp/cfg_scale)
 
         ###Gaussian Smoothing 
         kernel_size = 3
@@ -461,82 +440,6 @@ def scfg_combine_denoised(model_delta, cfg_scale, scfg_params: SCFGStateParams):
         rate = smoothing(rate)
 
         return rate.squeeze(0)
-
-
-def combine_denoised_pass_conds_list(*args, **kwargs):
-        """ Hijacked function for combine_denoised in CFGDenoiser """
-        original_func = kwargs.get('original_func', None)
-        scfg_params = kwargs.get('scfg_params', None)
-
-        if scfg_params is None:
-                logger.error("scfg_params is None")
-                return original_func(*args)
-        step = scfg_params.current_step
-
-        def new_combine_denoised(x_out, conds_list, uncond, cond_scale):
-                denoised_uncond = x_out[-uncond.shape[0]:]
-                denoised = torch.clone(denoised_uncond)
-
-                # Calculate CFG Scale
-                cfg_scale = cond_scale
-
-                for i, conds in enumerate(conds_list):
-                        for cond_index, weight in conds:
-                                if not scfg_params.start_step <= step <= scfg_params.end_step:
-                                        return original_func(*args)
-                                if scfg_params.mask_t is None:
-                                        logger.error("SCFG mask_t is None")
-                                        return original_func(*args)
-                                if scfg_params.mask_fore is None:
-                                        logger.error("SCFG mask_fore is None")
-                                        return original_func(*args)
-                                mask_t = scfg_params.mask_t
-                                mask_fore = scfg_params.mask_fore
-                                scfg_scale = scfg_params.scfg_scale
-                                min_rate = scfg_params.rate_min
-                                max_rate = scfg_params.rate_max
-                                rate_clamp = scfg_params.rate_clamp
-
-                                model_delta = (x_out[cond_index] - denoised_uncond[i]).unsqueeze(0)
-                                model_delta_norm = model_delta.norm(dim=1, keepdim=True)
-
-                                # rescale map if necessary
-                                if mask_t.shape[2:] != model_delta_norm.shape[2:]:
-                                        logger.debug('Rescaling mask_t from %s to %s', mask_t.shape[2:], model_delta_norm.shape[2:])
-                                        mask_t = F.interpolate(mask_t, size=model_delta_norm.shape[2:], mode='bilinear')
-                                if mask_fore.shape[-2] != model_delta_norm.shape[-2]:
-                                        logger.debug('Rescaling mask_fore from %s to %s', mask_fore.shape[2:], model_delta_norm.shape[2:])
-                                        mask_fore = F.interpolate(mask_fore, size=model_delta_norm.shape[2:], mode='bilinear')
-
-                                delta_mask_norms = (model_delta_norm * mask_t).sum([2,3])/(mask_t.sum([2,3])+1e-8)
-                                upnormmax = delta_mask_norms.max(dim=1)[0]
-                                upnormmax = upnormmax.unsqueeze(-1)
-
-                                fore_norms = (model_delta_norm * mask_fore).sum([2,3])/(mask_fore.sum([2,3])+1e-8)
-
-                                up = fore_norms
-                                down = delta_mask_norms
-
-                                tmp_mask = (mask_t.sum([2,3])>0).float()
-                                rate = up*(tmp_mask)/(down+1e-8) # b 257
-                                rate = (rate.unsqueeze(-1).unsqueeze(-1)*mask_t).sum(dim=1, keepdim=True) # b 1, 64 64
-                                
-                                rate = torch.clamp(rate,min=min_rate, max=max_rate)
-                                rate = torch.clamp_max(rate, rate_clamp/cfg_scale)
-                                rate = rate * scfg_scale
-
-                                ###Gaussian Smoothing 
-                                kernel_size = 3
-                                sigma=0.5
-                                smoothing = GaussianSmoothing(channels=1, kernel_size=kernel_size, sigma=sigma, dim=2).to(rate.device)
-                                rate = F.pad(rate, (1, 1, 1, 1), mode='reflect')
-                                rate = smoothing(rate)
-                                rate = rate.to(x_out[cond_index].dtype)
-
-                                denoised[i] += (x_out[cond_index] - denoised_uncond[i]) * rate.squeeze(0) * (weight * cfg_scale)
-
-                return denoised
-        return new_combine_denoised(*args)
 
 
 # XYZ Plot
@@ -559,57 +462,11 @@ def scfg_apply_field(field):
     return fun
 
 
-# thanks torch; removing hooks DOESN'T WORK
-# thank you to @ProGamerGov for this https://github.com/pytorch/pytorch/issues/70455
 def _remove_all_forward_hooks(
     module: torch.nn.Module, hook_fn_name: Optional[str] = None
 ) -> None:
-    """
-    This function removes all forward hooks in the specified module, without requiring
-    any hook handles. This lets us clean up & remove any hooks that weren't property
-    deleted.
+        module_hooks.remove_module_forward_hook(module, hook_fn_name)
 
-    Warning: Various PyTorch modules and systems make use of hooks, and thus extreme
-    caution should be exercised when removing all hooks. Users are recommended to give
-    their hook function a unique name that can be used to safely identify and remove
-    the target forward hooks.
-
-    Args:
-
-        module (nn.Module): The module instance to remove forward hooks from.
-        hook_fn_name (str, optional): Optionally only remove specific forward hooks
-            based on their function's __name__ attribute.
-            Default: None
-    """
-
-    if hook_fn_name is None:
-        warn("Removing all active hooks can break some PyTorch modules & systems.")
-
-
-    def _remove_hooks(m: torch.nn.Module, name: Optional[str] = None) -> None:
-        if hasattr(module, "_forward_hooks"):
-            if m._forward_hooks != OrderedDict():
-                if name is not None:
-                    dict_items = list(m._forward_hooks.items())
-                    m._forward_hooks = OrderedDict(
-                        [(i, fn) for i, fn in dict_items if fn.__name__ != name]
-                    )
-                else:
-                    m._forward_hooks: Dict[int, Callable] = OrderedDict()
-
-    def _remove_child_hooks(
-        target_module: torch.nn.Module, hook_name: Optional[str] = None
-    ) -> None:
-        for name, child in target_module._modules.items():
-            if child is not None:
-                _remove_hooks(child, hook_name)
-                _remove_child_hooks(child, hook_name)
-
-    # Remove hooks from target submodules
-    _remove_child_hooks(module, hook_fn_name)
-
-    # Remove hooks from the target module
-    _remove_hooks(module, hook_fn_name)
 
 """
 # below code modified from https://github.com/SmilesDZgk/S-CFG
@@ -620,6 +477,7 @@ def _remove_all_forward_hooks(
   year={2024}
 }
 """
+
 
 import math
 import numbers
@@ -747,6 +605,7 @@ def get_mask(attn_modules, scfg_params: SCFGStateParams, r, latent_size):
 
         # The maximum value of the sizes of attention map to aggregate
         max_r = r
+        max_sizes = r
 
         # The current number of attention map resolutions aggregated
         attnmap_r = 0
@@ -765,32 +624,25 @@ def get_mask(attn_modules, scfg_params: SCFGStateParams, r, latent_size):
 
                 to_q_map = getattr(module, 'scfg_last_to_q_map', None)
                 to_k_map = getattr(module, 'scfg_last_to_k_map', None)
+                # self-attn
                 if to_k_map is None:
                         to_k_map = to_q_map
 
-                to_q_map = head_to_batch_dim(to_q_map, module.heads)
-                to_q_map = average_over_head_dim(to_q_map, module.heads)
-                to_q_map = torch.stack([to_q_map[0], to_q_map[0]], dim=0)
-
-                to_k_map = head_to_batch_dim(to_k_map, module.heads)
-                to_k_map = average_over_head_dim(to_k_map, module.heads)
-                to_k_map = torch.stack([to_k_map[0], to_k_map[0]], dim=0)
+                to_q_map = prepare_attn_map(to_q_map, module.heads)
+                to_k_map = prepare_attn_map(to_k_map, module.heads)
 
                 module_attn_size = to_q_map.size(1)
                 module_attn_sizes.add(module_attn_size)
                 downscale_h = int((module_attn_size * (height / width)) ** 0.5)
                 downscale_w = module_attn_size // downscale_h
-
                 module_key = f"r{module_attn_size}_{module_type}"
 
-                #if r > max_r:
-                #       max_r = r
+                attn_probs = get_attention_scores(to_q_map, to_k_map)
 
-                # based on diffusers models/attention.py "get_attention_scores"
-                attn_scores = to_q_map @ to_k_map.transpose(-1, -2)
-                attn_probs = attn_scores.softmax(dim=-1).to(device=shared.device, dtype=to_q_map.dtype)
-                del to_q_map, to_k_map
-                del attn_scores
+                if module_type == 'self':
+                       del module.scfg_last_to_q_map
+                else:
+                       del module.scfg_last_to_q_map, module.scfg_last_to_k_map
 
                 if module_key not in attention_store_proxy:
                         attention_store_proxy[module_key] = []
@@ -802,24 +654,19 @@ def get_mask(attn_modules, scfg_params: SCFGStateParams, r, latent_size):
         module_attn_sizes = sorted(list(module_attn_sizes))
         attention_maps = attention_store_proxy
 
-        # max_r = max(module_attn_sizes)
-        r_r = 1 # scale factor from map to map
-
         curr_r = module_attn_sizes.pop(0)
-        while curr_r != None and attnmap_r < max_r:
+        while curr_r != None and attnmap_r < max_sizes:
                 key_corss = f"r{curr_r}_cross"
                 key_self = f"r{curr_r}_self"
 
                 if key_self not in attention_maps.keys() or key_corss not in attention_maps.keys():
                         next_r = module_attn_sizes.pop(0)
                         attnmap_r += 1
-                        r_r *= 2
                         curr_r = next_r
                         continue
                 if len(attention_maps[key_self]) == 0 or len(attention_maps[key_corss]) == 0:
                         curr_r = module_attn_sizes.pop(0)
                         attnmap_r += 1
-                        r_r *= 2
                         curr_r = next_r
                         continue
 
@@ -837,26 +684,25 @@ def get_mask(attn_modules, scfg_params: SCFGStateParams, r, latent_size):
                 ssgc_n = max_r
 
                 # summation from r=2 to R, we set ssgc_sa to curr which would be sa^1
+                # major memory hog
+                #    active_bytes peak from 3.41G to 4.04G
+                #    reserved_bytes peak from 3.70G to 4.64G
+                # optimization 1: active 4.03G -> 3.72G = 0.31G, reserved 4.64G -> 4.16G = 0.48G
                 for r_value in range(1, ssgc_n):
                         r_pow = r_value + 1
-                        curr = torch.linalg.matrix_power(sa, r_pow) # sa^r
+                        curr @= sa  # optimization 1
+#                        curr = torch.linalg.matrix_power(sa, r_pow) # sa^r
                         ssgc_sa += curr
 
                 ssgc_sa/=ssgc_n
                 sa = ssgc_sa
 
-                # for _ in range(ssgc_n-1):
-                #         curr = sa@sa
-                #         ssgc_sa += curr
-
                 ########smoothing ca
                 ca = sa@ca # b hw c
 
-                max_dims = height * width
                 hw = ca.size(1)
 
                 downscale_h = round((hw * (height / width)) ** 0.5)
-                # downscale_w = hw // downscale_h
 
                 ca = rearrange(ca, 'b (h w) c -> b c h w', h=downscale_h )
 
@@ -893,8 +739,17 @@ def get_mask(attn_modules, scfg_params: SCFGStateParams, r, latent_size):
                 else:
                         curr_r = None
                 attnmap_r += 1
-                r_r *= 2
+                # r_r *= 2
+
+                # optimization 2: memory savings: 3.09G - 2.47G = 0.62G
+                del ca_norm, froe_ca_norm, fore_ca
+
+        # no memory savings
+        del attention_maps
+        del sa, ca, ssgc_sa, ssgc_n, curr
         
+        # variables used from above:
+        # new_ca, new_fore, a_n
         new_ca = new_ca/a_n
         new_fore = new_fore/a_n
         _,new_ca   = new_ca.chunk(2, dim=0) #[1]
@@ -909,4 +764,34 @@ def get_mask(attn_modules, scfg_params: SCFGStateParams, r, latent_size):
         fore_mask = (fore_ca==max_fore).float() # b 77/10 16 16 
         fore_mask = 1.0-fore_mask[:,:1] # b 1 16 16
 
+        # no memory savings
+        del new_ca, new_fore, a_n, max_ca, max_fore, inds
+
         return [ ca_mask, fore_mask]
+
+
+def prepare_attn_map(to_k_map, heads):
+    to_k_map = head_to_batch_dim(to_k_map, heads)
+    to_k_map = average_over_head_dim(to_k_map, heads)
+    to_k_map = torch.stack([to_k_map[0], to_k_map[0]], dim=0)
+    return to_k_map
+
+
+def get_attention_scores(to_q_map, to_k_map):
+        """ Calculate the attention scores for the given query and key maps
+        Arguments:
+                to_q_map: torch.Tensor - query map
+                to_k_map: torch.Tensor - key map
+        Returns:
+                torch.Tensor - attention scores 
+        """
+        # based on diffusers models/attention.py "get_attention_scores"
+        # use in place operations vs. softmax to save memory: https://stackoverflow.com/questions/53732209/torch-in-place-operations-to-save-memory-softmax
+        # 512x: 2.65G -> 2.47G
+        # attn_probs = attn_scores.softmax(dim=-1).to(device=shared.device, dtype=to_q_map.dtype)
+
+        attn_probs = to_q_map @ to_k_map.transpose(-1, -2)
+        torch.exp(attn_probs, out = attn_probs)
+        summed = attn_probs.sum(dim=-1, keepdim=True)
+        attn_probs /= summed
+        return attn_probs
