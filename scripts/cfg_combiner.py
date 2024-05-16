@@ -55,15 +55,17 @@ class CFGCombinerScript(UIWrapper):
             """ Process the batch and hook the CFG denoiser if PAG or S-CFG is active """
             logger.debug("CFGCombinerScript process_batch")
             pag_active = p.extra_generation_params.get('PAG Active', False)
+            cfg_active = p.extra_generation_params.get('CFG Interval Enable', False)
             scfg_active = p.extra_generation_params.get('SCFG Active', False)
 
             if not any([
                         pag_active,
+                        cfg_active,
                         scfg_active
                     ]):
                 return
 
-            logger.debug("CFGCombinerScript process_batch: pag_active or scfg_active")
+            #logger.debug("CFGCombinerScript process_batch: pag_active or scfg_active")
 
             cfg_denoise_lambda = lambda params: self.on_cfg_denoiser_callback(params, p.incant_cfg_params)
             unhook_lambda = lambda: self.unhook_callbacks()
@@ -178,6 +180,7 @@ def combine_denoised_pass_conds_list(*args, **kwargs):
                 pag_x_out = None
                 pag_scale = None
                 if pag_params is not None:
+                        pag_active = pag_params.pag_active
                         pag_x_out = pag_params.pag_x_out
                         pag_scale = pag_params.pag_scale
 
@@ -212,8 +215,10 @@ def combine_denoised_pass_conds_list(*args, **kwargs):
                                 # 2. PAG
                                 # PAG is added like CFG
                                 if pag_params is not None:
+                                        if not pag_active:
+                                                pass
                                         # Not within step interval? 
-                                        if not pag_params.pag_start_step <= pag_params.step <= pag_params.pag_end_step:
+                                        elif not pag_params.pag_start_step <= pag_params.step <= pag_params.pag_end_step:
                                                 pass
                                         # Scale is zero?
                                         elif pag_scale <= 0:
