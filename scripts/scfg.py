@@ -26,6 +26,8 @@ from typing import Callable, Dict, Optional
 from collections import OrderedDict
 import torch
 
+from scripts.incant_utils import module_hooks
+
 # from pytorch_memlab import LineProfiler, MemReporter
 # reporter = MemReporter()
 
@@ -281,40 +283,38 @@ class SCFGExtensionScript(UIWrapper):
                         # to_q
                         self.add_field_cross_attn_modules(module.to_q, 'scfg_parent_module', [module])
                         self.add_field_cross_attn_modules(module.to_q, 'scfg_last_to_q_map', None)
-                        handle_scfg_to_q = module.to_q.register_forward_hook(scfg_to_q_hook, with_kwargs=True)
+                        handle_scfg_to_q = module_hooks.module_add_forward_hook(
+                                module.to_q,
+                                scfg_to_q_hook,
+                                with_kwargs=True
+                        )
 
                         # to_k
                         self.add_field_cross_attn_modules(module.to_k, 'scfg_parent_module', [module])
-                        # hooks
                         if module.network_layer_name.endswith('attn2'): # cross attn
                                 self.add_field_cross_attn_modules(module.to_k, 'scfg_last_to_k_map', None)
-                                handle_scfg_to_k = module.to_k.register_forward_hook(scfg_to_k_hook, with_kwargs=True)
+                                handle_scfg_to_k = module_hooks.module_add_forward_hook(
+                                        module.to_k,
+                                        scfg_to_k_hook,
+                                        with_kwargs=True
+                                )
 
         def get_all_crossattn_modules(self):
                 """ 
                 Get ALL attention modules
                 """
-                try:
-                        m = shared.sd_model
-                        nlm = m.network_layer_mapping
-                        middle_block_modules = [m for m in nlm.values() if 'CrossAttention' in m.__class__.__name__]
-                        return middle_block_modules
-                except AttributeError:
-                        logger.exception("AttributeError in get_middle_block_modules", stack_info=True)
-                        return []
-                except Exception:
-                        logger.exception("Exception in get_middle_block_modules", stack_info=True)
-                        return []
+                modules = module_hooks.get_modules(
+                       module_name_filter='CrossAttention'
+                )
+                return modules
 
         def add_field_cross_attn_modules(self, module, field, value):
                 """ Add a field to a module if it doesn't exist """
-                if not hasattr(module, field):
-                        setattr(module, field, value)
+                module_hooks.modules_add_field(module, field, value)
         
         def remove_field_cross_attn_modules(self, module, field):
                 """ Remove a field from a module if it exists """
-                if hasattr(module, field):
-                        delattr(module, field)
+                module_hooks.modules_remove_field(module, field)
 
         def on_cfg_denoiser_callback(self, params: CFGDenoiserParams, scfg_params: SCFGStateParams):
                 # always unhook
@@ -540,52 +540,7 @@ def scfg_apply_field(field):
 def _remove_all_forward_hooks(
     module: torch.nn.Module, hook_fn_name: Optional[str] = None
 ) -> None:
-    """
-    This function removes all forward hooks in the specified module, without requiring
-    any hook handles. This lets us clean up & remove any hooks that weren't property
-    deleted.
-
-    Warning: Various PyTorch modules and systems make use of hooks, and thus extreme
-    caution should be exercised when removing all hooks. Users are recommended to give
-    their hook function a unique name that can be used to safely identify and remove
-    the target forward hooks.
-
-    Args:
-
-        module (nn.Module): The module instance to remove forward hooks from.
-        hook_fn_name (str, optional): Optionally only remove specific forward hooks
-            based on their function's __name__ attribute.
-            Default: None
-    """
-
-    if hook_fn_name is None:
-        warn("Removing all active hooks can break some PyTorch modules & systems.")
-
-
-    def _remove_hooks(m: torch.nn.Module, name: Optional[str] = None) -> None:
-        if hasattr(module, "_forward_hooks"):
-            if m._forward_hooks != OrderedDict():
-                if name is not None:
-                    dict_items = list(m._forward_hooks.items())
-                    m._forward_hooks = OrderedDict(
-                        [(i, fn) for i, fn in dict_items if fn.__name__ != name]
-                    )
-                else:
-                    m._forward_hooks: Dict[int, Callable] = OrderedDict()
-
-    def _remove_child_hooks(
-        target_module: torch.nn.Module, hook_name: Optional[str] = None
-    ) -> None:
-        for name, child in target_module._modules.items():
-            if child is not None:
-                _remove_hooks(child, hook_name)
-                _remove_child_hooks(child, hook_name)
-
-    # Remove hooks from target submodules
-    _remove_child_hooks(module, hook_fn_name)
-
-    # Remove hooks from the target module
-    _remove_hooks(module, hook_fn_name)
+        module_hooks.remove_module_forward_hook(module, hook_fn_name)
 
 """
 # below code modified from https://github.com/SmilesDZgk/S-CFG
