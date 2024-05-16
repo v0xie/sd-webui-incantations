@@ -204,6 +204,6 @@ SD XL
       }
 
 
-- Hard Prompts Made Easy (https://github.com/YuxinWenRick/hard-prompts-made-easy)
-- @udon-universe's extension templates (https://github.com/udon-universe/stable-diffusion-webui-extension-templates)
+- [Hard Prompts Made Easy](https://github.com/YuxinWenRick/hard-prompts-made-easy)
+- [@udon-universe's extension templates](https://github.com/udon-universe/stable-diffusion-webui-extension-templates)
 ---
