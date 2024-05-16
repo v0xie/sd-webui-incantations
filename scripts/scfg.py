@@ -284,12 +284,13 @@ class SCFGExtensionScript(UIWrapper):
                         setattr(module.scfg_parent_module[0], 'scfg_last_qv_map', attn_scores)
 
                 def scfg_to_q_hook(module, input, kwargs, output):
-                        scfg_q_map = output.detach().clone()
-                        setattr(module.scfg_parent_module[0], 'scfg_last_to_q_map', scfg_q_map)
+                        #scfg_q_map = output.detach().clone()
+                        #scfg_q_map = output
+                        setattr(module.scfg_parent_module[0], 'scfg_last_to_q_map', output)
 
                 def scfg_to_k_hook(module, input, kwargs, output):
-                        scfg_k_map = output.detach().clone()
-                        setattr(module.scfg_parent_module[0], 'scfg_last_to_k_map', scfg_k_map)
+                        #scfg_k_map = output.detach().clone()
+                        setattr(module.scfg_parent_module[0], 'scfg_last_to_k_map', output)
 
                 def scfg_cross_attn_hook(module, input, kwargs, output):
                         scfg_q_map = prepare_attn_map(module.scfg_parent_module[0].scfg_last_to_q_map, module.scfg_heads)
