@@ -2,11 +2,10 @@
 This extension implements multiple novel algorithms that enhance image quality, prompt following, and more.
 
 ## COMPATIBILITY NOTICES:
-####  Currently incompatible with stable-diffusion-webui-forge 
+#### Currently incompatible with stable-diffusion-webui-forge 
 Use this extension with Forge: https://github.com/pamparamm/sd-perturbed-attention
 
 * Reported incompatible with Adetailer: https://github.com/v0xie/sd-webui-incantations/issues/21
-
 * May conflict with extensions that modify the CFGDenoiser
 
 ---
@@ -62,6 +61,7 @@ Prompt: "A pointillist painting of a raccoon looking at the sea."
 Prompt: "An epic lithograph of a handsome salaryman carefully pouring coffee from a cup into an overflowing carafe, 4K, directed by Wong Kar Wai"
 - SD XL  
 ![image](./images/xyz_grid-3380-1-An%20epic%20lithograph%20of%20a%20handsome%20salaryman%20carefully%20pouring%20coffee%20from%20a%20cup%20into%20an%20overflowing%20carafe,%204K,%20directed%20by%20Wong.jpg)
+
 ---
 ## Multi-Concept T2I-Zero / Attention Regulation
 
@@ -205,7 +205,5 @@ SD XL
 
 
 - Hard Prompts Made Easy (https://github.com/YuxinWenRick/hard-prompts-made-easy)
-
 - @udon-universe's extension templates (https://github.com/udon-universe/stable-diffusion-webui-extension-templates)
 ---
-
