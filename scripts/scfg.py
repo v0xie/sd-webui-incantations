@@ -238,43 +238,19 @@ class SCFGExtensionScript(UIWrapper):
                 for module in all_crossattn_modules:
                         self.remove_field_cross_attn_modules(module, 'scfg_last_to_q_map')
                         self.remove_field_cross_attn_modules(module, 'scfg_last_to_k_map')
-                        # self.remove_field_cross_attn_modules(module, 'scfg_last_qv_map')
                         if hasattr(module, 'to_q'):
                                 handle_scfg_to_q = _remove_all_forward_hooks(module.to_q, 'scfg_to_q_hook')
-                                # handle_scfg_to_q = _remove_all_forward_hooks(module.to_q, 'scfg_self_attn_hook')
                                 self.remove_field_cross_attn_modules(module.to_q, 'scfg_parent_module')
-                                # self.remove_field_cross_attn_modules(module.to_q, 'scfg_heads')
                         if hasattr(module, 'to_k'):
-                                handle_scfg_to_q = _remove_all_forward_hooks(module.to_k, 'scfg_to_k_hook')
-                                #handle_scfg_to_q = _remove_all_forward_hooks(module.to_k, 'scfg_cross_attn_hook')
+                                handle_scfg_to_k = _remove_all_forward_hooks(module.to_k, 'scfg_to_k_hook')
                                 self.remove_field_cross_attn_modules(module.to_k, 'scfg_parent_module')
-                                #self.remove_field_cross_attn_modules(module.to_k, 'scfg_heads')
 
         def unhook_callbacks(self, scfg_params: SCFGStateParams):
-                global handles
-
-                if scfg_params is None:
-                       logger.error("SCFG params is None")
-                       return
-
-                #if scfg_params.denoiser is not None:
-                #        denoiser = scfg_params.denoiser
-                #        setattr(denoiser, 'combine_denoised_patched_scfg', False)
-                #        try:
-                #                patches.undo(__name__, denoiser, "combine_denoised")
-                #        except KeyError:
-                #                logger.exception("KeyError unhooking combine_denoised")
-                #                pass
-                #        except RuntimeError:
-                #                logger.exception("RuntimeError unhooking combine_denoised")
-                #                pass
-                #        scfg_params.denoiser = None
-
+                pass
 
         def ready_hijack_forward(self, all_crossattn_modules):
                 """ Create hooks in the forward pass of the cross attention modules
                 Copies the output of the to_v module to the parent module
-                Then applies the PAG perturbation to the output of the cross attention module (multiplication by identity)
                 """
 
                 def scfg_self_attn_hook(module, input, kwargs, output):
@@ -282,15 +258,6 @@ class SCFGExtensionScript(UIWrapper):
                         scfg_q_map = prepare_attn_map(output, module.scfg_heads)
                         attn_scores = get_attention_scores(scfg_q_map, scfg_q_map)
                         setattr(module.scfg_parent_module[0], 'scfg_last_qv_map', attn_scores)
-
-                def scfg_to_q_hook(module, input, kwargs, output):
-                        #scfg_q_map = output.detach().clone()
-                        #scfg_q_map = output
-                        setattr(module.scfg_parent_module[0], 'scfg_last_to_q_map', output)
-
-                def scfg_to_k_hook(module, input, kwargs, output):
-                        #scfg_k_map = output.detach().clone()
-                        setattr(module.scfg_parent_module[0], 'scfg_last_to_k_map', output)
 
                 def scfg_cross_attn_hook(module, input, kwargs, output):
                         scfg_q_map = prepare_attn_map(module.scfg_parent_module[0].scfg_last_to_q_map, module.scfg_heads)
@@ -300,35 +267,28 @@ class SCFGExtensionScript(UIWrapper):
                         setattr(module.scfg_parent_module[0], 'scfg_last_qv_map', attn_scores)
                         # del module.parent_module[0].scfg_last_to_q_map
 
-                        
-                for module in all_crossattn_modules:
-                        # self.add_field_cross_attn_modules(module, 'scfg_last_qv_map', None)
-                        self.add_field_cross_attn_modules(module, 'scfg_last_to_q_map', None)
-                        if module.network_layer_name.endswith('attn2'): # self attention doesn't need to_k
-                                self.add_field_cross_attn_modules(module, 'scfg_last_to_k_map', None)
-                        for submodule in SCFG_MODULES:
-                                sub_module = getattr(module, submodule, None)
-                                self.add_field_cross_attn_modules(sub_module, 'scfg_parent_module', [module])
+                def scfg_to_q_hook(module, input, kwargs, output):
+                        setattr(module.scfg_parent_module[0], 'scfg_last_to_q_map', output)
+
+                def scfg_to_k_hook(module, input, kwargs, output):
+                        setattr(module.scfg_parent_module[0], 'scfg_last_to_k_map', output)
 
                 for module in all_crossattn_modules:
                         if not hasattr(module, 'to_q') or not hasattr(module, 'to_k'):
                                 logger.error("CrossAttention module '%s' does not have to_q or to_k", module.network_layer_name)
                                 continue
-                        if hasattr(module, 'to_q'):
-                                handle_scfg_to_q = module.to_q.register_forward_hook(scfg_to_q_hook, with_kwargs=True)
-                        #if hasattr(module, 'to_k'):
-                        if module.network_layer_name.endswith('attn2'): # cross attn
-                                # self.add_field_cross_attn_modules(module.to_k, 'scfg_heads', module.heads)
-                                # self.add_field_cross_attn_modules(module, 'scfg_last_to_q_map', None)
-                                self.add_field_cross_attn_modules(module, 'scfg_last_to_k_map', None)
-                                handle_scfg_to_k = module.to_k.register_forward_hook(scfg_to_k_hook, with_kwargs=True)
-                                #handle_scfg_to_k = module.to_k.register_forward_hook(scfg_cross_attn_hook, with_kwargs=True)
 
-#                        if module.network_layer_name.endswith('attn1'): # self attention, no need for to_k
-#                                self.add_field_cross_attn_modules(module.to_q, 'scfg_heads', module.heads)
-#                                handle_scfg_to_k = module.to_q.register_forward_hook(scfg_self_attn_hook, with_kwargs=True)
-#                                #handle_scfg_to_k = module.to_k.register_forward_hook(scfg_to_k_hook, with_kwargs=True)
-#
+                        # to_q
+                        self.add_field_cross_attn_modules(module.to_q, 'scfg_parent_module', [module])
+                        self.add_field_cross_attn_modules(module.to_q, 'scfg_last_to_q_map', None)
+                        handle_scfg_to_q = module.to_q.register_forward_hook(scfg_to_q_hook, with_kwargs=True)
+
+                        # to_k
+                        self.add_field_cross_attn_modules(module.to_k, 'scfg_parent_module', [module])
+                        # hooks
+                        if module.network_layer_name.endswith('attn2'): # cross attn
+                                self.add_field_cross_attn_modules(module.to_k, 'scfg_last_to_k_map', None)
+                                handle_scfg_to_k = module.to_k.register_forward_hook(scfg_to_k_hook, with_kwargs=True)
 
         def get_all_crossattn_modules(self):
                 """ 
@@ -360,28 +320,6 @@ class SCFGExtensionScript(UIWrapper):
                 # always unhook
                 self.unhook_callbacks(scfg_params)
 
-                # patch combine_denoised
-                # if scfg_params.denoiser is None:
-                #         scfg_params.denoiser = params.denoiser
-                # if getattr(params.denoiser, 'combine_denoised_patched_scfg', False) is False:
-                #         try:
-                #                 setattr(params.denoiser, 'combine_denoised_original_scfg', params.denoiser.combine_denoised)
-                #                 # create patch that references the original function
-                #                 pass_conds_func = lambda *args, **kwargs: combine_denoised_pass_conds_list(
-                #                         *args,
-                #                         **kwargs,
-                #                         original_func = params.denoiser.combine_denoised_original_scfg,
-                #                         scfg_params = scfg_params)
-                #                 scfg_params.patched_combine_denoised = patches.patch(__name__, params.denoiser, "combine_denoised", pass_conds_func)
-                #                 setattr(params.denoiser, 'combine_denoised_patched_scfg', True)
-                #                 setattr(params.denoiser, 'combine_denoised_original_scfg', patches.original(__name__, params.denoiser, "combine_denoised"))
-                #         except KeyError:
-                #                 logger.exception("KeyError patching combine_denoised")
-                #                 pass
-                #         except RuntimeError:
-                #                 logger.exception("RuntimeError patching combine_denoised")
-                #                 pass
-
         def on_cfg_denoised_callback(self, params: CFGDenoisedParams, scfg_params: SCFGStateParams):
                 """ Callback function for the CFGDenoisedParams 
                 Refer to pg.22 A.2 of the PAG paper for how CFG and PAG combine
@@ -396,9 +334,6 @@ class SCFGExtensionScript(UIWrapper):
                 if scfg_params.scfg_scale <= 0:
                         return
 
-                logger.debug('==========before get_mask ===========') 
-                #reporter.report(verbose=True)
-
                 # S-CFG
                 R = scfg_params.R
                 max_latent_size = [params.x.shape[-2] // R, params.x.shape[-1] // R]
@@ -411,7 +346,6 @@ class SCFGExtensionScript(UIWrapper):
                                                 #latent_size = params.x.shape[2:] / R,
                                         )
                         lp.print_stats()
-                        #lp.display(get_mask)
 
                 # todo parameterize this
                 mask_t = F.interpolate(ca_mask, scale_factor=R, mode='nearest')
@@ -431,7 +365,6 @@ class SCFGExtensionScript(UIWrapper):
                         xyz_grid.AxisOption("[SCFG] SCFG Start Step", int, scfg_apply_field("scfg_start_step")),
                         xyz_grid.AxisOption("[SCFG] SCFG End Step", int, scfg_apply_field("scfg_end_step")),
                         xyz_grid.AxisOption("[SCFG] SCFG R", int, scfg_apply_field("scfg_r")),
-                        #xyz_grid.AxisOption("[PAG] ctnms_alpha", float, pag_apply_field("pag_ctnms_alpha")),
                 }
                 return extra_axis_options
 
@@ -810,39 +743,20 @@ def get_mask(attn_modules, scfg_params: SCFGStateParams, r, latent_size):
 
                 to_q_map = getattr(module, 'scfg_last_to_q_map', None)
                 to_k_map = getattr(module, 'scfg_last_to_k_map', None)
+                # self-attn
                 if to_k_map is None:
                         to_k_map = to_q_map
 
-                #to_q_map = head_to_batch_dim(to_q_map, module.heads)
-                #to_q_map = average_over_head_dim(to_q_map, module.heads)
-                #to_q_map = torch.stack([to_q_map[0], to_q_map[0]], dim=0)
-                #to_k_map = head_to_batch_dim(to_k_map, module.heads)
-                #to_k_map = average_over_head_dim(to_k_map, module.heads)
-                #to_k_map = torch.stack([to_k_map[0], to_k_map[0]], dim=0)
-
                 to_q_map = prepare_attn_map(to_q_map, module.heads)
                 to_k_map = prepare_attn_map(to_k_map, module.heads)
-                # qv_map = getattr(module, 'scfg_last_qv_map', None)
 
-
-                #module_attn_size = qv_map.size(1)
                 module_attn_size = to_q_map.size(1)
                 module_attn_sizes.add(module_attn_size)
                 downscale_h = int((module_attn_size * (height / width)) ** 0.5)
                 downscale_w = module_attn_size // downscale_h
-
                 module_key = f"r{module_attn_size}_{module_type}"
 
-                #if r > max_r:
-                #       max_r = r
-
-                # based on diffusers models/attention.py "get_attention_scores"
-                # in place operations to save memory: https://stackoverflow.com/questions/53732209/torch-in-place-operations-to-save-memory-softmax
-                # 512x: 2.65G -> 2.47G
-
                 attn_probs = get_attention_scores(to_q_map, to_k_map)
-
-                #attn_probs = attn_scores.softmax(dim=-1).to(device=shared.device, dtype=to_q_map.dtype)
 
                 if module_type == 'self':
                        del module.scfg_last_to_q_map
@@ -853,15 +767,11 @@ def get_mask(attn_modules, scfg_params: SCFGStateParams, r, latent_size):
                         attention_store_proxy[module_key] = []
                 try:
                         attention_store_proxy[module_key].append(attn_probs)
-                        #attention_store_proxy[module_key].append(qv_map)
                 except KeyError:
                         continue
 
         module_attn_sizes = sorted(list(module_attn_sizes))
         attention_maps = attention_store_proxy
-
-        # max_r = max(module_attn_sizes)
-        # r_r = 1 # scale factor from map to map
 
         curr_r = module_attn_sizes.pop(0)
         while curr_r != None and attnmap_r < max_sizes:
@@ -871,13 +781,11 @@ def get_mask(attn_modules, scfg_params: SCFGStateParams, r, latent_size):
                 if key_self not in attention_maps.keys() or key_corss not in attention_maps.keys():
                         next_r = module_attn_sizes.pop(0)
                         attnmap_r += 1
-                        # r_r *= 2
                         curr_r = next_r
                         continue
                 if len(attention_maps[key_self]) == 0 or len(attention_maps[key_corss]) == 0:
                         curr_r = module_attn_sizes.pop(0)
                         attnmap_r += 1
-                        # r_r *= 2
                         curr_r = next_r
                         continue
 
@@ -952,13 +860,10 @@ def get_mask(attn_modules, scfg_params: SCFGStateParams, r, latent_size):
                 attnmap_r += 1
                 # r_r *= 2
 
-
                 # optimization 2: memory savings: 3.09G - 2.47G = 0.62G
                 del ca_norm, froe_ca_norm, fore_ca
 
         # no memory savings
-        #for attnmap in attention_maps[key_self] + attention_maps[key_corss]:
-        #        del attnmap
         del attention_maps
         del sa, ca, ssgc_sa, ssgc_n, curr
         
@@ -983,6 +888,7 @@ def get_mask(attn_modules, scfg_params: SCFGStateParams, r, latent_size):
 
         return [ ca_mask, fore_mask]
 
+
 def prepare_attn_map(to_k_map, heads):
     to_k_map = head_to_batch_dim(to_k_map, heads)
     to_k_map = average_over_head_dim(to_k_map, heads)
@@ -998,6 +904,11 @@ def get_attention_scores(to_q_map, to_k_map):
         Returns:
                 torch.Tensor - attention scores 
         """
+        # based on diffusers models/attention.py "get_attention_scores"
+        # use in place operations vs. softmax to save memory: https://stackoverflow.com/questions/53732209/torch-in-place-operations-to-save-memory-softmax
+        # 512x: 2.65G -> 2.47G
+        # attn_probs = attn_scores.softmax(dim=-1).to(device=shared.device, dtype=to_q_map.dtype)
+
         attn_probs = to_q_map @ to_k_map.transpose(-1, -2)
         torch.exp(attn_probs, out = attn_probs)
         summed = attn_probs.sum(dim=-1, keepdim=True)
