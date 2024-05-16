@@ -117,14 +117,15 @@ class SCFGExtensionScript(UIWrapper):
                 with gr.Accordion('S-CFG', open=False):
                         active = gr.Checkbox(value=False, default=False, label="Active", elem_id='scfg_active')
                         with gr.Row():
-                                scfg_scale = gr.Slider(value = 1.0, minimum = 0, maximum = 30.0, step = 0.1, label="SCFG Scale", elem_id = 'scfg_scale', info="")
-                                scfg_rate_min = gr.Slider(value = 0.8, minimum = 0, maximum = 30.0, step = 0.1, label="Min CFG", elem_id = 'scfg_rate_min', info="")
-                                scfg_rate_max = gr.Slider(value = 3.0, minimum = 0, maximum = 30.0, step = 0.1, label="Max CFG", elem_id = 'scfg_rate_max', info="")
-                                scfg_rate_clamp = gr.Slider(value = 15.0, minimum = 0, maximum = 30.0, step = 0.1, label="Clamp CFG", elem_id = 'scfg_rate_clamp', info="")
+                                scfg_scale = gr.Slider(value = 1.0, minimum = 0, maximum = 10.0, step = 0.1, label="SCFG Scale", elem_id = 'scfg_scale', info="")
+                                scfg_r = gr.Slider(value = 4, minimum = 1, maximum = 16, step = 1, label="SCFG R", elem_id = 'scfg_r', info="Scale factor. Greater R uses more memory.")
+                        with gr.Row():
+                                scfg_rate_min = gr.Slider(value = 0.8, minimum = 0, maximum = 30.0, step = 0.1, label="Min Rate", elem_id = 'scfg_rate_min', info="")
+                                scfg_rate_max = gr.Slider(value = 3.0, minimum = 0, maximum = 30.0, step = 0.1, label="Max Rate", elem_id = 'scfg_rate_max', info="")
+                                scfg_rate_clamp = gr.Slider(value = 0.0, minimum = 0, maximum = 30.0, step = 0.1, label="Clamp Rate", elem_id = 'scfg_rate_clamp', info="If > 0, clamp max rate to Clamp Rate / CFG Scale. Overrides max rate.")
                         with gr.Row():
                                 start_step = gr.Slider(value = 0, minimum = 0, maximum = 150, step = 1, label="Start Step", elem_id = 'scfg_start_step', info="")
                                 end_step = gr.Slider(value = 150, minimum = 0, maximum = 150, step = 1, label="End Step", elem_id = 'scfg_end_step', info="")
-                                scfg_r = gr.Slider(value = 4, minimum = 1, maximum = 16, step = 1, label="SCFG R", elem_id = 'scfg_r', info="The number of the smallest attention map sizes to aggregate.")
                                 
                 active.do_not_save_to_config = True
                 scfg_scale.do_not_save_to_config = True
@@ -427,7 +428,9 @@ def scfg_combine_denoised(model_delta, cfg_scale, scfg_params: SCFGStateParams):
         rate = rate * scfg_scale
 
         rate = torch.clamp(rate,min=min_rate, max=max_rate)
-        rate = torch.clamp_max(rate, rate_clamp/cfg_scale)
+
+        if rate_clamp > 0:
+                rate = torch.clamp_max(rate, rate_clamp/cfg_scale)
 
         ###Gaussian Smoothing 
         kernel_size = 3
@@ -437,82 +440,6 @@ def scfg_combine_denoised(model_delta, cfg_scale, scfg_params: SCFGStateParams):
         rate = smoothing(rate)
 
         return rate.squeeze(0)
-
-
-def combine_denoised_pass_conds_list(*args, **kwargs):
-        """ Hijacked function for combine_denoised in CFGDenoiser """
-        original_func = kwargs.get('original_func', None)
-        scfg_params = kwargs.get('scfg_params', None)
-
-        if scfg_params is None:
-                logger.error("scfg_params is None")
-                return original_func(*args)
-        step = scfg_params.current_step
-
-        def new_combine_denoised(x_out, conds_list, uncond, cond_scale):
-                denoised_uncond = x_out[-uncond.shape[0]:]
-                denoised = torch.clone(denoised_uncond)
-
-                # Calculate CFG Scale
-                cfg_scale = cond_scale
-
-                for i, conds in enumerate(conds_list):
-                        for cond_index, weight in conds:
-                                if not scfg_params.start_step <= step <= scfg_params.end_step:
-                                        return original_func(*args)
-                                if scfg_params.mask_t is None:
-                                        logger.error("SCFG mask_t is None")
-                                        return original_func(*args)
-                                if scfg_params.mask_fore is None:
-                                        logger.error("SCFG mask_fore is None")
-                                        return original_func(*args)
-                                mask_t = scfg_params.mask_t
-                                mask_fore = scfg_params.mask_fore
-                                scfg_scale = scfg_params.scfg_scale
-                                min_rate = scfg_params.rate_min
-                                max_rate = scfg_params.rate_max
-                                rate_clamp = scfg_params.rate_clamp
-
-                                model_delta = (x_out[cond_index] - denoised_uncond[i]).unsqueeze(0)
-                                model_delta_norm = model_delta.norm(dim=1, keepdim=True)
-
-                                # rescale map if necessary
-                                if mask_t.shape[2:] != model_delta_norm.shape[2:]:
-                                        logger.debug('Rescaling mask_t from %s to %s', mask_t.shape[2:], model_delta_norm.shape[2:])
-                                        mask_t = F.interpolate(mask_t, size=model_delta_norm.shape[2:], mode='bilinear')
-                                if mask_fore.shape[-2] != model_delta_norm.shape[-2]:
-                                        logger.debug('Rescaling mask_fore from %s to %s', mask_fore.shape[2:], model_delta_norm.shape[2:])
-                                        mask_fore = F.interpolate(mask_fore, size=model_delta_norm.shape[2:], mode='bilinear')
-
-                                delta_mask_norms = (model_delta_norm * mask_t).sum([2,3])/(mask_t.sum([2,3])+1e-8)
-                                upnormmax = delta_mask_norms.max(dim=1)[0]
-                                upnormmax = upnormmax.unsqueeze(-1)
-
-                                fore_norms = (model_delta_norm * mask_fore).sum([2,3])/(mask_fore.sum([2,3])+1e-8)
-
-                                up = fore_norms
-                                down = delta_mask_norms
-
-                                tmp_mask = (mask_t.sum([2,3])>0).float()
-                                rate = up*(tmp_mask)/(down+1e-8) # b 257
-                                rate = (rate.unsqueeze(-1).unsqueeze(-1)*mask_t).sum(dim=1, keepdim=True) # b 1, 64 64
-                                
-                                rate = torch.clamp(rate,min=min_rate, max=max_rate)
-                                rate = torch.clamp_max(rate, rate_clamp/cfg_scale)
-                                rate = rate * scfg_scale
-
-                                ###Gaussian Smoothing 
-                                kernel_size = 3
-                                sigma=0.5
-                                smoothing = GaussianSmoothing(channels=1, kernel_size=kernel_size, sigma=sigma, dim=2).to(rate.device)
-                                rate = F.pad(rate, (1, 1, 1, 1), mode='reflect')
-                                rate = smoothing(rate)
-                                rate = rate.to(x_out[cond_index].dtype)
-
-                                denoised[i] += (x_out[cond_index] - denoised_uncond[i]) * rate.squeeze(0) * (weight * cfg_scale)
-
-                return denoised
-        return new_combine_denoised(*args)
 
 
 # XYZ Plot
@@ -535,12 +462,11 @@ def scfg_apply_field(field):
     return fun
 
 
-# thanks torch; removing hooks DOESN'T WORK
-# thank you to @ProGamerGov for this https://github.com/pytorch/pytorch/issues/70455
 def _remove_all_forward_hooks(
     module: torch.nn.Module, hook_fn_name: Optional[str] = None
 ) -> None:
         module_hooks.remove_module_forward_hook(module, hook_fn_name)
+
 
 """
 # below code modified from https://github.com/SmilesDZgk/S-CFG
@@ -551,6 +477,7 @@ def _remove_all_forward_hooks(
   year={2024}
 }
 """
+
 
 import math
 import numbers
