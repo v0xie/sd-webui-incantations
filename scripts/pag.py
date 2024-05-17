@@ -333,11 +333,11 @@ class PAGExtensionScript(UIWrapper):
                                 # oops we forgot to unhook
                                 return
 
-                        batch_size, seq_len, inner_dim = output.shape
-                        identity = torch.eye(seq_len).expand(batch_size, -1, -1).to(shared.device)
-
                         # get the last to_v output and save it
                         last_to_v = getattr(module, 'pag_last_to_v', None)
+
+                        batch_size, seq_len, inner_dim = output.shape
+                        identity = torch.eye(seq_len, dtype=last_to_v.dtype, device=shared.device).expand(batch_size, -1, -1)
                         if last_to_v is not None:    
                                 new_output = torch.einsum('bij,bjk->bik', identity, last_to_v)
                                 return new_output
