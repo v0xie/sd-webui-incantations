@@ -407,15 +407,16 @@ class T2I0ExtensionScript(UIWrapper):
                 plot_num = 0
                 for module in cross_attn_modules:
                         self.add_field_cross_attn_modules(module, 't2i0_last_attn_map', None)
-                        self.add_field_cross_attn_modules(module, 't2i0_step', torch.tensor([-1]).to(device=shared.device))
-                        self.add_field_cross_attn_modules(module, 't2i0_step_start', torch.tensor([step_start]).to(device=shared.device))
-                        self.add_field_cross_attn_modules(module, 't2i0_step_end', torch.tensor([step_end]).to(device=shared.device))
+                        self.add_field_cross_attn_modules(module, 't2i0_step', torch.tensor([-1]).cpu())
+                        self.add_field_cross_attn_modules(module, 't2i0_step_start', torch.tensor([step_start]).cpu())
+                        self.add_field_cross_attn_modules(module, 't2i0_step_end', torch.tensor([step_end]).cpu())
                         self.add_field_cross_attn_modules(module, 't2i0_ema', None)
-                        self.add_field_cross_attn_modules(module, 't2i0_ema_factor', torch.tensor([ema_factor]).to(device=shared.device, dtype=torch.float16))
+                        self.add_field_cross_attn_modules(module, 't2i0_ema_factor', torch.tensor([ema_factor]).cpu())
                         self.add_field_cross_attn_modules(module, 'plot_num', torch.tensor([plot_num]).to(device=shared.device))
                         self.add_field_cross_attn_modules(module, 't2i0_to_v_map', None)
                         self.add_field_cross_attn_modules(module.to_v, 't2i0_parent_module', [module])
-                        self.add_field_cross_attn_modules(module, 't2i0_token_count', torch.tensor(token_count).to(device=shared.device, dtype=torch.int64))
+                        self.add_field_cross_attn_modules(module, 't2i0_token_count', torch.tensor(token_count).cpu())
+                        self.add_field_cross_attn_modules(module, 'gaussian_blur', GaussianBlur(kernel_size=3, sigma=1).to(device=shared.device))
                         if tokens is not None:
                                 self.add_field_cross_attn_modules(module, 't2i0_tokens', torch.tensor(tokens).to(device=shared.device, dtype=torch.int64))
                         else:
@@ -476,9 +477,9 @@ class T2I0ExtensionScript(UIWrapper):
                         attention_map = output.view(batch_size, downscale_height, downscale_width, inner_dim)
 
                         if token_indices is None:
-                                selected_tokens = torch.tensor(list(range(1, token_count.item())))
+                                selected_tokens = torch.arange(1, token_count, device=output.device)
                         elif len(token_indices) == 0:
-                                selected_tokens = torch.tensor(list(range(1, token_count.item())))
+                                selected_tokens = torch.arange(1, token_count, device=output.device)
                         else:
                                 selected_tokens = module.t2i0_tokens
 
@@ -490,7 +491,7 @@ class T2I0ExtensionScript(UIWrapper):
 
                         # Extract and process the selected attention maps
                         # GaussianBlur expects the input [..., C, H, W]
-                        gaussian_blur = GaussianBlur(kernel_size=3, sigma=1)
+                        gaussian_blur = module.gaussian_blur
                         AC = AC.permute(0, 3, 1, 2)
                         AC = gaussian_blur(AC)  # Applying Gaussian smoothing
                         AC = AC.permute(0, 2, 3, 1)
