@@ -24,6 +24,8 @@ All methods are **training-free** and rely only on modifying the text embeddings
 ## Installation
 To install the `sd-webui-incantations` extension, follow these steps:
 
+0. **Ensure you have the latest Automatic1111 stable-diffusion-webui version ≥ 1.93 installed**
+
 1. **Open the "Extensions" tab and navigate to the "Install from URL" section**:
 
 2. **Paste the repository URL into the "URL for extension's git repository" field**:  
@@ -39,6 +41,7 @@ To install the `sd-webui-incantations` extension, follow these steps:
 ## Compatibility Notice
 * Incompatible with **stable-diffusion-webui-forge**: Use this extension with Forge: https://github.com/pamparamm/sd-perturbed-attention
 * Reported incompatible with Adetailer: https://github.com/v0xie/sd-webui-incantations/issues/21
+* Incompatible with some older webui versions: https://github.com/v0xie/sd-webui-incantations/issues/14
 * May conflict with other extensions which modify the CFGDenoiser
 
 ## News
@@ -50,7 +53,8 @@ To install the `sd-webui-incantations` extension, follow these steps:
 ---
 ## Semantic CFG (S-CFG)
 https://arxiv.org/abs/2404.05384  
-Dynamically rescale CFG guidance per semantic region to a uniform level to improve image / text alignment.
+Dynamically rescale CFG guidance per semantic region to a uniform level to improve image / text alignment.  
+**Very computationally expensive**: A batch size of 4 with 1024x1024 will max out a 24GB 4090.
 
 #### Controls
 * **SCFG Scale**: Multiplies the correction by a constant factor. Default: 1.0.
