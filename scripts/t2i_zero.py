@@ -407,15 +407,15 @@ class T2I0ExtensionScript(UIWrapper):
                 plot_num = 0
                 for module in cross_attn_modules:
                         self.add_field_cross_attn_modules(module, 't2i0_last_attn_map', None)
-                        self.add_field_cross_attn_modules(module, 't2i0_step', torch.tensor([-1]).cpu())
-                        self.add_field_cross_attn_modules(module, 't2i0_step_start', torch.tensor([step_start]).cpu())
-                        self.add_field_cross_attn_modules(module, 't2i0_step_end', torch.tensor([step_end]).cpu())
+                        self.add_field_cross_attn_modules(module, 't2i0_step', int(-1))
+                        self.add_field_cross_attn_modules(module, 't2i0_step_start', int(step_start))
+                        self.add_field_cross_attn_modules(module, 't2i0_step_end', int(step_end))
                         self.add_field_cross_attn_modules(module, 't2i0_ema', None)
-                        self.add_field_cross_attn_modules(module, 't2i0_ema_factor', torch.tensor([ema_factor]).cpu())
-                        self.add_field_cross_attn_modules(module, 'plot_num', torch.tensor([plot_num]).to(device=shared.device))
+                        self.add_field_cross_attn_modules(module, 't2i0_ema_factor', float(ema_factor))
+                        self.add_field_cross_attn_modules(module, 'plot_num', int(plot_num))
                         self.add_field_cross_attn_modules(module, 't2i0_to_v_map', None)
                         self.add_field_cross_attn_modules(module.to_v, 't2i0_parent_module', [module])
-                        self.add_field_cross_attn_modules(module, 't2i0_token_count', torch.tensor(token_count).cpu())
+                        self.add_field_cross_attn_modules(module, 't2i0_token_count', int(token_count))
                         self.add_field_cross_attn_modules(module, 'gaussian_blur', GaussianBlur(kernel_size=3, sigma=1).to(device=shared.device))
                         if tokens is not None:
                                 self.add_field_cross_attn_modules(module, 't2i0_tokens', torch.tensor(tokens).to(device=shared.device, dtype=torch.int64))
