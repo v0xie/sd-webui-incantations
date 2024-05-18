@@ -1,7 +1,23 @@
 # sd-webui-incantations
-This extension implements multiple novel algorithms that enhance image quality, prompt following, and more.
 
-## What is This?
+# Table of Contents
+- [What is this?](#what-is-this)
+- [Installation](#installation)
+- [Compatibility Notice](#compatibility-notice)
+- [News](#compatibility-notice)
+- [Extension Features](#extension-features)
+    - [Semantic CFG](#semantic-cfg-s-cfg)
+    - [Perturbed Attention Guidance](#perturbed-attention-guidance)
+    - [CFG Scheduler](#cfg-interval--cfg-scheduler)
+    - [Multi-Concept T2I-Zero](#multi-concept-t2i-zero--attention-regulation)
+    - [Seek for Incantations](#seek-for-incantations)
+- [Tutorial](#tutorial)
+- [Other cool extensions](#also-check-out)
+- [Credits](#credits)
+
+## What is this?
+This extension for [AUTOMATIC1111/stable-diffusion-webui](https://github.com/AUTOMATIC1111/stable-diffusion-webui) offers tools to enhance image quality, prompt following, and more.  
+
 The `sd-webui-incantations` extension is designed to enhance the capabilities of the Stable Diffusion web UI by integrating advanced algorithms that improve image generation quality and fidelity to prompts. These algorithms include Perturbed Attention Guidance, CFG Interval/Scheduler, Multi-Concept T2I-Zero/Attention Regulation, and more. By incorporating state-of-the-art research, this extension allows users to achieve higher-quality images with more accurate prompt adherence and improved sampling techniques.
 
 ## Installation
@@ -9,23 +25,26 @@ To install the `sd-webui-incantations` extension, follow these steps:
 
 1. **Open the "Extensions" tab and navigate to the "Install from URL" section**:
 
-2. **Paste the repository's URL into the "URL for extension's git repository" field**:  
+2. **Paste the repository URL into the "URL for extension's git repository" field**:  
     ```
     https://github.com/v0xie/sd-webui-incantations.git
     ```
     
 3. **Press the Install button**: Wait a few seconds for the extension to finish installing.
     
-5. **Restart the Web UI**:
+4. **Restart the Web UI**:
     Completely restart your Stable Diffusion Web UI to load the new extension.
 
-
-## Compatibility Notice:
-#### Currently incompatible with stable-diffusion-webui-forge 
-Use this extension with Forge: https://github.com/pamparamm/sd-perturbed-attention
-
+## Compatibility Notice
+* Incompatible with **stable-diffusion-webui-forge**: Use this extension with Forge: https://github.com/pamparamm/sd-perturbed-attention
 * Reported incompatible with Adetailer: https://github.com/v0xie/sd-webui-incantations/issues/21
-* May conflict with extensions that modify the CFGDenoiser
+* May conflict with other extensions which modify the CFGDenoiser
+
+## News
+- 29-04-2024 🔥 - The implementation of Multi-Concept T2I-Zero is fixed and works much more stably now.
+
+
+# Extension Features
 
 ---
 ## Perturbed Attention Guidance
@@ -48,7 +67,15 @@ Prompt: "a puppy and a kitten on the moon"
 #### Also check out the paper authors' official project page:
 - https://ku-cvlab.github.io/Perturbed-Attention-Guidance/
 
+#### [Return to top](#sd-webui-incantations)
+
 ---
+## Semantic CFG (S-CFG)
+todo
+
+#### [Return to top](#sd-webui-incantations)
+---
+
 ## CFG Interval / CFG Scheduler
 https://arxiv.org/abs/2404.07724 and https://arxiv.org/abs/2404.13040 
 
@@ -81,6 +108,7 @@ Prompt: "An epic lithograph of a handsome salaryman carefully pouring coffee fro
 - SD XL  
 ![image](./images/xyz_grid-3380-1-An%20epic%20lithograph%20of%20a%20handsome%20salaryman%20carefully%20pouring%20coffee%20from%20a%20cup%20into%20an%20overflowing%20carafe,%204K,%20directed%20by%20Wong.jpg)
 
+#### [Return to top](#sd-webui-incantations)
 ---
 ## Multi-Concept T2I-Zero / Attention Regulation
 
@@ -117,6 +145,7 @@ SD XL
 - https://multi-concept-t2i-zero.github.io/ 
 - https://github.com/YaNgZhAnG-V5/attention_regulation
 
+#### [Return to top](#sd-webui-incantations)
 ---
 ### Seek for Incantations
 An incomplete implementation of a "prompt-upsampling" method from https://arxiv.org/abs/2401.06345  
@@ -140,6 +169,7 @@ SD XL
 * Modified Prompt: cinematic 4K photo of a dog riding a bus and eating cake and wearing headphones BREAK - - - - - dog - - bus - - - - - -
 ![image](./images/xyz_grid-2652-1419902843-cinematic%204K%20photo%20of%20a%20dog%20riding%20a%20bus%20and%20eating%20cake%20and%20wearing%20headphones.png)
 
+#### [Return to top](#sd-webui-incantations)
 ---
 
 ### Issues / Pull Requests are welcome!
@@ -150,6 +180,8 @@ SD XL
 [**Improve Stable Diffusion Prompt Following & Image Quality Significantly With Incantations Extension**](https://youtu.be/lMQ7DIPmrfI)
 
 [![image](https://cdn-uploads.huggingface.co/production/uploads/6345bd89fe134dfd7a0dba40/TzuZWTiHAc3wTxh3PwGL5.png)](https://youtu.be/lMQ7DIPmrfI)
+
+#### [Return to top](#sd-webui-incantations)
 
 ## Also check out:
 
@@ -163,6 +195,7 @@ SD XL
 
 * **Agent Attention**: Faster image generation and improved image quality with Agent Attention [https://github.com/v0xie/sd-webui-agentattention](https://github.com/v0xie/sd-webui-agentattention)
 
+#### [Return to top](#sd-webui-incantations)
 --- 
 
 ### Credits
@@ -225,4 +258,7 @@ SD XL
 
 - [Hard Prompts Made Easy](https://github.com/YuxinWenRick/hard-prompts-made-easy)
 - [@udon-universe's extension templates](https://github.com/udon-universe/stable-diffusion-webui-extension-templates)
+
+#### [Return to top](#sd-webui-incantations)
 ---
+
