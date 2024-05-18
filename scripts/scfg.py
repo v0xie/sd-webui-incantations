@@ -298,7 +298,7 @@ class SCFGExtensionScript(UIWrapper):
 
                         # to_q
                         self.add_field_cross_attn_modules(module.to_q, 'scfg_parent_module', [module])
-                        self.add_field_cross_attn_modules(module.to_q, 'scfg_last_to_q_map', None)
+                        self.add_field_cross_attn_modules(module, 'scfg_last_to_q_map', None)
                         handle_scfg_to_q = module_hooks.module_add_forward_hook(
                                 module.to_q,
                                 scfg_to_q_hook,
@@ -308,7 +308,7 @@ class SCFGExtensionScript(UIWrapper):
                         # to_k
                         self.add_field_cross_attn_modules(module.to_k, 'scfg_parent_module', [module])
                         if module.network_layer_name.endswith('attn2'): # cross attn
-                                self.add_field_cross_attn_modules(module.to_k, 'scfg_last_to_k_map', None)
+                                self.add_field_cross_attn_modules(module, 'scfg_last_to_k_map', None)
                                 handle_scfg_to_k = module_hooks.module_add_forward_hook(
                                         module.to_k,
                                         scfg_to_k_hook,
