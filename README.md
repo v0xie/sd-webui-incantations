@@ -7,27 +7,20 @@ The `sd-webui-incantations` extension is designed to enhance the capabilities of
 ## Installation
 To install the `sd-webui-incantations` extension, follow these steps:
 
-1. **Clone the Repository**:
-   ```bash
-   git clone https://github.com/v0xie/sd-webui-incantations.git
-2. **Navigate to the Directory**:
-    ```bash
-    cd sd-webui-incantations
+1. **Open the "Extensions" tab and navigate to the "Install from URL" section**:
+
+2. **Paste the repository's URL into the "URL for extension's git repository" field**:  
+    ```
+    https://github.com/v0xie/sd-webui-incantations.git
+    ```
     
-3. **Install Dependencies**: Ensure you have all required dependencies installed. You can do this via `pip`:
-   ```bash 
-   pip install -r requirements.txt
-    
-4. **Add to Stable Diffusion Web UI**:
-   Add the path to this extension in your Stable Diffusion Web UI configuration or place the cloned directory in the extensions folder of your web UI.
+3. **Press the Install button**: Wait a few seconds for the extension to finish installing.
     
 5. **Restart the Web UI**:
-    Restart your Stable Diffusion Web UI to load the new extension.
+    Completely restart your Stable Diffusion Web UI to load the new extension.
 
 
-
-
-## COMPATIBILITY NOTICES:
+## Compatibility Notice:
 #### Currently incompatible with stable-diffusion-webui-forge 
 Use this extension with Forge: https://github.com/pamparamm/sd-perturbed-attention
 
