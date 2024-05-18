@@ -79,18 +79,24 @@ SCFG_MODULES = ['to_q', 'to_k']
 
 class SCFGStateParams:
         def __init__(self):
-                self.scfg_scale = 0.8
+                self.scfg_scale:float = 0.8
                 self.rate_min = 0.8
                 self.rate_max = 3.0
                 self.rate_clamp = 15.0
                 self.R = 4
                 self.start_step = 0
                 self.end_step = 150 
+                self.gaussian_smoothing = None
 
                 self.max_sampling_steps = -1
                 self.current_step = 0
                 self.height = -1 
                 self.width = -1 
+
+                self.statistics = {
+                        "min_rate": float('inf'), 
+                        "max_rate": float('-inf'), 
+                }
 
                 self.mask_t = None
                 self.mask_fore = None
@@ -210,6 +216,10 @@ class SCFGExtensionScript(UIWrapper):
                 scfg_params.R = scfg_r
                 scfg_params.height = p.height
                 scfg_params.width = p.width
+                kernel_size = 3
+                sigma=0.5
+                scfg_params.gaussian_smoothing = GaussianSmoothing(channels=1, kernel_size=kernel_size, sigma=sigma, dim=2).to(shared.device)
+
 
                 # Use lambda to call the callback function with the parameters to avoid global variables
                 #cfg_denoise_lambda = lambda callback_params: self.on_cfg_denoiser_callback(callback_params, scfg_params)
@@ -233,6 +243,11 @@ class SCFGExtensionScript(UIWrapper):
                 active = getattr(p, "scfg_active", active)
                 if active is False:
                         return
+                
+                if hasattr(p, 'incant_cfg_params') and 'scfg_params' in p.incant_cfg_params:
+                        stats = p.incant_cfg_params['scfg_params'].statistics
+                        logger.debug('SCFG Statistics: %s', stats)
+
 
                 self.remove_all_hooks()
 
@@ -283,7 +298,7 @@ class SCFGExtensionScript(UIWrapper):
 
                         # to_q
                         self.add_field_cross_attn_modules(module.to_q, 'scfg_parent_module', [module])
-                        self.add_field_cross_attn_modules(module.to_q, 'scfg_last_to_q_map', None)
+                        self.add_field_cross_attn_modules(module, 'scfg_last_to_q_map', None)
                         handle_scfg_to_q = module_hooks.module_add_forward_hook(
                                 module.to_q,
                                 scfg_to_q_hook,
@@ -293,7 +308,7 @@ class SCFGExtensionScript(UIWrapper):
                         # to_k
                         self.add_field_cross_attn_modules(module.to_k, 'scfg_parent_module', [module])
                         if module.network_layer_name.endswith('attn2'): # cross attn
-                                self.add_field_cross_attn_modules(module.to_k, 'scfg_last_to_k_map', None)
+                                self.add_field_cross_attn_modules(module, 'scfg_last_to_k_map', None)
                                 handle_scfg_to_k = module_hooks.module_add_forward_hook(
                                         module.to_k,
                                         scfg_to_k_hook,
@@ -422,8 +437,15 @@ def scfg_combine_denoised(model_delta, cfg_scale, scfg_params: SCFGStateParams):
         tmp_mask = (mask_t.sum([2,3])>0).float()
         rate = up*(tmp_mask)/(down+eps(down.dtype)) # b 257
         rate = (rate.unsqueeze(-1).unsqueeze(-1)*mask_t).sum(dim=1, keepdim=True) # b 1, 64 64
+
         del model_delta_norm, delta_mask_norms, upnormmax, fore_norms, up, down, tmp_mask
         
+        # unscaled min/max rate
+        if rate.min().item() < scfg_params.statistics["min_rate"]:
+                scfg_params.statistics["min_rate"] = rate.min().item()
+        if rate.max().item() > scfg_params.statistics["max_rate"]:
+                scfg_params.statistics["max_rate"] = rate.max().item()
+
         # should this go before or after the gaussian blur, or before/after the rate
         rate = rate * scfg_scale
 
@@ -433,9 +455,10 @@ def scfg_combine_denoised(model_delta, cfg_scale, scfg_params: SCFGStateParams):
                 rate = torch.clamp_max(rate, rate_clamp/cfg_scale)
 
         ###Gaussian Smoothing 
-        kernel_size = 3
-        sigma=0.5
-        smoothing = GaussianSmoothing(channels=1, kernel_size=kernel_size, sigma=sigma, dim=2).to(rate.device)
+        #kernel_size = 3
+        #sigma=0.5
+        #smoothing = GaussianSmoothing(channels=1, kernel_size=kernel_size, sigma=sigma, dim=2).to(rate.device)
+        smoothing = scfg_params.gaussian_smoothing
         rate = F.pad(rate, (1, 1, 1, 1), mode='reflect')
         rate = smoothing(rate)
 
@@ -637,7 +660,7 @@ def get_mask(attn_modules, scfg_params: SCFGStateParams, r, latent_size):
                 downscale_w = module_attn_size // downscale_h
                 module_key = f"r{module_attn_size}_{module_type}"
 
-                attn_probs = get_attention_scores(to_q_map, to_k_map)
+                attn_probs = get_attention_scores(to_q_map, to_k_map, to_q_map.dtype)
 
                 if module_type == 'self':
                        del module.scfg_last_to_q_map
@@ -716,9 +739,10 @@ def get_mask(attn_modules, scfg_params: SCFGStateParams, r, latent_size):
                 ca = F.interpolate(ca, scale_factor=scale_factor, mode=mode) # b 77 32 32
 
                 #####Gaussian Smoothing
-                kernel_size = 3
-                sigma = 0.5
-                smoothing = GaussianSmoothing(channels=1, kernel_size=kernel_size, sigma=sigma, dim=2).to(ca.device)
+                #kernel_size = 3
+                #sigma = 0.5
+                #smoothing = GaussianSmoothing(channels=1, kernel_size=kernel_size, sigma=sigma, dim=2).to(ca.device)
+                smoothing = scfg_params.gaussian_smoothing
                 channel = ca.size(1)
                 ca= rearrange(ca, ' b c h w -> (b c) h w' ).unsqueeze(1)
                 ca = F.pad(ca, (1, 1, 1, 1), mode='reflect')
@@ -777,11 +801,12 @@ def prepare_attn_map(to_k_map, heads):
     return to_k_map
 
 
-def get_attention_scores(to_q_map, to_k_map):
+def get_attention_scores(to_q_map, to_k_map, dtype):
         """ Calculate the attention scores for the given query and key maps
         Arguments:
                 to_q_map: torch.Tensor - query map
                 to_k_map: torch.Tensor - key map
+                dtype: torch.dtype - data type of the tensor
         Returns:
                 torch.Tensor - attention scores 
         """
@@ -791,7 +816,15 @@ def get_attention_scores(to_q_map, to_k_map):
         # attn_probs = attn_scores.softmax(dim=-1).to(device=shared.device, dtype=to_q_map.dtype)
 
         attn_probs = to_q_map @ to_k_map.transpose(-1, -2)
+
+        # avoid nan by converting to float32 and subtracting max 
+        attn_probs = attn_probs.to(dtype=torch.float32) #
+        attn_probs -= torch.max(attn_probs)
+
         torch.exp(attn_probs, out = attn_probs)
-        summed = attn_probs.sum(dim=-1, keepdim=True)
+        summed = attn_probs.sum(dim=-1, keepdim=True, dtype=torch.float32)
         attn_probs /= summed
+
+        attn_probs = attn_probs.to(dtype=dtype)
+
         return attn_probs
