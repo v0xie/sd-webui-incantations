@@ -42,24 +42,29 @@ To install the `sd-webui-incantations` extension, follow these steps:
 * May conflict with other extensions which modify the CFGDenoiser
 
 ## News
-- 15-05-2024 🔥 - S-CFG, optimizations, and more! https://github.com/v0xie/sd-webui-incantations/pull/37
-- 29-04-2024 🔥 - The implementation of Multi-Concept T2I-Zero is fixed and works much more stably now.
+- 15-05-2024 🔥 - S-CFG, optimizations for PAG and T2I-Zero, and more! https://github.com/v0xie/sd-webui-incantations/pull/37
+- 29-04-2024 🔥 - The implementation of T2I-Zero is fixed and works much more stably now.
 
 # Extension Features
 
 ---
 ## Semantic CFG (S-CFG)
-https://arxiv.org/abs/2404.05384
+https://arxiv.org/abs/2404.05384  
 Dynamically rescale CFG guidance per semantic region to a uniform level to improve image / text alignment.
 
 #### Controls
-* **SCFG Scale**: Multiplies the correction by a constant factor. Default 1.0.
-* **SCFG R**: A hyperparameter controlling the factor of cross-attention map refinement. Higher values use more memory and computation time. Default 4.
-* **Rate Min**: The minimum rate that the CFG can be scaled by. Default 0.8.
-* **Rate Max**: The maximum rate that the CFG can be scaled by. Default 3.0.
-* **Clamp Rate**: Overrides rate max. Clamps the Max Rate to Clamp Rate / CFG.
+* **SCFG Scale**: Multiplies the correction by a constant factor. Default: 1.0.
+* **SCFG R**: A hyperparameter controlling the factor of cross-attention map refinement. Higher values use more memory and computation time. Default: 4.
+* **Rate Min**: The minimum rate that the CFG can be scaled by. Default: 0.8.
+* **Rate Max**: The maximum rate that the CFG can be scaled by. Default: 3.0.
+* **Clamp Rate**: Overrides Rate Max. Clamps the Max Rate to Clamp Rate / CFG. Default: 0.0.
 * **Start Step**: Start S-CFG on this step.
 * **End Step**: End S-CFG after this step.
+
+#### Results
+Prompt: "A cute puppy on the moon", Min Rate: 0.5, Max Rate: 10.0
+- SD 1.5  
+![image](./images/xyz_grid-0006-1-SCFG.jpg)
 
 #### Also check out the paper authors' official project repository:
 - https://github.com/SmilesDZgk/S-CFG
