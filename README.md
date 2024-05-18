@@ -49,8 +49,20 @@ To install the `sd-webui-incantations` extension, follow these steps:
 
 ---
 ## Semantic CFG (S-CFG)
-todo
+https://arxiv.org/abs/2404.05384
+Dynamically rescale CFG guidance per semantic region to a uniform level to improve image / text alignment.
 
+#### Controls
+* **SCFG Scale**: Multiplies the correction by a constant factor. Default 1.0.
+* **SCFG R**: A hyperparameter controlling the factor of cross-attention map refinement. Higher values use more memory and computation time. Default 4.
+* **Rate Min**: The minimum rate that the CFG can be scaled by. Default 0.8.
+* **Rate Max**: The maximum rate that the CFG can be scaled by. Default 3.0.
+* **Clamp Rate**: Overrides rate max. Clamps the Max Rate to Clamp Rate / CFG.
+* **Start Step**: Start S-CFG on this step.
+* **End Step**: End S-CFG after this step.
+
+#### Also check out the paper authors' official project repository:
+- https://github.com/SmilesDZgk/S-CFG
 #### [Return to top](#sd-webui-incantations)
 
 ---
@@ -253,6 +265,15 @@ SD XL
        author={Xi Wang and Nicolas Dufour and Nefeli Andreou and Marie-Paule Cani and Victoria Fernandez Abrevaya and David Picard and Vicky Kalogeiton},
        year={2024},
        eprint={2404.13040},
+       archivePrefix={arXiv},
+       primaryClass={cs.CV}
+      }
+
+      @misc{shen2024rethinking,
+       title={Rethinking the Spatial Inconsistency in Classifier-Free Diffusion Guidance}, 
+       author={Dazhong Shen and Guanglu Song and Zeyue Xue and Fu-Yun Wang and Yu Liu},
+       year={2024},
+       eprint={2404.05384},
        archivePrefix={arXiv},
        primaryClass={cs.CV}
       }
