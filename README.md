@@ -16,9 +16,10 @@
 - [Credits](#credits)
 
 ## What is this?
-This extension for [AUTOMATIC1111/stable-diffusion-webui](https://github.com/AUTOMATIC1111/stable-diffusion-webui) offers tools to enhance image quality, prompt following, and more.  
+### This extension for [AUTOMATIC1111/stable-diffusion-webui](https://github.com/AUTOMATIC1111/stable-diffusion-webui) implements algorithms from state-of-the-art research to achieve **higher-quality** images with *more accurate* prompt adherence.
 
-The `sd-webui-incantations` extension is designed to enhance the capabilities of the Stable Diffusion web UI by integrating advanced algorithms that improve image generation quality and fidelity to prompts. These algorithms include Perturbed Attention Guidance, CFG Interval/Scheduler, Multi-Concept T2I-Zero/Attention Regulation, and more. By incorporating state-of-the-art research, this extension allows users to achieve higher-quality images with more accurate prompt adherence and improved sampling techniques.
+All methods are **training-free** and rely only on modifying the text embeddings or attention maps.
+
 
 ## Installation
 To install the `sd-webui-incantations` extension, follow these steps:
@@ -41,10 +42,16 @@ To install the `sd-webui-incantations` extension, follow these steps:
 * May conflict with other extensions which modify the CFGDenoiser
 
 ## News
+- 15-05-2024 🔥 - S-CFG, optimizations, and more! https://github.com/v0xie/sd-webui-incantations/pull/37
 - 29-04-2024 🔥 - The implementation of Multi-Concept T2I-Zero is fixed and works much more stably now.
 
-
 # Extension Features
+
+---
+## Semantic CFG (S-CFG)
+todo
+
+#### [Return to top](#sd-webui-incantations)
 
 ---
 ## Perturbed Attention Guidance
@@ -69,11 +76,6 @@ Prompt: "a puppy and a kitten on the moon"
 
 #### [Return to top](#sd-webui-incantations)
 
----
-## Semantic CFG (S-CFG)
-todo
-
-#### [Return to top](#sd-webui-incantations)
 ---
 
 ## CFG Interval / CFG Scheduler
