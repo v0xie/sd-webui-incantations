@@ -121,7 +121,7 @@ class SCFGExtensionScript(UIWrapper):
         # Setup menu ui detail
         def setup_ui(self, is_img2img) -> list:
                 with gr.Accordion('S-CFG', open=False):
-                        active = gr.Checkbox(value=False, default=False, label="Active", elem_id='scfg_active')
+                        active = gr.Checkbox(value=False, default=False, label="Active", elem_id='scfg_active', info="Computationally expensive. A batch size of 4 for 1024x1024 will max out a 24GB card!")
                         with gr.Row():
                                 scfg_scale = gr.Slider(value = 1.0, minimum = 0, maximum = 10.0, step = 0.1, label="SCFG Scale", elem_id = 'scfg_scale', info="")
                                 scfg_r = gr.Slider(value = 4, minimum = 1, maximum = 16, step = 1, label="SCFG R", elem_id = 'scfg_r', info="Scale factor. Greater R uses more memory.")
