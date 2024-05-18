@@ -98,6 +98,7 @@ SCHEDULES = [
 
 class PAGStateParams:
         def __init__(self):
+                self.pag_active: bool = False      # PAG guidance scale
                 self.pag_scale: int = -1      # PAG guidance scale
                 self.pag_start_step: int = 0
                 self.pag_end_step: int = 150 
@@ -105,9 +106,11 @@ class PAGStateParams:
                 self.cfg_interval_schedule: str = 'Constant'
                 self.cfg_interval_low: float = 0
                 self.cfg_interval_high: float = 50.0
+                self.cfg_interval_scheduled_value: float = 7.0
                 self.step : int = 0 
                 self.max_sampling_step : int = 1 
                 self.guidance_scale: int = -1 # CFG
+                self.current_noise_level: float = 100.0
                 self.x_in = None
                 self.text_cond = None
                 self.image_cond = None
@@ -147,17 +150,18 @@ class PAGExtensionScript(UIWrapper):
                         with gr.Row():
                                 start_step = gr.Slider(value = 0, minimum = 0, maximum = 150, step = 1, label="Start Step", elem_id = 'pag_start_step', info="")
                                 end_step = gr.Slider(value = 150, minimum = 0, maximum = 150, step = 1, label="End Step", elem_id = 'pag_end_step', info="")
+
+                with gr.Accordion('CFG Scheduler', open=False):
+                        cfg_interval_enable = gr.Checkbox(value=False, default=False, label="Enable CFG Scheduler", elem_id='cfg_interval_enable', info="If enabled, applies CFG only within noise interval with the selected schedule type. PAG must be enabled (scale can be 0). SDXL recommend CFG=15; CFG interval (0.28, 5.42]")
                         with gr.Row():
-                                cfg_interval_enable = gr.Checkbox(value=False, default=False, label="Enable CFG Scheduler", elem_id='cfg_interval_enable', info="If enabled, applies CFG only within noise interval with the selected schedule type. PAG must be enabled (scale can be 0). SDXL recommend CFG=15; CFG interval (0.28, 5.42]")
                                 cfg_schedule = gr.Dropdown(
                                         value='Constant',
                                         choices= SCHEDULES,
                                         label="CFG Schedule Type", 
                                         elem_id='cfg_interval_schedule', 
                                 )
-                                with gr.Row():
-                                        cfg_interval_low = gr.Slider(value = 0, minimum = 0, maximum = 100, step = 0.01, label="CFG Noise Interval Low", elem_id = 'cfg_interval_low', info="")
-                                        cfg_interval_high = gr.Slider(value = 100, minimum = 0, maximum = 100, step = 0.01, label="CFG Noise Interval High", elem_id = 'cfg_interval_high', info="")
+                                cfg_interval_low = gr.Slider(value = 0, minimum = 0, maximum = 100, step = 0.1, label="CFG Noise Interval Low", elem_id = 'cfg_interval_low', info="")
+                                cfg_interval_high = gr.Slider(value = 100, minimum = 0, maximum = 100, step = 0.1, label="CFG Noise Interval High", elem_id = 'cfg_interval_high', info="")
                                 
                 active.do_not_save_to_config = True
                 pag_scale.do_not_save_to_config = True
@@ -198,32 +202,43 @@ class PAGExtensionScript(UIWrapper):
                 self.remove_all_hooks()
 
                 active = getattr(p, "pag_active", active)
-                if active is False:
+                cfg_interval_enable = getattr(p, "cfg_interval_enable", cfg_interval_enable)
+                if active is False and cfg_interval_enable is False:
                         return
                 pag_scale = getattr(p, "pag_scale", pag_scale)
                 start_step = getattr(p, "pag_start_step", start_step)
                 end_step = getattr(p, "pag_end_step", end_step)
 
-                cfg_interval_enable = getattr(p, "cfg_interval_enable", cfg_interval_enable)
                 cfg_schedule = getattr(p, "cfg_interval_schedule", cfg_schedule)
                 cfg_interval_low = getattr(p, "cfg_interval_low", cfg_interval_low)
                 cfg_interval_high = getattr(p, "cfg_interval_high", cfg_interval_high)
 
-                p.extra_generation_params.update({
-                        "PAG Active": active,
-                        "PAG Scale": pag_scale,
-                        "PAG Start Step": start_step,
-                        "PAG End Step": end_step,
-                        "CFG Interval Enable": cfg_interval_enable,
-                        "CFG Interval Schedule": cfg_schedule,
-                        "CFG Interval Low": cfg_interval_low,
-                        "CFG Interval High": cfg_interval_high
-                })
+                if active:
+                        p.extra_generation_params.update({
+                                "PAG Active": active,
+                                "PAG Scale": pag_scale,
+                                "PAG Start Step": start_step,
+                                "PAG End Step": end_step,
+                        })
+                if cfg_interval_enable:
+                        p.extra_generation_params.update({
+                                "CFG Interval Enable": cfg_interval_enable,
+                                "CFG Interval Schedule": cfg_schedule,
+                                "CFG Interval Low": cfg_interval_low,
+                                "CFG Interval High": cfg_interval_high
+                        })
                 self.create_hook(p, active, pag_scale, start_step, end_step, cfg_interval_enable, cfg_schedule, cfg_interval_low, cfg_interval_high)
 
         def create_hook(self, p: StableDiffusionProcessing, active, pag_scale, start_step, end_step, cfg_interval_enable, cfg_schedule, cfg_interval_low, cfg_interval_high, *args, **kwargs):
                 # Create a list of parameters for each concept
                 pag_params = PAGStateParams()
+
+                # Add to p's incant_cfg_params
+                if not hasattr(p, 'incant_cfg_params'):
+                        logger.error("No incant_cfg_params found in p")
+                p.incant_cfg_params['pag_params'] = pag_params
+                
+                pag_params.pag_active = active 
                 pag_params.pag_scale = pag_scale
                 pag_params.pag_start_step = start_step
                 pag_params.pag_end_step = end_step
@@ -233,6 +248,7 @@ class PAGExtensionScript(UIWrapper):
                 pag_params.guidance_scale = p.cfg_scale
                 pag_params.batch_size = p.batch_size
                 pag_params.denoiser = None
+                pag_params.cfg_interval_scheduled_value = p.cfg_scale
 
                 if pag_params.cfg_interval_enable:
                        # Refer to 3.1 Practice in the paper
@@ -256,13 +272,16 @@ class PAGExtensionScript(UIWrapper):
                 #after_cfg_lambda = lambda x: self.cfg_after_cfg_callback(x, params)
                 unhook_lambda = lambda _: self.unhook_callbacks(pag_params)
 
-                self.ready_hijack_forward(pag_params.crossattn_modules, pag_scale)
+                if pag_params.pag_active:
+                        self.ready_hijack_forward(pag_params.crossattn_modules, pag_scale)
 
                 logger.debug('Hooked callbacks')
                 script_callbacks.on_cfg_denoiser(cfg_denoise_lambda)
                 script_callbacks.on_cfg_denoised(cfg_denoised_lambda)
                 #script_callbacks.on_cfg_after_cfg(after_cfg_lambda)
                 script_callbacks.on_script_unloaded(unhook_lambda)
+
+
 
         def postprocess_batch(self, p, *args, **kwargs):
                 self.pag_postprocess_batch(p, *args, **kwargs)
@@ -287,6 +306,7 @@ class PAGExtensionScript(UIWrapper):
 
         def unhook_callbacks(self, pag_params: PAGStateParams):
                 global handles
+                return
 
                 if pag_params is None:
                        logger.error("PAG params is None")
@@ -388,29 +408,28 @@ class PAGExtensionScript(UIWrapper):
 
                 pag_params.step = params.sampling_step
 
-                # patch combine_denoised
-                if pag_params.denoiser is None:
-                        pag_params.denoiser = params.denoiser
-                if getattr(params.denoiser, 'combine_denoised_patched', False) is False:
-                        try:
-                                setattr(params.denoiser, 'combine_denoised_original', params.denoiser.combine_denoised)
-                                # create patch that references the original function
-                                pass_conds_func = lambda *args, **kwargs: combine_denoised_pass_conds_list(
-                                        *args,
-                                        **kwargs,
-                                        original_func = params.denoiser.combine_denoised_original,
-                                        pag_params = pag_params)
-                                pag_params.patched_combine_denoised = patches.patch(__name__, params.denoiser, "combine_denoised", pass_conds_func)
-                                setattr(params.denoiser, 'combine_denoised_patched', True)
-                                setattr(params.denoiser, 'combine_denoised_original', patches.original(__name__, params.denoiser, "combine_denoised"))
-                        except KeyError:
-                                logger.exception("KeyError patching combine_denoised")
-                                pass
-                        except RuntimeError:
-                                logger.exception("RuntimeError patching combine_denoised")
-                                pass
+                # CFG Interval
+                # TODO: set rho based on sdxl or sd1.5
+                pag_params.current_noise_level = calculate_noise_level(
+                        i = pag_params.step,
+                        N = pag_params.max_sampling_step,
+                )
 
-                # Run only within interval
+                if pag_params.cfg_interval_enable:
+                        if pag_params.cfg_interval_schedule != 'Constant':
+                                # Calculate noise interval
+                                start = pag_params.cfg_interval_low
+                                end = pag_params.cfg_interval_high
+                                begin_range = start if start <= end else end
+                                end_range = end if start <= end else start
+                                # Scheduled CFG Value
+                                scheduled_cfg_scale = cfg_scheduler(pag_params.cfg_interval_schedule, pag_params.step, pag_params.max_sampling_step, pag_params.guidance_scale)
+
+                                pag_params.cfg_interval_scheduled_value = scheduled_cfg_scale if begin_range <= pag_params.current_noise_level <= end_range else 1.0
+
+                # Run PAG only if active and within interval
+                if not pag_params.pag_active or pag_params.pag_scale <= 0:
+                        return
                 if not pag_params.pag_start_step <= params.sampling_step <= pag_params.pag_end_step or pag_params.pag_scale <= 0:
                         return
 
@@ -439,6 +458,9 @@ class PAGExtensionScript(UIWrapper):
                 
                 """
                 # Run only within interval
+                # Run PAG only if active and within interval
+                if not pag_params.pag_active or pag_params.pag_scale <= 0:
+                        return
                 if not pag_params.pag_start_step <= params.sampling_step <= pag_params.pag_end_step or pag_params.pag_scale <= 0:
                         return
 
@@ -506,6 +528,8 @@ def combine_denoised_pass_conds_list(*args, **kwargs):
 
                 # Calculate CFG Scale
                 cfg_scale = cond_scale
+                new_params.cfg_interval_scheduled_value = cfg_scale
+
                 if new_params.cfg_interval_enable:
                         if new_params.cfg_interval_schedule != 'Constant':
                                 # Calculate noise interval
@@ -517,6 +541,15 @@ def combine_denoised_pass_conds_list(*args, **kwargs):
                                 scheduled_cfg_scale = cfg_scheduler(new_params.cfg_interval_schedule, new_params.step, new_params.max_sampling_step, cond_scale)
                                 # Only apply CFG in the interval
                                 cfg_scale = scheduled_cfg_scale if begin_range <= noise_level <= end_range else 1.0
+                                new_params.cfg_interval_scheduled_value = scheduled_cfg_scale
+
+                # This may be temporarily necessary for compatibility with scfg
+                # if not new_params.pag_start_step <= new_params.step <= new_params.pag_end_step:
+                #        return original_func(*args)
+
+                # This may be temporarily necessary for compatibility with scfg
+                # if not new_params.pag_start_step <= new_params.step <= new_params.pag_end_step:
+                #        return original_func(*args)
 
                 if incantations_debug:
                         logger.debug(f"Schedule: {new_params.cfg_interval_schedule}, CFG Scale: {cfg_scale}, Noise_level: {round(noise_level,3)}")

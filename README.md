@@ -1,13 +1,78 @@
 # sd-webui-incantations
-This extension implements multiple novel algorithms that enhance image quality, prompt following, and more.
 
-## COMPATIBILITY NOTICES:
-####  Currently incompatible with stable-diffusion-webui-forge 
-Use this extension with Forge: https://github.com/pamparamm/sd-perturbed-attention
+# Table of Contents
+- [What is this?](#what-is-this)
+- [Installation](#installation)
+- [Compatibility Notice](#compatibility-notice)
+- [News](#compatibility-notice)
+- [Extension Features](#extension-features)
+    - [Semantic CFG](#semantic-cfg-s-cfg)
+    - [Perturbed Attention Guidance](#perturbed-attention-guidance)
+    - [CFG Scheduler](#cfg-interval--cfg-scheduler)
+    - [Multi-Concept T2I-Zero](#multi-concept-t2i-zero--attention-regulation)
+    - [Seek for Incantations](#seek-for-incantations)
+- [Tutorial](#tutorial)
+- [Other cool extensions](#also-check-out)
+- [Credits](#credits)
 
+## What is this?
+### This extension for [AUTOMATIC1111/stable-diffusion-webui](https://github.com/AUTOMATIC1111/stable-diffusion-webui) implements algorithms from state-of-the-art research to achieve **higher-quality** images with *more accurate* prompt adherence.
+
+All methods are **training-free** and rely only on modifying the text embeddings or attention maps.
+
+
+## Installation
+To install the `sd-webui-incantations` extension, follow these steps:
+
+0. **Ensure you have the latest Automatic1111 stable-diffusion-webui version ≥ 1.93 installed**
+
+1. **Open the "Extensions" tab and navigate to the "Install from URL" section**:
+
+2. **Paste the repository URL into the "URL for extension's git repository" field**:  
+    ```
+    https://github.com/v0xie/sd-webui-incantations.git
+    ```
+    
+3. **Press the Install button**: Wait a few seconds for the extension to finish installing.
+    
+4. **Restart the Web UI**:
+    Completely restart your Stable Diffusion Web UI to load the new extension.
+
+## Compatibility Notice
+* Incompatible with **stable-diffusion-webui-forge**: Use this extension with Forge: https://github.com/pamparamm/sd-perturbed-attention
 * Reported incompatible with Adetailer: https://github.com/v0xie/sd-webui-incantations/issues/21
+* Incompatible with some older webui versions: https://github.com/v0xie/sd-webui-incantations/issues/14
+* May conflict with other extensions which modify the CFGDenoiser
 
-* May conflict with extensions that modify the CFGDenoiser
+## News
+- 15-05-2024 🔥 - S-CFG, optimizations for PAG and T2I-Zero, and more! https://github.com/v0xie/sd-webui-incantations/pull/37
+- 29-04-2024 🔥 - The implementation of T2I-Zero is fixed and works much more stably now.
+
+# Extension Features
+
+---
+## Semantic CFG (S-CFG)
+https://arxiv.org/abs/2404.05384  
+Dynamically rescale CFG guidance per semantic region to a uniform level to improve image / text alignment.  
+**Very computationally expensive**: A batch size of 4 with 1024x1024 will max out a 24GB 4090.
+
+#### Controls
+* **SCFG Scale**: Multiplies the correction by a constant factor. Default: 1.0.
+* **SCFG R**: A hyperparameter controlling the factor of cross-attention map refinement. Higher values use more memory and computation time. Default: 4.
+* **Rate Min**: The minimum rate that the CFG can be scaled by. Default: 0.8.
+* **Rate Max**: The maximum rate that the CFG can be scaled by. Default: 3.0.
+* **Clamp Rate**: Overrides Rate Max. Clamps the Max Rate to Clamp Rate / CFG. Default: 0.0.
+* **Start Step**: Start S-CFG on this step.
+* **End Step**: End S-CFG after this step.
+
+#### Results
+Prompt: "A cute puppy on the moon", Min Rate: 0.5, Max Rate: 10.0
+- SD 1.5  
+![image](./images/xyz_grid-0006-1-SCFG.jpg)
+
+#### Also check out the paper authors' official project repository:
+- https://github.com/SmilesDZgk/S-CFG
+#### [Return to top](#sd-webui-incantations)
 
 ---
 ## Perturbed Attention Guidance
@@ -30,7 +95,10 @@ Prompt: "a puppy and a kitten on the moon"
 #### Also check out the paper authors' official project page:
 - https://ku-cvlab.github.io/Perturbed-Attention-Guidance/
 
+#### [Return to top](#sd-webui-incantations)
+
 ---
+
 ## CFG Interval / CFG Scheduler
 https://arxiv.org/abs/2404.07724 and https://arxiv.org/abs/2404.13040 
 
@@ -62,6 +130,8 @@ Prompt: "A pointillist painting of a raccoon looking at the sea."
 Prompt: "An epic lithograph of a handsome salaryman carefully pouring coffee from a cup into an overflowing carafe, 4K, directed by Wong Kar Wai"
 - SD XL  
 ![image](./images/xyz_grid-3380-1-An%20epic%20lithograph%20of%20a%20handsome%20salaryman%20carefully%20pouring%20coffee%20from%20a%20cup%20into%20an%20overflowing%20carafe,%204K,%20directed%20by%20Wong.jpg)
+
+#### [Return to top](#sd-webui-incantations)
 ---
 ## Multi-Concept T2I-Zero / Attention Regulation
 
@@ -98,6 +168,7 @@ SD XL
 - https://multi-concept-t2i-zero.github.io/ 
 - https://github.com/YaNgZhAnG-V5/attention_regulation
 
+#### [Return to top](#sd-webui-incantations)
 ---
 ### Seek for Incantations
 An incomplete implementation of a "prompt-upsampling" method from https://arxiv.org/abs/2401.06345  
@@ -121,6 +192,7 @@ SD XL
 * Modified Prompt: cinematic 4K photo of a dog riding a bus and eating cake and wearing headphones BREAK - - - - - dog - - bus - - - - - -
 ![image](./images/xyz_grid-2652-1419902843-cinematic%204K%20photo%20of%20a%20dog%20riding%20a%20bus%20and%20eating%20cake%20and%20wearing%20headphones.png)
 
+#### [Return to top](#sd-webui-incantations)
 ---
 
 ### Issues / Pull Requests are welcome!
@@ -131,6 +203,8 @@ SD XL
 [**Improve Stable Diffusion Prompt Following & Image Quality Significantly With Incantations Extension**](https://youtu.be/lMQ7DIPmrfI)
 
 [![image](https://cdn-uploads.huggingface.co/production/uploads/6345bd89fe134dfd7a0dba40/TzuZWTiHAc3wTxh3PwGL5.png)](https://youtu.be/lMQ7DIPmrfI)
+
+#### [Return to top](#sd-webui-incantations)
 
 ## Also check out:
 
@@ -144,6 +218,7 @@ SD XL
 
 * **Agent Attention**: Faster image generation and improved image quality with Agent Attention [https://github.com/v0xie/sd-webui-agentattention](https://github.com/v0xie/sd-webui-agentattention)
 
+#### [Return to top](#sd-webui-incantations)
 --- 
 
 ### Credits
@@ -203,9 +278,19 @@ SD XL
        primaryClass={cs.CV}
       }
 
+      @misc{shen2024rethinking,
+       title={Rethinking the Spatial Inconsistency in Classifier-Free Diffusion Guidance}, 
+       author={Dazhong Shen and Guanglu Song and Zeyue Xue and Fu-Yun Wang and Yu Liu},
+       year={2024},
+       eprint={2404.05384},
+       archivePrefix={arXiv},
+       primaryClass={cs.CV}
+      }
 
-- Hard Prompts Made Easy (https://github.com/YuxinWenRick/hard-prompts-made-easy)
 
-- @udon-universe's extension templates (https://github.com/udon-universe/stable-diffusion-webui-extension-templates)
+- [Hard Prompts Made Easy](https://github.com/YuxinWenRick/hard-prompts-made-easy)
+- [@udon-universe's extension templates](https://github.com/udon-universe/stable-diffusion-webui-extension-templates)
+
+#### [Return to top](#sd-webui-incantations)
 ---
 

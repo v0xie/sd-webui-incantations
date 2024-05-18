@@ -1,0 +1,29 @@
+from functools import reduce
+from modules import shared
+from modules import extra_networks
+from modules import prompt_parser
+from modules import sd_hijack
+
+# taken from modules/ui.py 
+# https://github.com/AUTOMATIC1111/stable-diffusion-webui/blob/master/modules/ui.py
+def get_token_count(text, steps, is_positive: bool = True):
+    """ Get token count and max length for a given prompt text. """
+    try:
+        text, _ = extra_networks.parse_prompt(text)
+
+        if is_positive:
+            _, prompt_flat_list, _ = prompt_parser.get_multicond_prompt_list([text])
+        else:
+            prompt_flat_list = [text]
+
+        prompt_schedules = prompt_parser.get_learned_conditioning_prompt_schedules(prompt_flat_list, steps)
+
+    except Exception:
+        # a parsing error can happen here during typing, and we don't want to bother the user with
+        # messages related to it in console
+        prompt_schedules = [[[steps, text]]]
+
+    flat_prompts = reduce(lambda list1, list2: list1+list2, prompt_schedules)
+    prompts = [prompt_text for step, prompt_text in flat_prompts]
+    token_count, max_length = max([sd_hijack.model_hijack.get_prompt_lengths(prompt) for prompt in prompts], key=lambda args: args[0])
+    return token_count, max_length
