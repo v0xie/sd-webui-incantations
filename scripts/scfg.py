@@ -79,7 +79,7 @@ SCFG_MODULES = ['to_q', 'to_k']
 
 class SCFGStateParams:
         def __init__(self):
-                self.scfg_scale = 0.8
+                self.scfg_scale:float = 0.8
                 self.rate_min = 0.8
                 self.rate_max = 3.0
                 self.rate_clamp = 15.0
@@ -91,6 +91,11 @@ class SCFGStateParams:
                 self.current_step = 0
                 self.height = -1 
                 self.width = -1 
+
+                self.statistics = {
+                        "min_rate": float('inf'), 
+                        "max_rate": float('-inf'), 
+                }
 
                 self.mask_t = None
                 self.mask_fore = None
@@ -233,6 +238,11 @@ class SCFGExtensionScript(UIWrapper):
                 active = getattr(p, "scfg_active", active)
                 if active is False:
                         return
+                
+                if hasattr(p, 'incant_cfg_params') and 'scfg_params' in p.incant_cfg_params:
+                        stats = p.incant_cfg_params['scfg_params'].statistics
+                        logger.debug('SCFG Statistics: %s', stats)
+
 
                 self.remove_all_hooks()
 
@@ -422,8 +432,15 @@ def scfg_combine_denoised(model_delta, cfg_scale, scfg_params: SCFGStateParams):
         tmp_mask = (mask_t.sum([2,3])>0).float()
         rate = up*(tmp_mask)/(down+eps(down.dtype)) # b 257
         rate = (rate.unsqueeze(-1).unsqueeze(-1)*mask_t).sum(dim=1, keepdim=True) # b 1, 64 64
+
         del model_delta_norm, delta_mask_norms, upnormmax, fore_norms, up, down, tmp_mask
         
+        # unscaled min/max rate
+        if rate.min().item() < scfg_params.statistics["min_rate"]:
+                scfg_params.statistics["min_rate"] = rate.min().item()
+        if rate.max().item() > scfg_params.statistics["max_rate"]:
+                scfg_params.statistics["max_rate"] = rate.max().item()
+
         # should this go before or after the gaussian blur, or before/after the rate
         rate = rate * scfg_scale
 
