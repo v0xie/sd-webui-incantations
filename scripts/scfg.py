@@ -637,7 +637,7 @@ def get_mask(attn_modules, scfg_params: SCFGStateParams, r, latent_size):
                 downscale_w = module_attn_size // downscale_h
                 module_key = f"r{module_attn_size}_{module_type}"
 
-                attn_probs = get_attention_scores(to_q_map, to_k_map)
+                attn_probs = get_attention_scores(to_q_map, to_k_map, to_q_map.dtype)
 
                 if module_type == 'self':
                        del module.scfg_last_to_q_map
@@ -777,11 +777,12 @@ def prepare_attn_map(to_k_map, heads):
     return to_k_map
 
 
-def get_attention_scores(to_q_map, to_k_map):
+def get_attention_scores(to_q_map, to_k_map, dtype):
         """ Calculate the attention scores for the given query and key maps
         Arguments:
                 to_q_map: torch.Tensor - query map
                 to_k_map: torch.Tensor - key map
+                dtype: torch.dtype - data type of the tensor
         Returns:
                 torch.Tensor - attention scores 
         """
@@ -791,7 +792,15 @@ def get_attention_scores(to_q_map, to_k_map):
         # attn_probs = attn_scores.softmax(dim=-1).to(device=shared.device, dtype=to_q_map.dtype)
 
         attn_probs = to_q_map @ to_k_map.transpose(-1, -2)
+
+        # avoid nan by converting to float32 and subtracting max 
+        attn_probs = attn_probs.to(dtype=torch.float32) #
+        attn_probs -= torch.max(attn_probs)
+
         torch.exp(attn_probs, out = attn_probs)
-        summed = attn_probs.sum(dim=-1, keepdim=True)
+        summed = attn_probs.sum(dim=-1, keepdim=True, dtype=torch.float32)
         attn_probs /= summed
+
+        attn_probs = attn_probs.to(dtype=dtype)
+
         return attn_probs
