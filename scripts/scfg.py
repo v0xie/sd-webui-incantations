@@ -86,6 +86,7 @@ class SCFGStateParams:
                 self.R = 4
                 self.start_step = 0
                 self.end_step = 150 
+                self.gaussian_smoothing = None
 
                 self.max_sampling_steps = -1
                 self.current_step = 0
@@ -215,6 +216,10 @@ class SCFGExtensionScript(UIWrapper):
                 scfg_params.R = scfg_r
                 scfg_params.height = p.height
                 scfg_params.width = p.width
+                kernel_size = 3
+                sigma=0.5
+                scfg_params.gaussian_smoothing = GaussianSmoothing(channels=1, kernel_size=kernel_size, sigma=sigma, dim=2).to(shared.device)
+
 
                 # Use lambda to call the callback function with the parameters to avoid global variables
                 #cfg_denoise_lambda = lambda callback_params: self.on_cfg_denoiser_callback(callback_params, scfg_params)
@@ -450,9 +455,10 @@ def scfg_combine_denoised(model_delta, cfg_scale, scfg_params: SCFGStateParams):
                 rate = torch.clamp_max(rate, rate_clamp/cfg_scale)
 
         ###Gaussian Smoothing 
-        kernel_size = 3
-        sigma=0.5
-        smoothing = GaussianSmoothing(channels=1, kernel_size=kernel_size, sigma=sigma, dim=2).to(rate.device)
+        #kernel_size = 3
+        #sigma=0.5
+        #smoothing = GaussianSmoothing(channels=1, kernel_size=kernel_size, sigma=sigma, dim=2).to(rate.device)
+        smoothing = scfg_params.gaussian_smoothing
         rate = F.pad(rate, (1, 1, 1, 1), mode='reflect')
         rate = smoothing(rate)
 
@@ -733,9 +739,10 @@ def get_mask(attn_modules, scfg_params: SCFGStateParams, r, latent_size):
                 ca = F.interpolate(ca, scale_factor=scale_factor, mode=mode) # b 77 32 32
 
                 #####Gaussian Smoothing
-                kernel_size = 3
-                sigma = 0.5
-                smoothing = GaussianSmoothing(channels=1, kernel_size=kernel_size, sigma=sigma, dim=2).to(ca.device)
+                #kernel_size = 3
+                #sigma = 0.5
+                #smoothing = GaussianSmoothing(channels=1, kernel_size=kernel_size, sigma=sigma, dim=2).to(ca.device)
+                smoothing = scfg_params.gaussian_smoothing
                 channel = ca.size(1)
                 ca= rearrange(ca, ' b c h w -> (b c) h w' ).unsqueeze(1)
                 ca = F.pad(ca, (1, 1, 1, 1), mode='reflect')
