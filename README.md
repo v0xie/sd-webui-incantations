@@ -79,6 +79,13 @@ Prompt: "A cute puppy on the moon", Min Rate: 0.5, Max Rate: 10.0
 https://arxiv.org/abs/2403.17377  
 An alternative/complementary method to CFG (Classifier-Free Guidance) that increases sampling quality.
 
+# Update: 20-05-2024
+Implemented a new feature called "Saliency-Adaptive Noise Fusion" derived from ["High-fidelity Person-centric Subject-to-Image Synthesis"](https://arxiv.org/abs/2311.10329).  
+
+This feature combines the guidance from PAG and CFG in an adaptive way that improves image quality especially at higher guidance scales.  
+
+Check out the paper authors' project repository here: https://github.com/CodeGoat24/Face-diffuser  
+
 #### Controls
 * **Use Saliency-Adaptive Noise Fusion**: Use improved method of combining CFG + PAG.
 * **PAG Scale**: Controls the intensity of effect of PAG on the generated image.  
@@ -286,6 +293,15 @@ SD XL
        eprint={2404.05384},
        archivePrefix={arXiv},
        primaryClass={cs.CV}
+      }
+    
+      @misc{wang2024highfidelity,
+        title={High-fidelity Person-centric Subject-to-Image Synthesis}, 
+        author={Yibin Wang and Weizhong Zhang and Jianwei Zheng and Cheng Jin},
+        year={2024},
+        eprint={2311.10329},
+        archivePrefix={arXiv},
+        primaryClass={cs.CV}
       }
 
 
