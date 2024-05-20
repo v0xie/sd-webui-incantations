@@ -80,6 +80,7 @@ https://arxiv.org/abs/2403.17377
 An alternative/complementary method to CFG (Classifier-Free Guidance) that increases sampling quality.
 
 #### Controls
+* **Use Saliency-Adaptive Noise Fusion**: Use improved method of combining CFG + PAG.
 * **PAG Scale**: Controls the intensity of effect of PAG on the generated image.  
 * **PAG Start Step**: Step to start using PAG.
 * **PAG End Step**: Step to stop using PAG. 
