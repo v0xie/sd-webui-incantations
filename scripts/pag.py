@@ -16,6 +16,15 @@ from modules.sd_samplers_cfg_denoiser import catenate_conds
 from modules.sd_samplers_cfg_denoiser import CFGDenoiser
 from modules import shared
 
+import sys, importlib
+from pathlib import Path
+# from https://github.com/cheald/sd-webui-loractl/blob/master/loractl/lib/lora_ctl_network.py
+lora_path = str(Path(__file__).parent.parent.parent.parent.parent / "extensions-builtin" / "Lora")
+sys.path.insert(0, lora_path)
+import network, networks, network_lora, extra_networks_lora
+sys.path.remove(lora_path)
+
+
 import math
 import torch
 from torch.nn import functional as F
@@ -143,6 +152,7 @@ class PAGExtensionScript(UIWrapper):
         def __init__(self):
                 self.cached_c = [None, None]
                 self.handles = []
+                self.wanted_networks = None
 
         # Extension title in menu UI
         def title(self) -> str:
@@ -306,6 +316,9 @@ class PAGExtensionScript(UIWrapper):
 
         def pag_postprocess_batch(self, p, active, *args, **kwargs):
                 script_callbacks.remove_current_script_callbacks()
+                if self.wanted_networks is not None:
+                        self.wanted_networks = self.restore_networks(self.wanted_networks)
+                self.wanted_networks = None
 
                 logger.debug('Removed script callbacks')
                 active = getattr(p, "pag_active", active)
@@ -406,6 +419,24 @@ class PAGExtensionScript(UIWrapper):
                         logger.exception("Exception in get_middle_block_modules", stack_info=True)
                         return []
 
+        def get_network_modules(self):
+                """ Get all attention modules from the middle block 
+                Refere to page 22 of the PAG paper, Appendix A.2
+                
+                """
+                try:
+                        m = shared.sd_model
+                        nlm = m.network_layer_mapping
+                        module_classes = [ torch.nn.Linear, torch.nn.Conv2d, torch.nn.GroupNorm, torch.nn.LayerNorm, torch.nn.MultiheadAttention ]
+                        modules = [m for m in nlm.values() if m.__class__ in module_classes]
+                        return modules 
+                except AttributeError:
+                        logger.exception("AttributeError in get_middle_block_modules", stack_info=True)
+                        return []
+                except Exception:
+                        logger.exception("Exception in get_middle_block_modules", stack_info=True)
+                        return []
+
         def get_cross_attn_modules(self):
                 """ Get all cross attention modules """
                 return self.get_middle_block_modules()
@@ -422,7 +453,12 @@ class PAGExtensionScript(UIWrapper):
 
         def on_cfg_denoiser_callback(self, params: CFGDenoiserParams, pag_params: PAGStateParams):
                 # always unhook
+
                 self.unhook_callbacks(pag_params)
+
+                if pag_params.pag_sanf:
+                        if self.wanted_networks is None:
+                                self.wanted_networks = self.unload_networks()
 
                 pag_params.step = params.sampling_step
 
@@ -477,9 +513,12 @@ class PAGExtensionScript(UIWrapper):
                 """
                 # Run only within interval
                 # Run PAG only if active and within interval
+
                 if not pag_params.pag_active or pag_params.pag_scale <= 0:
                         return
                 if not pag_params.pag_start_step <= params.sampling_step <= pag_params.pag_end_step or pag_params.pag_scale <= 0:
+                        if params.sampling_step <= pag_params.pag_end_step and self.wanted_networks is None:
+                                self.wanted_networks = self.unload_networks()
                         return
 
                 # passed from on_cfg_denoiser_callback
@@ -498,16 +537,48 @@ class PAGExtensionScript(UIWrapper):
                 # set pag_enable to True for the hooked cross attention modules
                 for module in pag_params.crossattn_modules:
                         setattr(module, 'pag_enable', True)
+                
+                # 
+
+                if pag_params.pag_sanf and self.wanted_networks is not None:
+                        self.wanted_networks = self.restore_networks(self.wanted_networks)
 
                 # get the PAG guidance (is there a way to optimize this so we don't have to calculate it twice?)
                 pag_x_out = params.inner_model(x_in, sigma_in, cond=conds)
 
+                if pag_params.pag_sanf:
+                        self.wanted_networks = self.unload_networks()
+
                 # update pag_x_out
                 pag_params.pag_x_out = pag_x_out
+
+                        #for module in all_modules:
+                        #        module_name = module.network_layer_name
+                        #        backedup_networks = module_networks_backup.get(module_name, None)
+                        #        if not backedup_networks:
+                        #                continue
+                        #        #module.network_current_names = backedup_networks
+                        #        networks.network_reset_cached_weight(module)
 
                 # set pag_enable to False
                 for module in pag_params.crossattn_modules:
                         setattr(module, 'pag_enable', False)
+
+        def restore_networks(self, wanted_networks):
+            networks.loaded_networks = wanted_networks
+
+        def unload_networks(self):
+            all_modules = self.get_network_modules()
+            module_networks_backup = {}
+            wanted_networks = networks.loaded_networks
+            for module in all_modules:
+                    module_name = module.network_layer_name
+                    loaded_networks = module.network_current_names
+                    module_networks_backup[module_name] = loaded_networks
+                    networks.network_restore_weights_from_backup(module)
+                    networks.network_reset_cached_weight(module)
+            networks.loaded_networks = []
+            return wanted_networks
         
         def cfg_after_cfg_callback(self, params: AfterCFGCallbackParams, pag_params: PAGStateParams):
                 #self.unhook_callbacks(pag_params)

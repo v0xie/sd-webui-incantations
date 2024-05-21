@@ -200,7 +200,8 @@ def combine_denoised_pass_conds_list(*args, **kwargs):
                 # 3. Saliency Map
                 use_saliency_map = False
                 if pag_params is not None:
-                        use_saliency_map = pag_params.pag_sanf
+                        use_saliency_map = True # temp for fair comparison
+                        #use_saliency_map = pag_params.pag_sanf
                 
 
                 ### Combine Denoised
