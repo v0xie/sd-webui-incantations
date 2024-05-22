@@ -1,0 +1,47 @@
+import gradio as gr
+from scripts.ui_wrapper import UIWrapper
+from modules.processing import StableDiffusionProcessing
+
+class InitnoScript(UIWrapper):
+    def __init__(self):
+        self.infotext_fields: list = []
+        self.paste_field_names: list = []
+        self.cached_c = [None, None]
+
+    def title(self) -> str:
+        return "Embeds"
+    
+    def setup_ui(self, is_img2img) -> list:
+        with gr.Accordion(label="Embeds", open=False):
+            active = gr.Checkbox(label="Active", default=True, elem_id='embeds_active')
+        return [active]
+
+    def get_infotext_fields(self) -> list:
+        return self.infotext_fields
+
+    def get_paste_field_names(self) -> list:
+        return self.paste_field_names
+    
+    def before_process(self, p, *args, **kwargs):
+        pass
+
+    def process(self, p, *args, **kwargs):
+        pass
+
+    def before_process_batch(self, p, *args, **kwargs):
+        pass
+
+    def process_batch(self, p: StableDiffusionProcessing, active, *args, **kwargs):
+        active = getattr(p, 'embeds_active', active)
+        if not active:
+            return
+        pass
+
+    def postprocess_batch(self, p, *args, **kwargs):
+        pass
+    
+    def unhook_callbacks(self) -> None:
+        pass
+
+    def get_xyz_axis_options(self) -> dict:
+        return {}
