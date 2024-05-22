@@ -1,5 +1,6 @@
 import gradio as gr
 import torch
+from torch.nn import functional as F
 import logging
 import re
 from scripts.ui_wrapper import UIWrapper
@@ -7,9 +8,11 @@ from modules import shared, script_callbacks
 from modules.processing import StableDiffusionProcessing
 from modules.script_callbacks import CFGDenoiserParams, CFGDenoisedParams, AfterCFGCallbackParams
 from modules.sd_samplers_cfg_denoiser import catenate_conds
+from torch.distributions import Normal
 
 from scripts.incant_utils import module_hooks, prompt_utils
 
+logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
 
 class InitnoParams():
@@ -21,6 +24,7 @@ class InitnoParams():
         self.text_uncond = None
         self.token_count = None
         self.max_length = None
+        self.ran_once = False
 
 class InitnoScript(UIWrapper):
     def __init__(self):
@@ -55,19 +59,19 @@ class InitnoScript(UIWrapper):
             return
         
         def initno_to_q(module, input, kwargs, output):
-            module.initno_parent_module[0].to_q_map = output
+            setattr(module.initno_parent_module[0], 'to_q_map', output)
 
         def initno_to_k(module, input, kwargs, output):
-            module.initno_parent_module[0].to_k_map = output
+            setattr(module.initno_parent_module[0], 'to_k_map', output)
 
         def initno_cross_attn_hook(module, input, kwargs, output):
-            q_map = module.to_q_map
-            k_map = module.to_k_map
+            q_map = module.to_q_map.detach().clone()
+            k_map = module.to_k_map.detach().clone()
             attn_probs = get_attention_scores(q_map, k_map, dtype=q_map.dtype)
             setattr(module, 'initno_crossattn', attn_probs)
 
         def initno_self_attn_hook(module, input, kwargs, output):
-            q_map = module.to_q_map
+            q_map = module.to_q_map.detach().clone()
             attn_probs = get_attention_scores(q_map, q_map, dtype=q_map.dtype)
             setattr(module, 'initno_selfattn', attn_probs)
 
@@ -91,15 +95,15 @@ class InitnoScript(UIWrapper):
             Get ALL attention modules
             """
             modules = module_hooks.get_modules(
-                network_layer_name_filter='middle_block',
+                # network_layer_name_filter='middle_block',
                 module_name_filter='CrossAttention'
             )
             # regex expression that matches any of the 3 following
             # input_blocks_(5-9)
             # middle_block_xxx
             # output_blocks_(3-5)
-            regexp = re.compile(r'.*input_blocks_[6789]_.+|.*middle_block_.*|.*output_blocks_[0123]_.+')
-            modules = [module for module in modules if regexp.match(module.network_layer_name) is not None]
+            # regexp = re.compile(r'.*input_blocks_[789]_.+|.*middle_block_.*|.*output_blocks_[0123]_.+')
+            # modules = [module for module in modules if regexp.match(module.network_layer_name) is not None]
             return modules
 
     def process_batch(self, p: StableDiffusionProcessing, active, *args, **kwargs):
@@ -127,9 +131,16 @@ class InitnoScript(UIWrapper):
             image_cond_in = initno_params.image_cond_in
             inner_model = params.inner_model
 
+            if params.sampling_step != 2:
+                return
 
             if initno_params.x_in is None:
                 return
+
+            if initno_params.ran_once is True:
+                return
+
+            initno_params.ran_once = True
 
             logger.debug("Initial_x is not None, shape: %s", initno_params.x_in.shape)
 
@@ -151,21 +162,44 @@ class InitnoScript(UIWrapper):
             def crossattn_loss(crossattn_maps, target_tokens):
                 """ Calculate the cross-attn loss"""
                 # calculate the max cross-attn score
-                scores = [torch.max(crossattn_maps[:, :, i]) for i in range(crossattn_maps.size(-1))]
+                scores = [torch.max(crossattn_maps[:, i]) for i in range(crossattn_maps.size(-1))]
                 return 1.0 - torch.min(torch.tensor(scores))
 
             def kl_divergence(mu, sigma):
-                return 0.5 * torch.sum(mu ** 2 + sigma ** 2 - torch.log(sigma ** 2) - 1)
+                p = Normal(mu, sigma)
+                p = Normal(mu, sigma)
+                q = Normal(torch.zeros_like(mu), torch.ones_like(sigma))
+                kl_loss_fn = torch.nn.KLDivLoss(reduction="batchmean")
+
+                return kl_loss_fn(p, q)
             
             def self_attn_loss(As, Y):
                 return 1.0
             
             def get_crossattn_maps():
-                crossattn_maps = torch.stack([module.initno_crossattn for module in cross_attn_modules], dim=1) # b n h t 
-                crossattn_maps = crossattn_maps[:, :, :, target_tokens]
+                target_size = 256
+                crossattn_maps = []
+
+                attn_maps = []
+                for module in cross_attn_modules:
+                    attnmap = module.initno_crossattn
+                    attnmap = attnmap.transpose(-1, -2)
+                    if attnmap.size(2) != target_size:
+                        attnmap = F.interpolate(attnmap, scale_factor=256/attnmap.size(2), mode='nearest')
+                    attnmap = attnmap.transpose(-1, -2)
+                    attn_maps.append(attnmap)
+
+                crossattn_maps = torch.stack(attn_maps, dim=1) # b n h t 
                 batch_size, num_maps, hw, tokens = crossattn_maps.shape
                 crossattn_maps = crossattn_maps.view(batch_size * num_maps, hw, tokens)
-                crossattn_maps.requires_grad = True
+                crossattn_maps = crossattn_maps[:, :, target_tokens] # b*n hw t
+
+
+                # select the target tokens
+
+                # average over all maps
+                crossattn_maps = crossattn_maps.mean(dim=0) # hw t
+
                 return crossattn_maps.to(shared.device)
 
             def evaluate_model(x_in):
@@ -182,40 +216,42 @@ class InitnoScript(UIWrapper):
 
             target_tokens = list(range(start_token, end_token))
 
+            kl_loss_fn = torch.nn.KLDivLoss(reduction="batchmean")
+
             with torch.enable_grad():
+                torch.autograd.set_detect_anomaly(True)
+
                 for round in range(max_round):
-                    # trainable params
-                    x = params.x.detach().clone()
-                    x.requires_grad = True
+                    x = params.x
                     noise_mean = torch.zeros_like(x, requires_grad=True).to(shared.device)
                     noise_std = torch.ones_like(x, requires_grad=True).to(shared.device)
-
-                    loss = torch.tensor(1.0)
-                    loss_kl = torch.tensor(1.0)
-                    loss_crossattn = torch.tensor(1.0)
-
-                    loss.requires_grad = True
-                    loss_kl.requires_grad = True
-                    loss_crossattn.requires_grad = True
 
                     optim = torch.optim.Adam([noise_mean, noise_std], lr=1e-2)
 
                     for step in range(max_step):
-                        x = noise_mean + noise_std * x
+                        x_in = noise_mean + noise_std * x
+                        n, c, h, w = x_in.shape
 
-                        x, Ac, As = evaluate_model(x)
+                        x_out, Ac, As = evaluate_model(x_in)
 
                         loss_crossattn = crossattn_loss(Ac, target_tokens)
 
-                        loss_kl = kl_divergence(noise_mean, noise_std)
+                        if loss_crossattn < 0.2:
+                            params.x = x_in
+                            return
+
+                        #loss_kl = kl_divergence(x , noise_std**2)
+                        # log_p = torch.log_softmax(x_out.view(n, c, h*w), dim=-1)
+                        # q = torch.ones_like(log_p) / (h * w)
+                        # loss_kl = kl_loss_fn(log_p, q)
 
                         # total loss
-                        loss = joint_loss(loss_crossattn, loss_kl)
+                        loss = loss_crossattn
+                        loss.requires_grad = True
 
                         optim.zero_grad()
-                        loss.backward()
+                        loss.backward(retain_graph=True)
                         optim.step()
-
 
             
         script_callbacks.on_cfg_denoiser(lambda params: on_cfg_denoiser(params, initno_params))
@@ -283,13 +319,13 @@ def get_attention_scores(to_q_map, to_k_map, dtype):
         attn_probs = attn_probs.softmax(dim=-1).to(device=shared.device, dtype=to_q_map.dtype)
 
         ## avoid nan by converting to float32 and subtracting max 
-        #attn_probs = attn_probs.to(dtype=torch.float32) #
-        #attn_probs -= torch.max(attn_probs)
+        # attn_probs = attn_probs.to(dtype=torch.float32) #
+        # attn_probs -= torch.max(attn_probs)
 
-        #torch.exp(attn_probs, out = attn_probs)
-        #summed = attn_probs.sum(dim=-1, keepdim=True, dtype=torch.float32)
-        #attn_probs /= summed
+        # torch.exp(attn_probs, out = attn_probs)
+        # summed = attn_probs.sum(dim=-1, keepdim=True, dtype=torch.float32) + torch.finfo(torch.float32).eps
+        # attn_probs /= summed
 
-        attn_probs = attn_probs.to(dtype=dtype)
+        # attn_probs = attn_probs.to(dtype=dtype)
 
         return attn_probs
