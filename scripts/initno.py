@@ -1,13 +1,14 @@
 import gradio as gr
 import torch
 import logging
+import re
 from scripts.ui_wrapper import UIWrapper
 from modules import shared, script_callbacks
 from modules.processing import StableDiffusionProcessing
 from modules.script_callbacks import CFGDenoiserParams, CFGDenoisedParams, AfterCFGCallbackParams
 from modules.sd_samplers_cfg_denoiser import catenate_conds
 
-from scripts.incant_utils import module_hooks
+from scripts.incant_utils import module_hooks, prompt_utils
 
 logger = logging.getLogger(__name__)
 
@@ -18,6 +19,7 @@ class InitnoParams():
         self.image_cond_in = None
         self.text_cond = None
         self.text_uncond = None
+        self.token_count = None
 
 class InitnoScript(UIWrapper):
     def __init__(self):
@@ -88,8 +90,15 @@ class InitnoScript(UIWrapper):
             Get ALL attention modules
             """
             modules = module_hooks.get_modules(
-                    module_name_filter='CrossAttention'
+                network_layer_name_filter='middle_block',
+                module_name_filter='CrossAttention'
             )
+            # regex expression that matches any of the 3 following
+            # input_blocks_(5-9)
+            # middle_block_xxx
+            # output_blocks_(3-5)
+            regexp = re.compile(r'.*input_blocks_[6789]_.+|.*middle_block_.*|.*output_blocks_[0123]_.+')
+            modules = [module for module in modules if regexp.match(module.network_layer_name) is not None]
             return modules
 
     def process_batch(self, p: StableDiffusionProcessing, active, *args, **kwargs):
@@ -98,6 +107,7 @@ class InitnoScript(UIWrapper):
             return
 
         initno_params= InitnoParams()
+        initno_params.token_count = prompt_utils.get_token_count(p.prompt, p.steps, is_positive=True)
 
         def on_cfg_denoiser(params: CFGDenoiserParams, initno_params: InitnoParams):
             if initno_params.x_in is None:
@@ -116,6 +126,7 @@ class InitnoScript(UIWrapper):
             image_cond_in = initno_params.image_cond_in
             inner_model = params.inner_model
 
+
             if initno_params.x_in is None:
                 return
 
@@ -133,6 +144,19 @@ class InitnoScript(UIWrapper):
             cross_attn_modules = [module for module in all_modules if hasattr(module, 'initno_crossattn')]
             self_attn_modules = [module for module in all_modules if hasattr(module, 'initno_selfattn')]
 
+            # target tokens
+            # 0 is the start token, so we skip it
+            # prompt_token_count is the number of tokens in the prompt
+            # target_tokens = range(1, initno_params.token_count[0])
+
+            cond_token_count = uncond.shape[1]
+            prompt_token_count = initno_params.token_count
+
+            start_token = 1
+            end_token = min(cond_token_count, prompt_token_count+1)
+
+            target_tokens = range(start_token, end_token)
+
             for round in range(max_round):
                 # trainable params
                 noise_mean = torch.zeros_like(x).to(device=shared.device)
@@ -144,13 +168,14 @@ class InitnoScript(UIWrapper):
                     x_in = noise_mean + noise_std * x
                     x_out = inner_model(x_in, sigma_in, cond=conds)
 
-
                     # loss crossattn
-                    crossattn_maps = [module.initno_crossattn for module in cross_attn_modules]
+                    crossattn_maps = torch.stack([module.initno_crossattn for module in cross_attn_modules])
+                    n, batch_size, hw, tokens = crossattn_maps.shape
                     loss_crossattn = 1
 
                     # loss selfattn
-                    selfattn_maps = [module.initno_selfattn for module in self_attn_modules]
+                    selfattn_maps = torch.stack([module.initno_selfattn for module in self_attn_modules])
+                    n, batch_size, h, w= selfattn_maps.shape
                     loss_selfattn = 1
 
                     # loss kl divergence
