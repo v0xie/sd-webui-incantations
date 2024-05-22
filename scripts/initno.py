@@ -51,21 +51,36 @@ class InitnoScript(UIWrapper):
         if not active:
             return
         
+        def initno_to_q(module, input, kwargs, output):
+            module.initno_parent_module[0].to_q_map = output
+
+        def initno_to_k(module, input, kwargs, output):
+            module.initno_parent_module[0].to_k_map = output
+
         def initno_cross_attn_hook(module, input, kwargs, output):
-            setattr(module, 'initno_crossattn', output.detach().clone())
-            pass
+            q_map = module.to_q_map
+            k_map = module.to_k_map
+            attn_probs = get_attention_scores(q_map, k_map, dtype=q_map.dtype)
+            setattr(module, 'initno_crossattn', attn_probs)
 
         def initno_self_attn_hook(module, input, kwargs, output):
-            setattr(module, 'initno_selfattn', output.detach().clone())
-            pass
+            q_map = module.to_q_map
+            attn_probs = get_attention_scores(q_map, q_map, dtype=q_map.dtype)
+            setattr(module, 'initno_selfattn', attn_probs)
 
         crossattn_modules = self.get_all_crossattn_modules()
         for module in crossattn_modules:
-            module_hooks.module_add_forward_hook(module, initno_cross_attn_hook, hook_type='forward', with_kwargs=True)
-            module_hooks.module_add_forward_hook(module, initno_self_attn_hook, hook_type='forward', with_kwargs=True)
-            if module.network_layer_name.endswith('attn1'):
+            module_hooks.modules_add_field(module.to_q, 'initno_parent_module', [module])
+            module_hooks.modules_add_field(module.to_k, 'initno_parent_module', [module])
+            #module_hooks.modules_add_field(module.to_out, 'initno_parent_module', [module])
+            if module.network_layer_name.endswith('attn1'): # self attn
+                module_hooks.module_add_forward_hook(module.to_q, initno_to_q, hook_type='forward', with_kwargs=True)
+                module_hooks.module_add_forward_hook(module, initno_self_attn_hook, hook_type='forward', with_kwargs=True)
                 module_hooks.modules_add_field(module, 'initno_selfattn', None)
             if module.network_layer_name.endswith('attn2'):
+                module_hooks.module_add_forward_hook(module.to_q, initno_to_q, hook_type='forward', with_kwargs=True)
+                module_hooks.module_add_forward_hook(module.to_k, initno_to_k, hook_type='forward', with_kwargs=True)
+                module_hooks.module_add_forward_hook(module, initno_cross_attn_hook, hook_type='forward', with_kwargs=True)
                 module_hooks.modules_add_field(module, 'initno_crossattn', None)
         
     def get_all_crossattn_modules(self):
@@ -145,9 +160,9 @@ class InitnoScript(UIWrapper):
                     # total loss
                     loss = loss_crossattn + loss_selfattn + loss_kl
 
-                    optim.zero_grad()
-                    loss.backward()
-                    optim.step()
+                    # optim.zero_grad()
+                    # loss.backward()
+                    # optim.step()
             
         script_callbacks.on_cfg_denoiser(lambda params: on_cfg_denoiser(params, initno_params))
         script_callbacks.on_cfg_denoised(lambda params: on_cfg_denoised(params, initno_params))
@@ -176,6 +191,8 @@ class InitnoScript(UIWrapper):
         script_callbacks.remove_current_script_callbacks()
         crossattn_modules = self.get_all_crossattn_modules()
         for module in crossattn_modules:
+            module_hooks.remove_module_forward_hook(module.to_q, 'initno_to_q')
+            module_hooks.remove_module_forward_hook(module.to_k, 'initno_to_k')
             module_hooks.remove_module_forward_hook(module, 'initno_cross_attn_hook')
             module_hooks.remove_module_forward_hook(module, 'initno_self_attn_hook')
             module_hooks.modules_remove_field(module, 'initno_selfattn')
@@ -194,3 +211,31 @@ def get_make_condition_dict_fn(text_uncond):
                 else:
                         make_condition_dict = lambda c_crossattn, c_concat: {"c_crossattn": [c_crossattn], "c_concat": [c_concat]}
         return make_condition_dict
+
+def get_attention_scores(to_q_map, to_k_map, dtype):
+        """ Calculate the attention scores for the given query and key maps
+        Arguments:
+                to_q_map: torch.Tensor - query map
+                to_k_map: torch.Tensor - key map
+                dtype: torch.dtype - data type of the tensor
+        Returns:
+                torch.Tensor - attention scores 
+        """
+        # based on diffusers models/attention.py "get_attention_scores"
+        # use in place operations vs. softmax to save memory: https://stackoverflow.com/questions/53732209/torch-in-place-operations-to-save-memory-softmax
+        # 512x: 2.65G -> 2.47G
+
+        attn_probs = to_q_map @ to_k_map.transpose(-1, -2)
+        attn_probs = attn_probs.softmax(dim=-1).to(device=shared.device, dtype=to_q_map.dtype)
+
+        ## avoid nan by converting to float32 and subtracting max 
+        #attn_probs = attn_probs.to(dtype=torch.float32) #
+        #attn_probs -= torch.max(attn_probs)
+
+        #torch.exp(attn_probs, out = attn_probs)
+        #summed = attn_probs.sum(dim=-1, keepdim=True, dtype=torch.float32)
+        #attn_probs /= summed
+
+        attn_probs = attn_probs.to(dtype=dtype)
+
+        return attn_probs
