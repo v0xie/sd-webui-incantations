@@ -45,7 +45,7 @@ class InitnoScript(UIWrapper):
     def process(self, p, *args, **kwargs):
         pass
 
-    def before_process_batch(self, p, *args, **kwargs):
+    def before_process_batch(self, p, active, *args, **kwargs):
         self.unhook_callbacks()
         active = getattr(p, 'embeds_active', active)
         if not active:
@@ -99,6 +99,7 @@ class InitnoScript(UIWrapper):
             uncond = initno_params.text_uncond
             sigma_in = initno_params.sigma_in
             image_cond_in = initno_params.image_cond_in
+            inner_model = params.inner_model
 
             if initno_params.x_in is None:
                 return
@@ -112,14 +113,41 @@ class InitnoScript(UIWrapper):
 
             max_step = 50
             max_round = 5
-            noise_mean = torch.zeros_like(x)
-            noise_std = torch.ones_like(x)
 
-            optim = torch.optim.Adam([noise_mean, noise_std], lr=0.01)
+            all_modules = self.get_all_crossattn_modules()
+            cross_attn_modules = [module for module in all_modules if hasattr(module, 'initno_crossattn')]
+            self_attn_modules = [module for module in all_modules if hasattr(module, 'initno_selfattn')]
+
             for round in range(max_round):
-                for step in range(max_step):
-                        pass
+                # trainable params
+                noise_mean = torch.zeros_like(x).to(device=shared.device)
+                noise_std = torch.ones_like(x).to(device=shared.device)
 
+                optim = torch.optim.Adam([noise_mean, noise_std], lr=0.01)
+
+                for step in range(max_step):
+                    x_in = noise_mean + noise_std * x
+                    x_out = inner_model(x_in, sigma_in, cond=conds)
+
+
+                    # loss crossattn
+                    crossattn_maps = [module.initno_crossattn for module in cross_attn_modules]
+                    loss_crossattn = 1
+
+                    # loss selfattn
+                    selfattn_maps = [module.initno_selfattn for module in self_attn_modules]
+                    loss_selfattn = 1
+
+                    # loss kl divergence
+                    loss_kl = 1
+                    pass
+
+                    # total loss
+                    loss = loss_crossattn + loss_selfattn + loss_kl
+
+                    optim.zero_grad()
+                    loss.backward()
+                    optim.step()
             
         script_callbacks.on_cfg_denoiser(lambda params: on_cfg_denoiser(params, initno_params))
         script_callbacks.on_cfg_denoised(lambda params: on_cfg_denoised(params, initno_params))
