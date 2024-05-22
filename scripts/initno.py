@@ -1,6 +1,9 @@
 import gradio as gr
 from scripts.ui_wrapper import UIWrapper
 from modules.processing import StableDiffusionProcessing
+from modules import script_callbacks
+from modules.script_callbacks import CFGDenoiserParams, CFGDenoisedParams, AfterCFGCallbackParams
+import torch
 
 class InitnoScript(UIWrapper):
     def __init__(self):
@@ -29,19 +32,34 @@ class InitnoScript(UIWrapper):
         pass
 
     def before_process_batch(self, p, *args, **kwargs):
-        pass
+        self.unhook_callbacks()
 
     def process_batch(self, p: StableDiffusionProcessing, active, *args, **kwargs):
         active = getattr(p, 'embeds_active', active)
         if not active:
             return
-        pass
+
+        def on_cfg_denoiser(params: CFGDenoiserParams):
+            pass
+            
+        script_callbacks.on_cfg_denoiser(lambda x: on_cfg_denoiser(x))
+
+    def optimize_noise(self, x):
+        """ Optimize noise for a given image.
+        Arguments:
+            x: input initial latent
+        """
+        max_step = 50
+        max_round = 5
+        for step in range(max_step):
+            for round in range(max_round):
+                pass
 
     def postprocess_batch(self, p, *args, **kwargs):
         pass
     
     def unhook_callbacks(self) -> None:
-        pass
+        script_callbacks.remove_current_script_callbacks()
 
     def get_xyz_axis_options(self) -> dict:
         return {}
