@@ -20,6 +20,7 @@ class InitnoParams():
         self.text_cond = None
         self.text_uncond = None
         self.token_count = None
+        self.max_length = None
 
 class InitnoScript(UIWrapper):
     def __init__(self):
@@ -107,7 +108,7 @@ class InitnoScript(UIWrapper):
             return
 
         initno_params= InitnoParams()
-        initno_params.token_count = prompt_utils.get_token_count(p.prompt, p.steps, is_positive=True)
+        initno_params.token_count, initno_params.max_length = prompt_utils.get_token_count(p.prompt, p.steps, is_positive=True)
 
         def on_cfg_denoiser(params: CFGDenoiserParams, initno_params: InitnoParams):
             if initno_params.x_in is None:
@@ -155,7 +156,7 @@ class InitnoScript(UIWrapper):
             start_token = 1
             end_token = min(cond_token_count, prompt_token_count+1)
 
-            target_tokens = range(start_token, end_token)
+            target_tokens = list(range(start_token, end_token))
 
             for round in range(max_round):
                 # trainable params
@@ -169,9 +170,20 @@ class InitnoScript(UIWrapper):
                     x_out = inner_model(x_in, sigma_in, cond=conds)
 
                     # loss crossattn
-                    crossattn_maps = torch.stack([module.initno_crossattn for module in cross_attn_modules])
-                    n, batch_size, hw, tokens = crossattn_maps.shape
-                    loss_crossattn = 1
+                    crossattn_maps = torch.stack([module.initno_crossattn for module in cross_attn_modules], dim=1) # b n h t 
+                    crossattn_maps = crossattn_maps[:, :, :, target_tokens]
+                    batch_size, num_maps, hw, tokens = crossattn_maps.shape
+
+                    crossattn_maps = crossattn_maps.view(batch_size * num_maps, hw, tokens)
+                    crossattn_maps = crossattn_maps.transpose(-1, -2) # batch_size * n, tokens, hw
+
+                    # calculate the max cross-attn score
+                    max_scores = torch.max(crossattn_maps, dim=-1).values
+
+                    # among the max values, get the min value
+                    lowest_score = torch.min(max_scores, dim=-1).values
+
+                    loss_crossattn = 1 - lowest_score
 
                     # loss selfattn
                     selfattn_maps = torch.stack([module.initno_selfattn for module in self_attn_modules])
@@ -183,11 +195,11 @@ class InitnoScript(UIWrapper):
                     pass
 
                     # total loss
-                    loss = loss_crossattn + loss_selfattn + loss_kl
+                    loss = loss_crossattn
 
-                    # optim.zero_grad()
-                    # loss.backward()
-                    # optim.step()
+                    optim.zero_grad()
+                    loss.backward()
+                    optim.step()
             
         script_callbacks.on_cfg_denoiser(lambda params: on_cfg_denoiser(params, initno_params))
         script_callbacks.on_cfg_denoised(lambda params: on_cfg_denoised(params, initno_params))
