@@ -145,10 +145,34 @@ class InitnoScript(UIWrapper):
             cross_attn_modules = [module for module in all_modules if hasattr(module, 'initno_crossattn')]
             self_attn_modules = [module for module in all_modules if hasattr(module, 'initno_selfattn')]
 
-            # target tokens
-            # 0 is the start token, so we skip it
-            # prompt_token_count is the number of tokens in the prompt
-            # target_tokens = range(1, initno_params.token_count[0])
+            def joint_loss(SCrossAttn, LKL, lambda1 = 1, lambda3=500):
+                 return lambda1 * SCrossAttn + lambda3 * LKL
+
+            def crossattn_loss(crossattn_maps, target_tokens):
+                """ Calculate the cross-attn loss"""
+                # calculate the max cross-attn score
+                scores = [torch.max(crossattn_maps[:, :, i]) for i in range(crossattn_maps.size(-1))]
+                return 1.0 - torch.min(torch.tensor(scores))
+
+            def kl_divergence(mu, sigma):
+                return 0.5 * torch.sum(mu ** 2 + sigma ** 2 - torch.log(sigma ** 2) - 1)
+            
+            def self_attn_loss(As, Y):
+                return 1.0
+            
+            def get_crossattn_maps():
+                crossattn_maps = torch.stack([module.initno_crossattn for module in cross_attn_modules], dim=1) # b n h t 
+                crossattn_maps = crossattn_maps[:, :, :, target_tokens]
+                batch_size, num_maps, hw, tokens = crossattn_maps.shape
+                crossattn_maps = crossattn_maps.view(batch_size * num_maps, hw, tokens)
+                crossattn_maps.requires_grad = True
+                return crossattn_maps.to(shared.device)
+
+            def evaluate_model(x_in):
+                x_out = inner_model(x_in, sigma_in, cond=conds)
+                crossattn_maps = get_crossattn_maps()
+                selfattn_maps = None
+                return x_out, crossattn_maps, selfattn_maps
 
             cond_token_count = uncond.shape[1]
             prompt_token_count = initno_params.token_count
@@ -158,48 +182,41 @@ class InitnoScript(UIWrapper):
 
             target_tokens = list(range(start_token, end_token))
 
-            for round in range(max_round):
-                # trainable params
-                noise_mean = torch.zeros_like(x).to(device=shared.device)
-                noise_std = torch.ones_like(x).to(device=shared.device)
+            with torch.enable_grad():
+                for round in range(max_round):
+                    # trainable params
+                    x = params.x.detach().clone()
+                    x.requires_grad = True
+                    noise_mean = torch.zeros_like(x, requires_grad=True).to(shared.device)
+                    noise_std = torch.ones_like(x, requires_grad=True).to(shared.device)
 
-                optim = torch.optim.Adam([noise_mean, noise_std], lr=0.01)
+                    loss = torch.tensor(1.0)
+                    loss_kl = torch.tensor(1.0)
+                    loss_crossattn = torch.tensor(1.0)
 
-                for step in range(max_step):
-                    x_in = noise_mean + noise_std * x
-                    x_out = inner_model(x_in, sigma_in, cond=conds)
+                    loss.requires_grad = True
+                    loss_kl.requires_grad = True
+                    loss_crossattn.requires_grad = True
 
-                    # loss crossattn
-                    crossattn_maps = torch.stack([module.initno_crossattn for module in cross_attn_modules], dim=1) # b n h t 
-                    crossattn_maps = crossattn_maps[:, :, :, target_tokens]
-                    batch_size, num_maps, hw, tokens = crossattn_maps.shape
+                    optim = torch.optim.Adam([noise_mean, noise_std], lr=1e-2)
 
-                    crossattn_maps = crossattn_maps.view(batch_size * num_maps, hw, tokens)
-                    crossattn_maps = crossattn_maps.transpose(-1, -2) # batch_size * n, tokens, hw
+                    for step in range(max_step):
+                        x = noise_mean + noise_std * x
 
-                    # calculate the max cross-attn score
-                    max_scores = torch.max(crossattn_maps, dim=-1).values
+                        x, Ac, As = evaluate_model(x)
 
-                    # among the max values, get the min value
-                    lowest_score = torch.min(max_scores, dim=-1).values
+                        loss_crossattn = crossattn_loss(Ac, target_tokens)
 
-                    loss_crossattn = 1 - lowest_score
+                        loss_kl = kl_divergence(noise_mean, noise_std)
 
-                    # loss selfattn
-                    selfattn_maps = torch.stack([module.initno_selfattn for module in self_attn_modules])
-                    n, batch_size, h, w= selfattn_maps.shape
-                    loss_selfattn = 1
+                        # total loss
+                        loss = joint_loss(loss_crossattn, loss_kl)
 
-                    # loss kl divergence
-                    loss_kl = 1
-                    pass
+                        optim.zero_grad()
+                        loss.backward()
+                        optim.step()
 
-                    # total loss
-                    loss = loss_crossattn
 
-                    optim.zero_grad()
-                    loss.backward()
-                    optim.step()
             
         script_callbacks.on_cfg_denoiser(lambda params: on_cfg_denoiser(params, initno_params))
         script_callbacks.on_cfg_denoised(lambda params: on_cfg_denoised(params, initno_params))
