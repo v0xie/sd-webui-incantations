@@ -2,6 +2,7 @@ import gradio as gr
 import numpy as np
 import torch
 from torch.nn import functional as F
+from torchvision.transforms import GaussianBlur
 import logging
 import re
 from scripts.ui_wrapper import UIWrapper
@@ -45,6 +46,8 @@ class InitnoParams():
         self.token_count = None
         self.max_length = None
         self.ran_once = False
+        self.replaced_noise = False
+        self.optimized_noise = None
 
 class InitnoScript(UIWrapper):
     def __init__(self):
@@ -145,6 +148,7 @@ class InitnoScript(UIWrapper):
         initno_params.token_count, initno_params.max_length = prompt_utils.get_token_count(p.prompt, p.steps, is_positive=True)
 
         def on_cfg_denoiser(params: CFGDenoiserParams, initno_params: InitnoParams):
+            ip = initno_params
             if initno_params.x_in is None:
                 initno_params.x_in = params.x
                 initno_params.sigma_in = params.sigma
@@ -152,6 +156,17 @@ class InitnoScript(UIWrapper):
                 initno_params.text_cond = params.text_cond
                 initno_params.text_uncond = params.text_uncond
                 logger.debug("Initializing initial_x with shape %s", params.x.shape)
+            
+            if ip.ran_once is False:
+                return
+            if ip.replaced_noise is True:
+                return
+            if ip.optimized_noise is None:
+                return
+
+            params.x = ip.optimized_noise
+            ip.replaced_noise = True
+
         
         def on_cfg_denoised(params: CFGDenoisedParams, initno_params: InitnoParams):
             x = params.x
@@ -186,14 +201,26 @@ class InitnoScript(UIWrapper):
             cross_attn_modules = [module for module in all_modules if hasattr(module, 'initno_crossattn')]
             self_attn_modules = [module for module in all_modules if hasattr(module, 'initno_selfattn')]
 
+            kernel_size = 3
+            sigma = 0.5
+            blur = GaussianBlur(kernel_size, sigma).to(shared.device)
+
             def joint_loss(SCrossAttn, SSelfAttn, LKL, lambda1 = 1, lambda2 = 1, lambda3=500):
                  return lambda1 * SCrossAttn + lambda2 * SSelfAttn + lambda3 * LKL
 
             def crossattn_loss(crossattn_maps, target_tokens):
                 """ Calculate the cross-attn loss"""
                 # calculate the max cross-attn score
-                scores = [torch.max(crossattn_maps[0, i]) for i in range(crossattn_maps.size(-1))]
-                return 1.0 - torch.min(torch.tensor(scores))
+                max_scores = crossattn_maps.max(dim=1).values
+
+                # # if scores are below a certain threshold they're probably never going to get better so we remove them
+                max_scores = max_scores[max_scores > 0.1]
+
+                if max_scores.size(0) == 0:
+                    return 1.0
+
+                # scores = [torch.max(crossattn_maps[0, :, i]) for i in range(crossattn_maps.size(-1))]
+                return 1.0 - torch.min(max_scores)
 
             def self_attention_loss(As, Ac):
                 """ 
@@ -248,12 +275,7 @@ class InitnoScript(UIWrapper):
                 return SSelfAttn
 
             def kl_divergence(mu, sigma):
-                p = Normal(mu, sigma)
-                p = Normal(mu, sigma)
-                q = Normal(torch.zeros_like(mu), torch.ones_like(sigma))
-                kl_loss_fn = torch.nn.KLDivLoss(reduction="batchmean")
-
-                return kl_loss_fn(p, q)
+                return 0.5 * torch.sum(mu ** 2 + sigma ** 2 - torch.log(sigma ** 2) - 1)
             
             def resize_attn_map(attnmap, target_size=256):
                 attnmap = attnmap.transpose(-1, -2)
@@ -264,41 +286,51 @@ class InitnoScript(UIWrapper):
 
             def get_cross_attn_maps(modules, map_name):
                 target_size = 256
-                attn_maps = [
-                    resize_attn_map(
-                            attnmap = getattr(module, map_name),
-                            target_size = target_size
-                        ) for module in modules 
-                    ]
+                attn_maps = [getattr(module, map_name) for module in modules]
+                attn_maps = [attn_map for attn_map in attn_maps if attn_map.size(1) == target_size]
+
+                #attn_maps = [
+                #    resize_attn_map(
+                #            attnmap = getattr(module, map_name),
+                #            target_size = target_size
+                #        ) for module in modules 
+                #    ]
+
                 return prepare_attn_maps(attn_maps, target_tokens)
 
             def get_self_attn_maps(modules, map_name):
                 target_size = 256
                 attn_maps = [ module.initno_selfattn for module in modules ]
-                resized_attn_maps = []
-                for attn_map in attn_maps:
-                    batch_size, _, w = attn_map.shape
-                    if w != target_size:
-                        attn_map = attn_map.unsqueeze(0)
-                        attn_map = F.interpolate(attn_map, size=(target_size, target_size), mode='nearest')
-                        attn_map = attn_map.squeeze(0)
-                    resized_attn_maps.append(attn_map)
-                # average over all maps
-                selfattn_maps = torch.stack(resized_attn_maps, dim=1) # b n h t 
+                attn_maps = [ attnmap for attnmap in attn_maps if attnmap.size(-1) == target_size]
+                selfattn_maps = torch.stack(attn_maps, dim=1) # b n h w 
+                b, n, h, w = selfattn_maps.shape
+                selfattn_maps = selfattn_maps.reshape(b*n, h, w)
+                selfattn_maps = smooth_attn_map(selfattn_maps)
+                selfattn_maps = selfattn_maps.reshape(b, n, h, w)
                 selfattn_maps = selfattn_maps.mean(dim=1) # b h w
                 return selfattn_maps.to(shared.device)
 
             def prepare_attn_maps(attn_maps, Y):
-                crossattn_maps = torch.stack(attn_maps, dim=1) # b n h t 
-                batch_size, num_maps, hw, tokens = crossattn_maps.shape
-                #crossattn_maps = crossattn_maps.view(batch_size * num_maps, hw, tokens)
-                # select the target tokens
-                #crossattn_maps = crossattn_maps[:, :, :, range(1, tokens)] # b n hw t
-                #crossattn_maps = crossattn_maps[:, :, :, Y] # b n hw t
-                # average over all maps
+                crossattn_maps = torch.stack(attn_maps, dim=1) # b n hw t 
+                crossattn_maps = crossattn_maps.transpose(-1, -2) # b n t hw
+                b, n, t, hw = crossattn_maps.shape
+                crossattn_maps = crossattn_maps.reshape(b * n, t, 16, 16).transpose(0, 1) # t b*n 16 16
+                crossattn_maps = smooth_attn_map(crossattn_maps)
+                crossattn_maps = crossattn_maps.transpose(0, 1) # b*n t 16 16
+                crossattn_maps = crossattn_maps.reshape(b, n, t, hw)
+                crossattn_maps = crossattn_maps.transpose(-1, -2) # b n hw t
+
+                #batch_size, num_maps, hw, tokens = crossattn_maps.shape
                 crossattn_maps = crossattn_maps.mean(dim=1)[0].unsqueeze(0) # b hw t
 
                 return crossattn_maps.to(shared.device)
+            
+            def smooth_attn_map(attn_map):
+                # use a gaussian kernel to smooth the attention map
+                smooth_attn_map = blur(attn_map)
+                return smooth_attn_map
+
+
 
             def evaluate_model(x_in):
                 x_out = inner_model(x_in, sigma_in, cond=conds)
@@ -327,7 +359,8 @@ class InitnoScript(UIWrapper):
                 for round in range(max_round):
                     logger.debug("Initno: Round %d", round)
 
-                    x = params.x # assuming x[0] is positive and x[1] is neg
+                    x = params.x.detach().clone() # assuming x[0] is positive and x[1] is neg
+
                     n, c, h, w = x.shape
 
                     x_pos, x_neg = x[0], x[1] # c h w
@@ -335,12 +368,12 @@ class InitnoScript(UIWrapper):
                     noise_mean = torch.zeros_like(x_pos, requires_grad=True).to(shared.device)
                     noise_std = torch.ones_like(x_neg, requires_grad=True).to(shared.device)
 
-                    optim = torch.optim.Adam([noise_mean, noise_std], lr=lr)
+                    optim = torch.optim.AdamW([noise_mean, noise_std], lr=lr)
 
                     for step in range(max_step):
-                        x_in = noise_mean + noise_std * x_pos # c h w
+                        x_new = noise_mean + noise_std * x_pos # c h w
 
-                        x_in = torch.stack([x_in, x_neg], dim=0) # 2 c h w
+                        x_in = torch.stack([x_new, x_neg], dim=0) # 2 c h w
 
                         x_out, Ac, As = evaluate_model(x_in)
 
@@ -355,11 +388,12 @@ class InitnoScript(UIWrapper):
                             params.x = x_in
                             return
 
-                        log_p = torch.log_softmax(x_out[0].view(c, h*w), dim=-1) # N( mean, std ** 2)
-                        mu = x_out[0].mean()
-                        sigma = x_out[0].std()
+                        #log_p = torch.log_softmax(x_out[0].view(c, h*w), dim=-1) # N( mean, std ** 2)
+                        #mu = x_out[0].mean()
+                        #sigma = x_out[0].std()
                         #q = torch.ones_like(log_p) / (h * w) # N(0, 1)
-                        loss_kl = -torch.log(sigma) + (sigma**2 + mu**2) / 2 - 0.5
+                        loss_kl = kl_divergence(noise_mean, noise_std)
+                        #loss_kl = -torch.log(noise_std) + (noise_std**2 + noise_mean**2) / 2 - 0.5
                         #loss_kl = kl_loss_fn(log_p, q)
 
                         # total loss
@@ -371,15 +405,16 @@ class InitnoScript(UIWrapper):
                         optim.step()
                     
                     logger.debug("Initno: Failed to optimize noise, next round...")
-                    noise_pool.append((loss_crossattn, loss_selfattn, torch.cat([noise_mean + noise_std * x_pos, x_neg], dim=0)))
+                    noise_pool.append((loss_crossattn, loss_selfattn, noise_mean.detach().clone(), noise_std.detach().clone()))
 
                 # select the noise with the lowest combined loss
                 noise_pool = sorted(noise_pool, key=lambda x: x[0] + x[1])
-                loss_crossattn, loss_selfattn, best_noise = noise_pool[0]
+                loss_crossattn, loss_selfattn, best_noise_mean, best_noise_std = noise_pool[0]
 
                 logger.debug("Initno: Best noise found with crossattn: %f, selfattn: %f", loss_crossattn, loss_selfattn)
-                params.x = best_noise
 
+                initno_params.optimized_noise = best_noise_mean + best_noise_std * x_pos
+                initno_params.optimized_noise = torch.stack([initno_params.optimized_noise, x_neg], dim=0) # 2 c h w
             
         script_callbacks.on_cfg_denoiser(lambda params: on_cfg_denoiser(params, initno_params))
         script_callbacks.on_cfg_denoised(lambda params: on_cfg_denoised(params, initno_params))
@@ -443,8 +478,8 @@ def get_attention_scores(to_q_map, to_k_map, dtype):
         # use in place operations vs. softmax to save memory: https://stackoverflow.com/questions/53732209/torch-in-place-operations-to-save-memory-softmax
         # 512x: 2.65G -> 2.47G
 
-        channel_dim_sqrt = 1 / np.sqrt(to_q_map.size(-1))
-        attn_probs = to_q_map @ to_k_map.transpose(-1, -2) * channel_dim_sqrt
+        attn_probs = to_q_map @ to_k_map.transpose(-1, -2)
+        # attn_probs /= to_q_map.size(-1) ** 0.5
         attn_probs = attn_probs.softmax(dim=-1).to(device=shared.device, dtype=dtype)
 
         ## avoid nan by converting to float32 and subtracting max 
