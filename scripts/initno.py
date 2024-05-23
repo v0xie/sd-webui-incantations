@@ -169,10 +169,11 @@ class InitnoScript(UIWrapper):
         initno_params.lr = lr
 
         initno_params.token_count, initno_params.max_length = prompt_utils.get_token_count(p.prompt, p.steps, is_positive=True)
-        if len(tokens) <= 0:
-            start_token = 1
-            end_token = min(initno_params.token_count+1, initno_params.max_length)
-            initno_params.tokens = list(range(start_token, end_token))
+        if tokens is None or tokens == '' or len(tokens) <= 0:
+
+            token_count, max_length = prompt_utils.get_token_count(p.prompt, p.steps, is_positive=True)
+            token_count = min(max(token_count, 1), max_length)
+            initno_params.tokens = list(range(1, token_count))
         else:
             initno_tokens = [int(token) for token in tokens.split(",")]
             initno_params.tokens = initno_tokens
@@ -381,11 +382,11 @@ class InitnoScript(UIWrapper):
             cond_token_count = uncond.shape[1]
             prompt_token_count = initno_params.token_count
 
-            #start_token = 1
-            #end_token = min(cond_token_count, prompt_token_count+1)
-
-            #target_tokens = list(range(start_token, end_token))
             target_tokens = initno_params.tokens
+            if initno_params.tokens is None:
+                start_token = 1
+                end_token = min(cond_token_count, prompt_token_count+1)
+                target_tokens = list(range(start_token, end_token))
 
             kl_loss_fn = torch.nn.KLDivLoss(reduction="batchmean")
 
