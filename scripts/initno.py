@@ -1,4 +1,5 @@
 import gradio as gr
+import numpy as np
 import torch
 from torch.nn import functional as F
 import logging
@@ -156,14 +157,25 @@ class InitnoScript(UIWrapper):
             cross_attn_modules = [module for module in all_modules if hasattr(module, 'initno_crossattn')]
             self_attn_modules = [module for module in all_modules if hasattr(module, 'initno_selfattn')]
 
-            def joint_loss(SCrossAttn, LKL, lambda1 = 1, lambda3=500):
-                 return lambda1 * SCrossAttn + lambda3 * LKL
+            def joint_loss(SCrossAttn, SSelfAttn, LKL, lambda1 = 1, lambda2 = 1, lambda3=500):
+                 return lambda1 * SCrossAttn + lambda2 * SSelfAttn + lambda3 * LKL
 
             def crossattn_loss(crossattn_maps, target_tokens):
                 """ Calculate the cross-attn loss"""
                 # calculate the max cross-attn score
                 scores = [torch.max(crossattn_maps[:, i]) for i in range(crossattn_maps.size(-1))]
                 return 1.0 - torch.min(torch.tensor(scores))
+
+            def self_attention_loss(As, Y):
+                conflicts = 0
+                pairs = 0
+                for i in range(len(Y)):
+                    for j in range(i + 1, len(Y)):
+                        min_conflict = torch.sum(torch.min(As[:, :, i], As[:, :, j]))
+                        total = torch.sum(As[:, :, i] + As[:, :, j])
+                        conflicts += min_conflict / total
+                        pairs += 1
+                return conflicts / pairs
 
             def kl_divergence(mu, sigma):
                 p = Normal(mu, sigma)
@@ -176,36 +188,38 @@ class InitnoScript(UIWrapper):
             def self_attn_loss(As, Y):
                 return 1.0
             
-            def get_crossattn_maps():
+            def resize_attn_map(attnmap, target_size=256):
+                attnmap = attnmap.transpose(-1, -2)
+                if attnmap.size(2) != target_size:
+                    attnmap = F.interpolate(attnmap, scale_factor=256/attnmap.size(2), mode='nearest')
+                attnmap = attnmap.transpose(-1, -2)
+                return attnmap
+
+            def get_attn_maps(modules, cross=False):
+                map_name = 'initno_selfattn'
+                if not cross:
+                    map_name = 'initno_crossattn'
                 target_size = 256
-                crossattn_maps = []
+                attn_maps = [
+                    resize_attn_map(getattr(module, map_name), target_size) for module in modules 
+                ]
+                return prepare_attn_maps(attn_maps, target_tokens)
 
-                attn_maps = []
-                for module in cross_attn_modules:
-                    attnmap = module.initno_crossattn
-                    attnmap = attnmap.transpose(-1, -2)
-                    if attnmap.size(2) != target_size:
-                        attnmap = F.interpolate(attnmap, scale_factor=256/attnmap.size(2), mode='nearest')
-                    attnmap = attnmap.transpose(-1, -2)
-                    attn_maps.append(attnmap)
-
+            def prepare_attn_maps(attn_maps, Y):
                 crossattn_maps = torch.stack(attn_maps, dim=1) # b n h t 
                 batch_size, num_maps, hw, tokens = crossattn_maps.shape
-                crossattn_maps = crossattn_maps.view(batch_size * num_maps, hw, tokens)
-                crossattn_maps = crossattn_maps[:, :, target_tokens] # b*n hw t
-
-
+                #crossattn_maps = crossattn_maps.view(batch_size * num_maps, hw, tokens)
                 # select the target tokens
-
+                crossattn_maps = crossattn_maps[:, :, :, Y] # b n hw t
                 # average over all maps
-                crossattn_maps = crossattn_maps.mean(dim=0) # hw t
+                crossattn_maps = crossattn_maps.mean(dim=1) # b hw t
 
                 return crossattn_maps.to(shared.device)
 
             def evaluate_model(x_in):
                 x_out = inner_model(x_in, sigma_in, cond=conds)
-                crossattn_maps = get_crossattn_maps()
-                selfattn_maps = None
+                crossattn_maps = get_attn_maps(True, cross_attn_modules)
+                selfattn_maps = get_attn_maps(False, self_attn_modules)
                 return x_out, crossattn_maps, selfattn_maps
 
             cond_token_count = uncond.shape[1]
@@ -235,18 +249,20 @@ class InitnoScript(UIWrapper):
                         x_out, Ac, As = evaluate_model(x_in)
 
                         loss_crossattn = crossattn_loss(Ac, target_tokens)
+                        
+                        loss_selfattn = self_attention_loss(As, target_tokens)
 
-                        if loss_crossattn < 0.2:
+                        if loss_crossattn < 0.2 and loss_selfattn < 0.3:
                             params.x = x_in
                             return
 
                         #loss_kl = kl_divergence(x , noise_std**2)
-                        # log_p = torch.log_softmax(x_out.view(n, c, h*w), dim=-1)
-                        # q = torch.ones_like(log_p) / (h * w)
-                        # loss_kl = kl_loss_fn(log_p, q)
+                        log_p = torch.log_softmax(x_out.view(n, c, h*w), dim=-1)
+                        q = torch.ones_like(log_p) / (h * w)
+                        loss_kl = kl_loss_fn(log_p, q)
 
                         # total loss
-                        loss = loss_crossattn
+                        loss = joint_loss(loss_crossattn, loss_selfattn, loss_kl)
                         loss.requires_grad = True
 
                         optim.zero_grad()
@@ -316,6 +332,9 @@ def get_attention_scores(to_q_map, to_k_map, dtype):
         # 512x: 2.65G -> 2.47G
 
         attn_probs = to_q_map @ to_k_map.transpose(-1, -2)
+        # divide by channel dimension
+        channel_dim = to_q_map.size(-1)
+        attn_probs /= np.sqrt(channel_dim)
         attn_probs = attn_probs.softmax(dim=-1).to(device=shared.device, dtype=to_q_map.dtype)
 
         ## avoid nan by converting to float32 and subtracting max 
