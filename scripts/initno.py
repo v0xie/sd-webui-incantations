@@ -38,6 +38,11 @@ def show_image(tensor):
 
 class InitnoParams():
     def __init__(self):
+        self.max_step = None
+        self.max_round = None
+        self.t_c = None
+        self.t_s = None
+        self.lr = None
         self.x_in = None
         self.sigma_in = None
         self.image_cond_in = None
@@ -56,12 +61,22 @@ class InitnoScript(UIWrapper):
         self.cached_c = [None, None]
 
     def title(self) -> str:
-        return "Embeds"
+        return "Initno"
+
     
     def setup_ui(self, is_img2img) -> list:
-        with gr.Accordion(label="Embeds", open=False):
+        with gr.Accordion(label="Initno [arXiv:2404.04650]", open=False):
             active = gr.Checkbox(label="Active", default=True, elem_id='embeds_active')
-        return [active]
+            max_step = gr.Slider(label="Max Steps", value=50, min=1, max=150, default=50, elem_id='max_step')
+            max_round = gr.Slider(label="Max Rounds", value=5, min=1, max=15, default=5, elem_id='max_round')
+            t_c = gr.Slider(label="Cross Attn Threshold", value=0.2, min=0.1, max=1.0, default=0.2, step=0.01, elem_id='t_c')
+            t_s = gr.Slider(label="Self Attn Threshold", value=0.3, min=0.1, max=1.0, default=0.3, step=0.01, elem_id='t_s')
+            lr = gr.Slider(label="Learning Rate", value=1e-2, min=1e-4, max=1e1, default=1e-2, step=1e-4, elem_id='lr')
+
+        params = [active, max_step, max_round, t_c, t_s, lr]
+        for param in params:
+            param.do_not_save_to_config = True
+        return params
 
     def get_infotext_fields(self) -> list:
         return self.infotext_fields
@@ -75,7 +90,7 @@ class InitnoScript(UIWrapper):
     def process(self, p, *args, **kwargs):
         pass
 
-    def before_process_batch(self, p: StableDiffusionProcessing, active, *args, **kwargs):
+    def before_process_batch(self, p: StableDiffusionProcessing, active, max_step, max_round, t_c, t_s, lr, *args, **kwargs):
         self.unhook_callbacks()
         active = getattr(p, 'embeds_active', active)
         if not active:
@@ -139,12 +154,17 @@ class InitnoScript(UIWrapper):
             # modules = [module for module in modules if regexp.match(module.network_layer_name) is not None]
             return modules
 
-    def process_batch(self, p: StableDiffusionProcessing, active, *args, **kwargs):
+    def process_batch(self, p: StableDiffusionProcessing, active, max_step, max_round, t_c, t_s, lr, *args, **kwargs):
         active = getattr(p, 'embeds_active', active)
         if not active:
             return
 
         initno_params= InitnoParams()
+        initno_params.max_step = max_step
+        initno_params.max_round = max_round
+        initno_params.t_c = t_c
+        initno_params.t_s = t_s
+        initno_params.lr = lr
         initno_params.token_count, initno_params.max_length = prompt_utils.get_token_count(p.prompt, p.steps, is_positive=True)
 
         def on_cfg_denoiser(params: CFGDenoiserParams, initno_params: InitnoParams):
@@ -194,8 +214,11 @@ class InitnoScript(UIWrapper):
             make_condition_dict = get_make_condition_dict_fn(uncond)
             conds = make_condition_dict(cond_in, image_cond_in)
 
-            max_step = 50
-            max_round = 2
+            max_step = initno_params.max_step
+            max_round = initno_params.max_round
+            t_c = initno_params.t_c
+            t_s = initno_params.t_s
+            lr = initno_params.lr
 
             all_modules = self.get_all_crossattn_modules()
             cross_attn_modules = [module for module in all_modules if hasattr(module, 'initno_crossattn')]
@@ -347,9 +370,6 @@ class InitnoScript(UIWrapper):
             target_tokens = list(range(start_token, end_token))
 
             kl_loss_fn = torch.nn.KLDivLoss(reduction="batchmean")
-            t_c = 0.2
-            t_s = 0.3
-            lr = 1e-2
 
             with torch.enable_grad():
                 # torch.autograd.set_detect_anomaly(True)
