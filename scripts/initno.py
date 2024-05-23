@@ -195,15 +195,31 @@ class InitnoScript(UIWrapper):
                 attnmap = attnmap.transpose(-1, -2)
                 return attnmap
 
-            def get_attn_maps(modules, cross=False):
-                map_name = 'initno_selfattn'
-                if not cross:
-                    map_name = 'initno_crossattn'
+            def get_cross_attn_maps(modules, map_name):
                 target_size = 256
                 attn_maps = [
-                    resize_attn_map(getattr(module, map_name), target_size) for module in modules 
-                ]
+                    resize_attn_map(
+                            attnmap = getattr(module, map_name),
+                            target_size = target_size
+                        ) for module in modules 
+                    ]
                 return prepare_attn_maps(attn_maps, target_tokens)
+
+            def get_self_attn_maps(modules, map_name):
+                target_size = 256
+                attn_maps = [ module.initno_selfattn for module in modules ]
+                resized_attn_maps = []
+                for attn_map in attn_maps:
+                    batch_size, _, w = attn_map.shape
+                    if w != target_size:
+                        attn_map = attn_map.unsqueeze(0)
+                        attn_map = F.interpolate(attn_map, size=(target_size, target_size), mode='nearest')
+                        attn_map = attn_map.squeeze(0)
+                    resized_attn_maps.append(attn_map)
+                # average over all maps
+                selfattn_maps = torch.stack(resized_attn_maps, dim=1) # b n h t 
+                selfattn_maps = selfattn_maps.mean(dim=1) # b h w
+                return selfattn_maps.to(shared.device)
 
             def prepare_attn_maps(attn_maps, Y):
                 crossattn_maps = torch.stack(attn_maps, dim=1) # b n h t 
@@ -218,8 +234,8 @@ class InitnoScript(UIWrapper):
 
             def evaluate_model(x_in):
                 x_out = inner_model(x_in, sigma_in, cond=conds)
-                crossattn_maps = get_attn_maps(True, cross_attn_modules)
-                selfattn_maps = get_attn_maps(False, self_attn_modules)
+                crossattn_maps = get_cross_attn_maps(cross_attn_modules, 'initno_crossattn')
+                selfattn_maps = get_self_attn_maps(self_attn_modules, 'initno_selfattn')
                 return x_out, crossattn_maps, selfattn_maps
 
             cond_token_count = uncond.shape[1]
@@ -236,6 +252,7 @@ class InitnoScript(UIWrapper):
                 torch.autograd.set_detect_anomaly(True)
 
                 for round in range(max_round):
+                    logger.debug("Initno: Round %d", round)
                     x = params.x
                     noise_mean = torch.zeros_like(x, requires_grad=True).to(shared.device)
                     noise_std = torch.ones_like(x, requires_grad=True).to(shared.device)
@@ -263,8 +280,8 @@ class InitnoScript(UIWrapper):
 
                         # total loss
                         loss = joint_loss(loss_crossattn, loss_selfattn, loss_kl)
-                        loss.requires_grad = True
 
+                        logger.debug("Initno: Step: %i, Loss:%f, CrossAttn:%f, SelfAttn:%f, KL:%f", step, loss, loss_crossattn, loss_selfattn, loss_kl)
                         optim.zero_grad()
                         loss.backward(retain_graph=True)
                         optim.step()
