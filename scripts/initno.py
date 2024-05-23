@@ -7,7 +7,7 @@ import logging
 import re
 from scripts.ui_wrapper import UIWrapper
 from torchvision.transforms import ToPILImage
-from modules import shared, script_callbacks
+from modules import shared, script_callbacks, shared_state
 from modules.processing import StableDiffusionProcessing
 from modules.script_callbacks import CFGDenoiserParams, CFGDenoisedParams, AfterCFGCallbackParams
 from modules.sd_samplers_cfg_denoiser import catenate_conds
@@ -43,6 +43,7 @@ class InitnoParams():
         self.t_c = None
         self.t_s = None
         self.lr = None
+        self.tokens = []
         self.x_in = None
         self.sigma_in = None
         self.image_cond_in = None
@@ -72,8 +73,9 @@ class InitnoScript(UIWrapper):
             t_c = gr.Slider(label="Cross Attn Threshold", value=0.2, min=0.1, max=1.0, default=0.2, step=0.01, elem_id='t_c')
             t_s = gr.Slider(label="Self Attn Threshold", value=0.3, min=0.1, max=1.0, default=0.3, step=0.01, elem_id='t_s')
             lr = gr.Slider(label="Learning Rate", value=1e-2, min=1e-4, max=1e1, default=1e-2, step=1e-4, elem_id='lr')
+            tokens = gr.Textbox(label="Target Tokens", value="", default="", elem_id='target_tokens')
 
-        params = [active, max_step, max_round, t_c, t_s, lr]
+        params = [active, max_step, max_round, t_c, t_s, lr, tokens]
         for param in params:
             param.do_not_save_to_config = True
         return params
@@ -90,7 +92,7 @@ class InitnoScript(UIWrapper):
     def process(self, p, *args, **kwargs):
         pass
 
-    def before_process_batch(self, p: StableDiffusionProcessing, active, max_step, max_round, t_c, t_s, lr, *args, **kwargs):
+    def before_process_batch(self, p: StableDiffusionProcessing, active, max_step, max_round, t_c, t_s, lr, tokens, *args, **kwargs):
         self.unhook_callbacks()
         active = getattr(p, 'embeds_active', active)
         if not active:
@@ -154,7 +156,7 @@ class InitnoScript(UIWrapper):
             # modules = [module for module in modules if regexp.match(module.network_layer_name) is not None]
             return modules
 
-    def process_batch(self, p: StableDiffusionProcessing, active, max_step, max_round, t_c, t_s, lr, *args, **kwargs):
+    def process_batch(self, p: StableDiffusionProcessing, active, max_step, max_round, t_c, t_s, lr, tokens, *args, **kwargs):
         active = getattr(p, 'embeds_active', active)
         if not active:
             return
@@ -165,7 +167,15 @@ class InitnoScript(UIWrapper):
         initno_params.t_c = t_c
         initno_params.t_s = t_s
         initno_params.lr = lr
+
         initno_params.token_count, initno_params.max_length = prompt_utils.get_token_count(p.prompt, p.steps, is_positive=True)
+        if len(tokens) <= 0:
+            start_token = 1
+            end_token = min(initno_params.token_count+1, initno_params.max_length)
+            initno_params.tokens = list(range(start_token, end_token))
+        else:
+            initno_tokens = [int(token) for token in tokens.split(",")]
+            initno_params.tokens = initno_tokens
 
         def on_cfg_denoiser(params: CFGDenoiserParams, initno_params: InitnoParams):
             ip = initno_params
@@ -235,14 +245,19 @@ class InitnoScript(UIWrapper):
                 """ Calculate the cross-attn loss"""
                 # calculate the max cross-attn score
                 max_scores = crossattn_maps.max(dim=1).values
+                #max_scores = max_scores[:, target_tokens]
 
                 # # if scores are below a certain threshold they're probably never going to get better so we remove them
-                max_scores = max_scores[max_scores > 0.1]
+                logger.debug("CrossAttn: Max scores: %s", max_scores)
+                max_scores = max_scores[max_scores > 0.01]
 
                 if max_scores.size(0) == 0:
                     return 1.0
+                
+                # zip the max scores and target tokens
+                #debug_max_scores = list(zip(max_scores, target_tokens))
 
-                # scores = [torch.max(crossattn_maps[0, :, i]) for i in range(crossattn_maps.size(-1))]
+                scores = [torch.max(crossattn_maps[:, :, i]) for i in range(crossattn_maps.size(-1))]
                 return 1.0 - torch.min(max_scores)
 
             def self_attention_loss(As, Ac):
@@ -252,6 +267,7 @@ class InitnoScript(UIWrapper):
                 """
                 # query the Ac map for the maximum cross_attn_value for each token
                 As = As.mean(0)
+                #As = As.mean(0)
                 batch_size, hw, tokens = Ac.shape
                 As = As.view(16, 16, As.size(-1))
 
@@ -263,6 +279,7 @@ class InitnoScript(UIWrapper):
                 # find x_i, y_i such that Ac[x_i, y_i, token_idx] is max value for token_idx
                 # coords = [(x_i, y_i), (x_i+1, y_i+1), ...]
                 coords = []
+                #for token_idx in target_tokens:
                 for token_idx in range(ac_max.size(-1)):
                     max_idx = torch.argmax(ac_max[:, :, token_idx])
                     x_i, y_i = max_idx // ac_max.size(0), max_idx % ac_max.size(1)
@@ -272,7 +289,6 @@ class InitnoScript(UIWrapper):
                         )
                     )
                 coords = torch.tensor(coords)
-                
 
                 conflicts = 0
                 pairs = 0
@@ -345,6 +361,7 @@ class InitnoScript(UIWrapper):
 
                 #batch_size, num_maps, hw, tokens = crossattn_maps.shape
                 crossattn_maps = crossattn_maps.mean(dim=1)[0].unsqueeze(0) # b hw t
+                crossattn_maps = crossattn_maps[:, :, Y] # b hw t
 
                 return crossattn_maps.to(shared.device)
             
@@ -364,10 +381,11 @@ class InitnoScript(UIWrapper):
             cond_token_count = uncond.shape[1]
             prompt_token_count = initno_params.token_count
 
-            start_token = 1
-            end_token = min(cond_token_count, prompt_token_count+1)
+            #start_token = 1
+            #end_token = min(cond_token_count, prompt_token_count+1)
 
-            target_tokens = list(range(start_token, end_token))
+            #target_tokens = list(range(start_token, end_token))
+            target_tokens = initno_params.tokens
 
             kl_loss_fn = torch.nn.KLDivLoss(reduction="batchmean")
 
@@ -383,17 +401,18 @@ class InitnoScript(UIWrapper):
 
                     n, c, h, w = x.shape
 
-                    x_pos, x_neg = x[0], x[1] # c h w
+                    #x_pos, x_neg = x[0], x[1] # c h w
 
-                    noise_mean = torch.zeros_like(x_pos, requires_grad=True).to(shared.device)
-                    noise_std = torch.ones_like(x_neg, requires_grad=True).to(shared.device)
+                    noise_mean = torch.zeros_like(x, requires_grad=True).to(shared.device)
+                    noise_std = torch.ones_like(x, requires_grad=True).to(shared.device)
 
                     optim = torch.optim.AdamW([noise_mean, noise_std], lr=lr)
 
                     for step in range(max_step):
-                        x_new = noise_mean + noise_std * x_pos # c h w
+                        x_new = noise_mean + noise_std * x# c h w
 
-                        x_in = torch.stack([x_new, x_neg], dim=0) # 2 c h w
+                        x_in = x_new
+                        #x_in = torch.stack([x_new, x_neg], dim=0) # 2 c h w
 
                         x_out, Ac, As = evaluate_model(x_in)
 
@@ -423,6 +442,9 @@ class InitnoScript(UIWrapper):
                         optim.zero_grad()
                         loss.backward(retain_graph=True)
                         optim.step()
+
+                        if shared.state.interrupted or shared.state.skipped or shared.state.stopping_generation:
+                            return
                     
                     logger.debug("Initno: Failed to optimize noise, next round...")
                     noise_pool.append((loss_crossattn, loss_selfattn, noise_mean.detach().clone(), noise_std.detach().clone()))
@@ -433,8 +455,8 @@ class InitnoScript(UIWrapper):
 
                 logger.debug("Initno: Best noise found with crossattn: %f, selfattn: %f", loss_crossattn, loss_selfattn)
 
-                initno_params.optimized_noise = best_noise_mean + best_noise_std * x_pos
-                initno_params.optimized_noise = torch.stack([initno_params.optimized_noise, x_neg], dim=0) # 2 c h w
+                initno_params.optimized_noise = best_noise_mean + best_noise_std * x
+                #initno_params.optimized_noise = torch.stack([initno_params.optimized_noise, x_neg], dim=0) # 2 c h w
             
         script_callbacks.on_cfg_denoiser(lambda params: on_cfg_denoiser(params, initno_params))
         script_callbacks.on_cfg_denoised(lambda params: on_cfg_denoised(params, initno_params))
@@ -498,18 +520,20 @@ def get_attention_scores(to_q_map, to_k_map, dtype):
         # use in place operations vs. softmax to save memory: https://stackoverflow.com/questions/53732209/torch-in-place-operations-to-save-memory-softmax
         # 512x: 2.65G -> 2.47G
 
+        channel_dims = to_q_map.size(-1)
         attn_probs = to_q_map @ to_k_map.transpose(-1, -2)
-        # attn_probs /= to_q_map.size(-1) ** 0.5
+        #attn_probs /= channel_dims ** 0.5
+        ## attn_probs /= to_q_map.size(-1) ** 0.5
         attn_probs = attn_probs.softmax(dim=-1).to(device=shared.device, dtype=dtype)
 
-        ## avoid nan by converting to float32 and subtracting max 
-        # attn_probs = attn_probs.to(dtype=torch.float32) #
-        # attn_probs -= torch.max(attn_probs)
+        ### avoid nan by converting to float32 and subtracting max 
+        #attn_probs = attn_probs.to(dtype=torch.float32) #
+        #attn_probs -= torch.max(attn_probs)
 
-        # torch.exp(attn_probs, out = attn_probs)
-        # summed = attn_probs.sum(dim=-1, keepdim=True, dtype=torch.float32) + torch.finfo(torch.float32).eps
-        # attn_probs /= summed
+        #torch.exp(attn_probs, out = attn_probs)
+        #summed = attn_probs.sum(dim=-1, keepdim=True, dtype=torch.float32) + torch.finfo(torch.float32).eps
+        #attn_probs /= summed
 
-        # attn_probs = attn_probs.to(dtype=dtype)
+        #attn_probs = attn_probs.to(dtype=dtype)
 
         return attn_probs
