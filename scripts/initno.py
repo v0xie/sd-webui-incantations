@@ -180,23 +180,22 @@ class InitnoScript(UIWrapper):
             conds = make_condition_dict(cond_in, image_cond_in)
 
             max_step = 50
-            max_round = 5
+            max_round = 2
 
             all_modules = self.get_all_crossattn_modules()
             cross_attn_modules = [module for module in all_modules if hasattr(module, 'initno_crossattn')]
             self_attn_modules = [module for module in all_modules if hasattr(module, 'initno_selfattn')]
 
-            def joint_loss(SCrossAttn, SSelfAttn, LKL, lambda1 = 1, lambda2 = 1, lambda3=0):
-            #def joint_loss(SCrossAttn, SSelfAttn, LKL, lambda1 = 1, lambda2 = 1, lambda3=500):
+            def joint_loss(SCrossAttn, SSelfAttn, LKL, lambda1 = 1, lambda2 = 1, lambda3=500):
                  return lambda1 * SCrossAttn + lambda2 * SSelfAttn + lambda3 * LKL
 
             def crossattn_loss(crossattn_maps, target_tokens):
                 """ Calculate the cross-attn loss"""
                 # calculate the max cross-attn score
-                scores = [torch.max(crossattn_maps[:, i]) for i in range(crossattn_maps.size(-1))]
+                scores = [torch.max(crossattn_maps[0, i]) for i in range(crossattn_maps.size(-1))]
                 return 1.0 - torch.min(torch.tensor(scores))
 
-            def self_attention_loss(As, Ac, Y):
+            def self_attention_loss(As, Ac):
                 """ 
                 As - self attention maps ( b hw hw ), hw = 16*16 = 256
                 Ac - cross attention maps ( b hw t ), hw = 16:16, t = target tokens
@@ -222,36 +221,31 @@ class InitnoScript(UIWrapper):
                             x_i.item(), y_i.item()
                         )
                     )
+                coords = torch.tensor(coords)
                 
-                # extracted_maps = []
-                # for x_i, y_i in coords:
-                #     sa_map = As[x_i, y_i, :]
-                #     extracted_maps.append(sa_map)
-
-                # ac_max = ac_max.permute(3, 0, 1, 2) # t b h w
-
-                # ac_max_argmax = torch.argmax(ac_max, dim=0)
 
                 conflicts = 0
                 pairs = 0
 
                 # calcuate conflicts for each pair of tokens
-                for y_i in range(len(tokens)):
-                    for y_j in range(len(tokens)):
+                for i in range(len(coords)):
+                    for j in range(i+1, len(coords)):
+                        x_i, y_i = coords[i]
+                        x_j, y_j = coords[j]
 
-                        if y_i == y_j:
-                            continue
+                        As_xi_yi = As[x_i, y_i]
+                        As_xj_yj = As[x_j, y_j]
 
+                        # calculate f(y_i, y_j)
+                        num = torch.sum(torch.min(As_xi_yi, As_xj_yj))
+                        denom = torch.sum(As_xi_yi + As_xj_yj + 1e-8)
+                        f_yi_yj = num / denom
 
-                        As_y_i = As[coords[y_i], :]
-                        As_y_j = As[coords[y_j], :]
-                        min_conflict = torch.sum(
-                                torch.min(As_y_i, As_y_j)
-                            )
-                        total = torch.sum(As_y_i + As_y_j)
-                        conflicts += min_conflict / total
+                        conflicts += f_yi_yj
                         pairs += 1
-                return conflicts / pairs
+
+                SSelfAttn = conflicts / pairs if pairs > 0 else 0
+                return SSelfAttn
 
             def kl_divergence(mu, sigma):
                 p = Normal(mu, sigma)
@@ -260,9 +254,6 @@ class InitnoScript(UIWrapper):
                 kl_loss_fn = torch.nn.KLDivLoss(reduction="batchmean")
 
                 return kl_loss_fn(p, q)
-            
-            def self_attn_loss(As, Y):
-                return 1.0
             
             def resize_attn_map(attnmap, target_size=256):
                 attnmap = attnmap.transpose(-1, -2)
@@ -305,7 +296,7 @@ class InitnoScript(UIWrapper):
                 #crossattn_maps = crossattn_maps[:, :, :, range(1, tokens)] # b n hw t
                 #crossattn_maps = crossattn_maps[:, :, :, Y] # b n hw t
                 # average over all maps
-                crossattn_maps = crossattn_maps.mean(dim=1) # b hw t
+                crossattn_maps = crossattn_maps.mean(dim=1)[0].unsqueeze(0) # b hw t
 
                 return crossattn_maps.to(shared.device)
 
@@ -326,38 +317,50 @@ class InitnoScript(UIWrapper):
             kl_loss_fn = torch.nn.KLDivLoss(reduction="batchmean")
             t_c = 0.2
             t_s = 0.3
+            lr = 1e-2
 
             with torch.enable_grad():
-                torch.autograd.set_detect_anomaly(True)
+                # torch.autograd.set_detect_anomaly(True)
+
+                noise_pool = []
 
                 for round in range(max_round):
                     logger.debug("Initno: Round %d", round)
-                    x = params.x
-                    noise_mean = torch.zeros_like(x, requires_grad=True).to(shared.device)
-                    noise_std = torch.ones_like(x, requires_grad=True).to(shared.device)
 
-                    optim = torch.optim.Adam([noise_mean, noise_std], lr=1e-2)
+                    x = params.x # assuming x[0] is positive and x[1] is neg
+                    n, c, h, w = x.shape
+
+                    x_pos, x_neg = x[0], x[1] # c h w
+
+                    noise_mean = torch.zeros_like(x_pos, requires_grad=True).to(shared.device)
+                    noise_std = torch.ones_like(x_neg, requires_grad=True).to(shared.device)
+
+                    optim = torch.optim.Adam([noise_mean, noise_std], lr=lr)
 
                     for step in range(max_step):
-                        x_in = noise_mean + noise_std * x
-                        n, c, h, w = x_in.shape
+                        x_in = noise_mean + noise_std * x_pos # c h w
+
+                        x_in = torch.stack([x_in, x_neg], dim=0) # 2 c h w
 
                         x_out, Ac, As = evaluate_model(x_in)
 
+                        _, c, h, w = x_out.shape
+
                         loss_crossattn = crossattn_loss(Ac, target_tokens)
                         
-                        loss_selfattn = self_attention_loss(As, Ac, target_tokens)
+                        loss_selfattn = self_attention_loss(As, Ac)
 
                         if loss_crossattn < t_c and loss_selfattn < t_s:
                             logger.debug("Initno: Optimized noise! - Step: %i/%i, CrossAttn: %f < %f, SelfAttn: %f < %f,", step, max_step, loss_crossattn.item(), t_c, loss_selfattn.item(), t_s)
                             params.x = x_in
                             return
 
-                        #loss_kl = kl_divergence(x , noise_std**2)
-                        log_p = torch.log_softmax(x_out.view(n, c, h*w), dim=-1)
-                        #log_p = torch.log_softmax(torch.ones_like(x_out.view(n, c, h*w)), dim=-1)
-                        q = torch.ones_like(log_p) / (h * w)
-                        loss_kl = kl_loss_fn(log_p, q)
+                        log_p = torch.log_softmax(x_out[0].view(c, h*w), dim=-1) # N( mean, std ** 2)
+                        mu = x_out[0].mean()
+                        sigma = x_out[0].std()
+                        #q = torch.ones_like(log_p) / (h * w) # N(0, 1)
+                        loss_kl = -torch.log(sigma) + (sigma**2 + mu**2) / 2 - 0.5
+                        #loss_kl = kl_loss_fn(log_p, q)
 
                         # total loss
                         loss = joint_loss(loss_crossattn, loss_selfattn, loss_kl)
@@ -368,6 +371,14 @@ class InitnoScript(UIWrapper):
                         optim.step()
                     
                     logger.debug("Initno: Failed to optimize noise, next round...")
+                    noise_pool.append((loss_crossattn, loss_selfattn, torch.cat([noise_mean + noise_std * x_pos, x_neg], dim=0)))
+
+                # select the noise with the lowest combined loss
+                noise_pool = sorted(noise_pool, key=lambda x: x[0] + x[1])
+                loss_crossattn, loss_selfattn, best_noise = noise_pool[0]
+
+                logger.debug("Initno: Best noise found with crossattn: %f, selfattn: %f", loss_crossattn, loss_selfattn)
+                params.x = best_noise
 
             
         script_callbacks.on_cfg_denoiser(lambda params: on_cfg_denoiser(params, initno_params))
