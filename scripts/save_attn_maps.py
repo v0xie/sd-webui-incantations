@@ -216,7 +216,7 @@ class SaveAttentionMapsScript(UIWrapper):
                         token_idx, token_id, word = tokenized_prompts[batch_idx][token_idx]
 
                         fn_pad_zeroes = lambda num: f"{num:04}"
-                        savestep_num = module.savemaps_save_steps[attn_map_idx]
+                        savestep_num = module.savemaps_save_steps[attn_map_idx] + 1
                         attn_map = attn_maps[attn_map_idx, batch_idx, token_idx]
                         out_file_name = f'{module.network_layer_name}_token{token_idx:04}_step{savestep_num:04}_attnmap_{attn_map_idx:04}_batch{batch_idx:04}.png'
                         save_path = os.path.join(save_image_path, out_file_name)
