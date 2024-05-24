@@ -3,11 +3,12 @@ import logging
 import copy
 import gradio as gr
 import torch
+import re
 from torchvision.transforms import GaussianBlur
 
 
 from einops import rearrange
-from modules import shared
+from modules import shared, script_callbacks
 from modules.processing import StableDiffusionProcessing
 from scripts.ui_wrapper import UIWrapper, arg
 from scripts.incant_utils import module_hooks, plot_tools, prompt_utils
@@ -57,12 +58,28 @@ class SaveAttentionMapsScript(UIWrapper):
         module_list = self.get_modules_by_filter(module_name_filter, class_name_filter)
         self.unhook_modules(module_list, copy.deepcopy(module_field_map))
 
+        setattr(p, 'savemaps_module_list', module_list)
+
         if not active:
             return
+        
+        token_count, _= prompt_utils.get_token_count(p.prompt, p.steps, True)
 
-        token_count, _ = prompt_utils.get_token_count(p.prompt, p.steps, True)
         setattr(p, 'savemaps_token_count', token_count)
 
+        # Tokenize/decode the prompts
+        tokenized_prompts = []
+        batch_chunks, _ = prompt_utils.tokenize_prompt(p.prompt)
+        for batch in batch_chunks:
+            for sub_batch in batch:
+                tokenized_prompts.append(prompt_utils.decode_tokenized_prompt(sub_batch.tokens))
+        for tp_prompt in tokenized_prompts:
+            for tp in tp_prompt:
+                token_idx, token_id, word = tp
+                # sanitize tokenized prompts
+                tp[2] = re.escape(word)
+        setattr(p, 'savemaps_tokenized_prompts', tokenized_prompts)
+                
         # Make sure the output folder exists
         outpath_samples = p.outpath_samples
         # Move this to plot tools?
@@ -92,6 +109,14 @@ class SaveAttentionMapsScript(UIWrapper):
         self.hook_modules(module_list, value_map)
         self.create_save_hook(module_list)
 
+        def on_cfg_denoised(params: script_callbacks.CFGDenoisedParams):
+            step = torch.tensor([params.sampling_step]).to(device=shared.device, dtype=torch.int32)
+            for module in module_list:
+                module.savemaps_step = step
+        
+        script_callbacks.on_cfg_denoised(on_cfg_denoised)
+
+
     def process(self, p, *args, **kwargs):
         pass
 
@@ -109,11 +134,12 @@ class SaveAttentionMapsScript(UIWrapper):
             self.unhook_modules(module_list, copy.deepcopy(module_field_map))
             return
 
+        tokenized_prompts = getattr(p, 'savemaps_tokenized_prompts', None)
+
         save_image_path = os.path.join(p.outpath_samples, 'attention_maps')
 
         max_dims = p.height * p.width
         token_count = p.savemaps_token_count
-        token_indices = [x+1 for x in range(token_count)]
 
         for module in module_list:
             if not hasattr(module, 'savemaps_batch') or module.savemaps_batch is None:
@@ -122,7 +148,10 @@ class SaveAttentionMapsScript(UIWrapper):
 
             attn_maps = module.savemaps_batch # (attn_map num, 2 * batch_num, height * width, sequence_len)
 
-            attn_map_num, batch_num, hw, seq_len = attn_maps.shape
+            attn_map_num, batch_num, hw, tokens = attn_maps.shape
+
+            max_token = min(token_count+1, tokens)
+            token_indices = [x for x in range(0, max_token)]
 
             downscale_ratio = max_dims / hw
             downscale_h = round((hw * (p.height / p.width)) ** 0.5)
@@ -130,6 +159,7 @@ class SaveAttentionMapsScript(UIWrapper):
 
             # if take_mean_of_all_dims:
             # attn_maps = attn_maps.mean(dim=-1) # (attn_map num, batch_num, height * width)
+
             gaussian_blur = GaussianBlur(kernel_size=3, sigma=1)
             attn_maps = attn_maps.permute(0, 3, 1, 2)
             attn_maps = gaussian_blur(attn_maps)  # Applying Gaussian smoothing
@@ -139,19 +169,28 @@ class SaveAttentionMapsScript(UIWrapper):
 
             attn_maps = rearrange(attn_maps, 'n (m b) (h w) t -> n m b t h w', m = 2, h = downscale_h).mean(dim=1) # (attn_map num, batch_num, token_idx, height, width)
             attn_map_num, batch_num, token_num, height, width = attn_maps.shape
+
             for attn_map_idx in range(attn_map_num):
                 for batch_idx in range(batch_num):
                     for token_idx in range(token_num):
+
+                        token_idx, token_id, word = tokenized_prompts[batch_idx][token_idx]
+
                         fn_pad_zeroes = lambda num: f"{num:04}"
                         savestep_num = module.savemaps_save_steps[attn_map_idx]
                         attn_map = attn_maps[attn_map_idx, batch_idx, token_idx]
-                        out_file_name = f'{module.network_layer_name}_token{token_idx+1:04}_step{savestep_num:04}_attnmap_{attn_map_idx:04}_batch{batch_idx:04}.png'
+                        out_file_name = f'{module.network_layer_name}_token{token_idx:04}_step{savestep_num:04}_attnmap_{attn_map_idx:04}_batch{batch_idx:04}.png'
                         save_path = os.path.join(save_image_path, out_file_name)
+
+                        plot_title = f"{module.network_layer_name}\n"\
+                            f"{token_idx}: ({token_id}, '{word}')\n"\
+                            f"Step {savestep_num}"
+
                         plot_tools.plot_attention_map(
-                            attention_map=attn_map,
-                            title=f"{module.network_layer_name}\nToken {token_idx+1}, Step {savestep_num}",
-                            save_path=save_path,
-                            plot_type="default"
+                            attention_map = attn_map,
+                            title = plot_title,
+                            save_path = save_path,
+                            plot_type = "default"
                         )
 
         self.unhook_modules(module_list, copy.deepcopy(module_field_map))
@@ -175,43 +214,47 @@ class SaveAttentionMapsScript(UIWrapper):
             with shape (attn_map, batch_num, height * width).
             
             """
-            module.savemaps_step += 1
+            #module.savemaps_step += 1
 
-            #parent_module = getattr(module, 'savemaps_parent_module', None)
-            #to_v_map = None
-            #if parent_module is not None:
-            to_v_map = getattr(module, 'savemaps_to_v_map', None)
+            if not module.savemaps_step in module.savemaps_save_steps:
+                return
 
-            if (module.savemaps_step in module.savemaps_save_steps):
-                #context = kwargs.get('context', None)
-                attn_map = output.detach().clone()
+            to_q_map = getattr(module, 'savemaps_to_q_map', None)
+            to_k_map = to_q_map if module.savemaps_is_self else getattr(module, 'savemaps_to_k_map', None)
 
-                # multiply into text embeddings
-                if to_v_map is not None:
-                    attn_map = (to_v_map @ output.transpose(1,2)).transpose(1,2)
-                
-                attn_map = attn_map.unsqueeze(0)
+            attn_map = get_attention_scores(to_q_map, to_k_map, dtype=to_q_map.dtype)
 
-                #attn_map = attn_map.mean(dim=-1)
-                if module.savemaps_batch is None:
-                    module.savemaps_batch = attn_map
-                else:
-                    module.savemaps_batch = torch.cat([module.savemaps_batch, attn_map], dim=0)
+            # multiply into text embeddings
+            attn_map = attn_map.unsqueeze(0)
+
+            #attn_map = attn_map.mean(dim=-1)
+            if module.savemaps_batch is None:
+                module.savemaps_batch = attn_map
+            else:
+                module.savemaps_batch = torch.cat([module.savemaps_batch, attn_map], dim=0)
 
         def savemaps_to_q_hook(module, input, kwargs, output):
                 setattr(module.savemaps_parent_module[0], 'savemaps_to_q_map', output)
 
         def savemaps_to_k_hook(module, input, kwargs, output):
-                setattr(module.savemaps_parent_module[0],'savemaps_to_k_map', output)
+                if not module.savemaps_parent_module[0].savemaps_is_self:
+                    setattr(module.savemaps_parent_module[0],'savemaps_to_k_map', output)
 
         def savemaps_to_v_hook(module, input, kwargs, output):
-                module.savemaps_parent_module[0].savemaps_to_v_map = output
+                setattr(module.savemaps_parent_module[0],'savemaps_to_v_map', output)
 
         #for module, kv in zip(module_list, value_map.items()):
         for module in module_list:
+            logger.debug('Adding hook to %s', module.network_layer_name)
             for key_name, default_value in value_map.items():
                 module_hooks.modules_add_field(module, key_name, default_value)
+
             module_hooks.module_add_forward_hook(module, savemaps_hook, 'forward', with_kwargs=True)
+
+            if module.network_layer_name.endswith('attn1'): # self attn
+                module_hooks.modules_add_field(module, 'savemaps_is_self', True)
+            if module.network_layer_name.endswith('attn2'): # self attn
+                module_hooks.modules_add_field(module, 'savemaps_is_self', False)
 
             for module_name in SUBMODULES:
                 if not hasattr(module, module_name):
@@ -228,11 +271,16 @@ class SaveAttentionMapsScript(UIWrapper):
                 module_hooks.module_add_forward_hook(submodule, hook_fn, 'forward', with_kwargs=True)
     
     def unhook_modules(self, module_list: list, value_map: dict):
+        script_callbacks.remove_current_script_callbacks()
+
         for module in module_list:
             for key_name, _ in value_map.items():
                 module_hooks.modules_remove_field(module, key_name)
+            module_hooks.modules_remove_field(module, 'savemaps_is_self')
             module_hooks.remove_module_forward_hook(module, 'savemaps_hook')
             for module_name in SUBMODULES:
+                module_hooks.modules_remove_field(module, f'savemaps_{module_name}_map')
+
                 if hasattr(module, module_name):
                     submodule = getattr(module, module_name)
                     module_hooks.modules_remove_field(submodule, 'savemaps_parent_module')    
@@ -271,9 +319,13 @@ def get_attention_scores(to_q_map, to_k_map, dtype):
         # 512x: 2.65G -> 2.47G
 
         attn_probs = to_q_map @ to_k_map.transpose(-1, -2)
+        attn_probs = attn_probs.to(dtype=torch.float32) #
+
+        channel_dim = to_q_map.size(1)
+        attn_probs /= (channel_dim ** 0.5)
+        attn_probs -= attn_probs.max()
 
         # avoid nan by converting to float32 and subtracting max 
-        attn_probs = attn_probs.to(dtype=torch.float32) #
         attn_probs = attn_probs.softmax(dim=-1).to(device=shared.device, dtype=to_q_map.dtype)
         attn_probs = attn_probs.to(dtype=dtype)
 

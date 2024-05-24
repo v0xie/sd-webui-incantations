@@ -65,6 +65,6 @@ def decode_tokenized_prompt(tokens):
     if clip is None:
         return None
     decoded_prompt = [
-        (token_idx, token, clip.tokenizer.decoder[token]) for token_idx, token in enumerate(tokens)
+        [token_idx, token, clip.tokenizer.decoder[token]] for token_idx, token in enumerate(tokens)
     ]
     return decoded_prompt
