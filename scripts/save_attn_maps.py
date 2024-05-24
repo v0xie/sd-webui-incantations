@@ -107,7 +107,7 @@ class SaveAttentionMapsScript(UIWrapper):
         value_map['savemaps_save_steps'] = save_steps
         value_map['savemaps_step'] = 0
         #value_map['savemaps_shape'] = torch.tensor(latent_shape).to(device=shared.device, dtype=torch.int32)
-        self.hook_modules(module_list, value_map)
+        self.hook_modules(module_list, value_map, p)
         self.create_save_hook(module_list)
 
         def on_cfg_denoiser(params: script_callbacks.CFGDenoiserParams):
@@ -144,6 +144,7 @@ class SaveAttentionMapsScript(UIWrapper):
         save_image_path = os.path.join(p.outpath_samples, 'attention_maps')
 
         blur_this = True 
+        plot_is_self = False # kind of useless
 
         max_dims = p.height * p.width
         token_count = p.savemaps_token_count
@@ -154,6 +155,9 @@ class SaveAttentionMapsScript(UIWrapper):
                 continue
 
             is_self = getattr(module, 'savemaps_is_self', False)
+            if is_self and not plot_is_self:
+                continue
+
             attn_maps = module.savemaps_batch # (attn_map num, 2 * batch_num, height * width, sequence_len)
 
             # selfattn: seq_len = hw
@@ -161,7 +165,7 @@ class SaveAttentionMapsScript(UIWrapper):
             attn_map_num, batch_num, hw, seq_len = attn_maps.shape
 
             max_token = min(token_count+1, seq_len)
-            token_indices = [x for x in range(0, max_token)]
+            token_indices = [x for x in range(1, max_token)]
 
             downscale_ratio = max_dims / hw
             downscale_h = round((hw * (p.height / p.width)) ** 0.5)
@@ -232,7 +236,7 @@ class SaveAttentionMapsScript(UIWrapper):
     def create_save_hook(self, module_list):
         pass
 
-    def hook_modules(self, module_list: list, value_map: dict):
+    def hook_modules(self, module_list: list, value_map: dict, p: StableDiffusionProcessing):
         def savemaps_hook(module, input, kwargs, output):
             """ Hook to save attention maps every N steps, or the last step if N is 0.
             Saves attention maps to a field named 'savemaps_batch' in the module.
@@ -243,23 +247,31 @@ class SaveAttentionMapsScript(UIWrapper):
 
             if not module.savemaps_step in module.savemaps_save_steps:
                 return
-            
-            is_self = getattr(module, 'savemaps_is_self', False)
+            reweight_crossattn = True 
 
+
+            is_self = getattr(module, 'savemaps_is_self', False)
             to_q_map = getattr(module, 'savemaps_to_q_map', None)
             to_k_map = to_q_map if module.savemaps_is_self else getattr(module, 'savemaps_to_k_map', None)
 
             # we want to reweight the attention scores by removing influence of the first token
-            if not is_self:
-                #to_k_map -= to_k_map[:, 1, :]
-                to_k_map = to_k_map[:, 1:, :]
+            orig_seq_len = to_k_map.shape[1]
+            token_count = module.savemaps_token_count
+            min_token = 0
+            max_token = min(token_count+1, orig_seq_len)
+
+            if not is_self and reweight_crossattn:
+                to_k_map = to_k_map[:, 1:max_token, :]
 
             attn_map = get_attention_scores(to_q_map, to_k_map, dtype=to_q_map.dtype)
-            b, hw, _ = attn_map.shape
+            b, hw, seq_len = attn_map.shape
 
-            if not is_self:
-                to_attn_zeros = torch.zeros([b, hw]).unsqueeze(-1).to(device=shared.device, dtype=attn_map.dtype) # (batch, h*w, 1)
-                attn_map = torch.cat([to_attn_zeros, attn_map], dim=-1) # re pad to original token dim size
+            if not is_self and reweight_crossattn:
+                #to_attn_zeros = torch.zeros([b, hw]).unsqueeze(-1).to(device=shared.device, dtype=attn_map.dtype) # (batch, h*w, 1)
+                #attn_map = torch.cat([to_attn_zeros, attn_map], dim=-1) # re pad to original token dim size
+                left_pad = 1
+                right_pad = orig_seq_len - seq_len - 1
+                attn_map = torch.nn.functional.pad(attn_map, (left_pad, right_pad), value=0) # re pad to original token dim size
 
             # multiply into text embeddings
             attn_map = attn_map.unsqueeze(0)
@@ -287,6 +299,7 @@ class SaveAttentionMapsScript(UIWrapper):
                 module_hooks.modules_add_field(module, key_name, default_value)
 
             module_hooks.module_add_forward_hook(module, savemaps_hook, 'forward', with_kwargs=True)
+            module_hooks.modules_add_field(module, 'savemaps_token_count', p.savemaps_token_count)
 
             if module.network_layer_name.endswith('attn1'): # self attn
                 module_hooks.modules_add_field(module, 'savemaps_is_self', True)
