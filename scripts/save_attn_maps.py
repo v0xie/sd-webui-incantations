@@ -131,7 +131,7 @@ class SaveAttentionMapsScript(UIWrapper):
             """
             for module in module_list:
                 module.savemaps_step = p.savemaps_step
-            logger.debug('Setting step to %d for %d modules', p.savemaps_step, len(module_list))
+            # logger.debug('Setting step to %d for %d modules', p.savemaps_step, len(module_list))
             p.savemaps_step += 1
         
         script_callbacks.on_cfg_denoiser(on_cfg_denoiser)
@@ -312,7 +312,7 @@ class SaveAttentionMapsScript(UIWrapper):
 
         #for module, kv in zip(module_list, value_map.items()):
         for module in module_list:
-            logger.debug('Adding hook to %s', module.network_layer_name)
+            # logger.debug('Adding hook to %s', module.network_layer_name)
             for key_name, default_value in value_map.items():
                 module_hooks.modules_add_field(module, key_name, default_value)
 
@@ -344,6 +344,8 @@ class SaveAttentionMapsScript(UIWrapper):
             for key_name, _ in value_map.items():
                 module_hooks.modules_remove_field(module, key_name)
             module_hooks.modules_remove_field(module, 'savemaps_is_self')
+            module_hooks.modules_remove_field(module, 'savemaps_token_count')
+            module_hooks.modules_remove_field(module, 'savemaps_token_indices')
             module_hooks.remove_module_forward_hook(module, 'savemaps_hook')
             for module_name in SUBMODULES:
                 module_hooks.modules_remove_field(module, f'savemaps_{module_name}_map')
