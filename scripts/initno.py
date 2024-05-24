@@ -7,7 +7,7 @@ import logging
 import re
 from scripts.ui_wrapper import UIWrapper
 from torchvision.transforms import ToPILImage
-from modules import shared, script_callbacks, shared_state
+from modules import shared, script_callbacks, shared_state, rng
 from modules.processing import StableDiffusionProcessing
 from modules.script_callbacks import CFGDenoiserParams, CFGDenoisedParams, AfterCFGCallbackParams
 from modules.sd_samplers_cfg_denoiser import catenate_conds
@@ -68,11 +68,11 @@ class InitnoScript(UIWrapper):
     def setup_ui(self, is_img2img) -> list:
         with gr.Accordion(label="Initno [arXiv:2404.04650]", open=False):
             active = gr.Checkbox(label="Active", default=True, elem_id='embeds_active')
-            max_step = gr.Slider(label="Max Steps", value=50, min=1, max=150, default=50, elem_id='max_step')
-            max_round = gr.Slider(label="Max Rounds", value=5, min=1, max=15, default=5, elem_id='max_round')
-            t_c = gr.Slider(label="Cross Attn Threshold", value=0.2, min=0.1, max=1.0, default=0.2, step=0.01, elem_id='t_c')
-            t_s = gr.Slider(label="Self Attn Threshold", value=0.3, min=0.1, max=1.0, default=0.3, step=0.01, elem_id='t_s')
-            lr = gr.Slider(label="Learning Rate", value=1e-2, min=1e-4, max=1e1, default=1e-2, step=1e-4, elem_id='lr')
+            max_step = gr.Slider(label="Max Steps", value=50, minimum=1, maximum=200, default=50, elem_id='max_step')
+            max_round = gr.Slider(label="Max Rounds", value=5, minimum=1, maximum=5, default=5, elem_id='max_round')
+            t_c = gr.Slider(label="Cross Attn Threshold", value=0.2, minimum=0.1, maximum=1.0, default=0.2, step=0.01, elem_id='t_c')
+            t_s = gr.Slider(label="Self Attn Threshold", value=0.3, minimum=0.1, maximum=1.0, default=0.3, step=0.01, elem_id='t_s')
+            lr = gr.Slider(label="Learning Rate", value=1e-2, minimum=1e-4, maximum=1e1, default=1e-2, step=1e-4, elem_id='lr')
             tokens = gr.Textbox(label="Target Tokens", value="", default="", elem_id='target_tokens')
 
         params = [active, max_step, max_round, t_c, t_s, lr, tokens]
@@ -249,17 +249,19 @@ class InitnoScript(UIWrapper):
                 #max_scores = max_scores[:, target_tokens]
 
                 # # if scores are below a certain threshold they're probably never going to get better so we remove them
-                logger.debug("CrossAttn: Max scores: %s", max_scores)
-                max_scores = max_scores[max_scores > 0.01]
+                # logger.debug("CrossAttn: Max scores: %s", max_scores)
+                #max_score_value = torch.sum(1 - max_scores)/len(max_scores)
+                filtered_max_scores = max_scores[max_scores > 0.1]
 
-                if max_scores.size(0) == 0:
-                    return 1.0
+                if filtered_max_scores.size(0) == 0:
+                    return 1.0 - torch.min(max_scores)
                 
                 # zip the max scores and target tokens
                 #debug_max_scores = list(zip(max_scores, target_tokens))
 
-                scores = [torch.max(crossattn_maps[:, :, i]) for i in range(crossattn_maps.size(-1))]
-                return 1.0 - torch.min(max_scores)
+                max_score_value = 1.0 - torch.min(filtered_max_scores)
+                # scores = [torch.max(crossattn_maps[:, :, i]) for i in range(crossattn_maps.size(-1))]
+                return max_score_value
 
             def self_attention_loss(As, Ac):
                 """ 
@@ -347,7 +349,7 @@ class InitnoScript(UIWrapper):
                 selfattn_maps = selfattn_maps.reshape(b*n, h, w)
                 selfattn_maps = smooth_attn_map(selfattn_maps)
                 selfattn_maps = selfattn_maps.reshape(b, n, h, w)
-                selfattn_maps = selfattn_maps.mean(dim=1) # b h w
+                selfattn_maps = selfattn_maps.mean(dim=1) # b h w00
                 return selfattn_maps.to(shared.device)
 
             def prepare_attn_maps(attn_maps, Y):
@@ -398,6 +400,8 @@ class InitnoScript(UIWrapper):
                 for round in range(max_round):
                     logger.debug("Initno: Round %d", round)
 
+                    rng.manual_seed(np.random.randint(0, 1000))
+                    #torch.manual_seed(np.random.randint(0, 1000))
                     x = params.x.detach().clone() # assuming x[0] is positive and x[1] is neg
 
                     n, c, h, w = x.shape
@@ -523,7 +527,7 @@ def get_attention_scores(to_q_map, to_k_map, dtype):
 
         channel_dims = to_q_map.size(-1)
         attn_probs = to_q_map @ to_k_map.transpose(-1, -2)
-        #attn_probs /= channel_dims ** 0.5
+        attn_probs /= channel_dims ** 0.5
         ## attn_probs /= to_q_map.size(-1) ** 0.5
         attn_probs = attn_probs.softmax(dim=-1).to(device=shared.device, dtype=dtype)
 
