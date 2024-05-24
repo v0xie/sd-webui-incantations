@@ -23,6 +23,9 @@ module_field_map = {
 }
 
 
+SUBMODULES = ['to_q', 'to_k', 'to_v']
+
+
 class SaveAttentionMapsScript(UIWrapper):
     def __init__(self):
         self.infotext_fields: list = []
@@ -195,6 +198,12 @@ class SaveAttentionMapsScript(UIWrapper):
                 else:
                     module.savemaps_batch = torch.cat([module.savemaps_batch, attn_map], dim=0)
 
+        def savemaps_to_q_hook(module, input, kwargs, output):
+                setattr(module.savemaps_parent_module[0], 'savemaps_to_q_map', output)
+
+        def savemaps_to_k_hook(module, input, kwargs, output):
+                setattr(module.savemaps_parent_module[0],'savemaps_to_k_map', output)
+
         def savemaps_to_v_hook(module, input, kwargs, output):
                 module.savemaps_parent_module[0].savemaps_to_v_map = output
 
@@ -203,18 +212,31 @@ class SaveAttentionMapsScript(UIWrapper):
             for key_name, default_value in value_map.items():
                 module_hooks.modules_add_field(module, key_name, default_value)
             module_hooks.module_add_forward_hook(module, savemaps_hook, 'forward', with_kwargs=True)
-            if hasattr(module, 'to_v'):
-                module_hooks.modules_add_field(module.to_v, 'savemaps_parent_module', [module])
-                module_hooks.module_add_forward_hook(module.to_v, savemaps_to_v_hook, 'forward', with_kwargs=True)
+
+            for module_name in SUBMODULES:
+                if not hasattr(module, module_name):
+                    logger.error(f"Submodule not found: {module_name} in module: {module.network_layer_name}")
+                    continue
+                submodule = getattr(module, module_name)
+                hook_fn_name = f'savemaps_{module_name}_hook'
+                hook_fn = locals().get(hook_fn_name, None)
+                if not hook_fn:
+                    logger.error(f"Hook function '{hook_fn_name}' not found for submodule: {module_name}")
+                    continue
+
+                module_hooks.modules_add_field(submodule, 'savemaps_parent_module', [module])
+                module_hooks.module_add_forward_hook(submodule, hook_fn, 'forward', with_kwargs=True)
     
     def unhook_modules(self, module_list: list, value_map: dict):
         for module in module_list:
             for key_name, _ in value_map.items():
                 module_hooks.modules_remove_field(module, key_name)
             module_hooks.remove_module_forward_hook(module, 'savemaps_hook')
-            if hasattr(module, 'to_v'):
-                module_hooks.modules_remove_field(module.to_v, 'savemaps_parent_module')    
-                module_hooks.remove_module_forward_hook(module.to_v, 'savemaps_to_v_hook')
+            for module_name in SUBMODULES:
+                if hasattr(module, module_name):
+                    submodule = getattr(module, module_name)
+                    module_hooks.modules_remove_field(submodule, 'savemaps_parent_module')    
+                    module_hooks.remove_module_forward_hook(submodule, f'savemaps_{module_name}_hook')
 
     def print_modules(self, module_name_filter, class_name_filter):
             logger.info("Module name filter: '%s', Class name filter: '%s'", module_name_filter, class_name_filter)
@@ -234,3 +256,25 @@ class SaveAttentionMapsScript(UIWrapper):
             logger.warning(f"No modules found with module name filter: {module_name_filter} and class name filter")
         return found_modules
 
+
+def get_attention_scores(to_q_map, to_k_map, dtype):
+        """ Calculate the attention scores for the given query and key maps
+        Arguments:
+                to_q_map: torch.Tensor - query map
+                to_k_map: torch.Tensor - key map
+                dtype: torch.dtype - data type of the tensor
+        Returns:
+                torch.Tensor - attention scores 
+        """
+        # based on diffusers models/attention.py "get_attention_scores"
+        # use in place operations vs. softmax to save memory: https://stackoverflow.com/questions/53732209/torch-in-place-operations-to-save-memory-softmax
+        # 512x: 2.65G -> 2.47G
+
+        attn_probs = to_q_map @ to_k_map.transpose(-1, -2)
+
+        # avoid nan by converting to float32 and subtracting max 
+        attn_probs = attn_probs.to(dtype=torch.float32) #
+        attn_probs = attn_probs.softmax(dim=-1).to(device=shared.device, dtype=to_q_map.dtype)
+        attn_probs = attn_probs.to(dtype=dtype)
+
+        return attn_probs
