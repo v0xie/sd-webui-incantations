@@ -56,6 +56,7 @@ class SaveAttentionMapsScript(UIWrapper):
     def before_process_batch(self, p: StableDiffusionProcessing, active, module_name_filter, class_name_filter, save_every_n_step, *args, **kwargs):
         # Always unhook the modules first
         module_list = self.get_modules_by_filter(module_name_filter, class_name_filter)
+        script_callbacks.remove_current_script_callbacks()
         self.unhook_modules(module_list, copy.deepcopy(module_field_map))
 
         setattr(p, 'savemaps_module_list', module_list)
@@ -66,6 +67,7 @@ class SaveAttentionMapsScript(UIWrapper):
         token_count, _= prompt_utils.get_token_count(p.prompt, p.steps, True)
 
         setattr(p, 'savemaps_token_count', token_count)
+        setattr(p, 'savemaps_step', 0)
 
         # Tokenize/decode the prompts
         tokenized_prompts = []
@@ -95,26 +97,29 @@ class SaveAttentionMapsScript(UIWrapper):
         
         save_steps = []
         min_step = max(save_every_n_step, 0) 
-        max_step = max(p.steps+1, 0)
         if save_every_n_step > 0:
-            save_steps = list(range(min_step, max_step, save_every_n_step))
+            save_steps = list(range(min_step, p.steps, save_every_n_step))
         else:
-            save_steps = [p.steps]
+            save_steps = [p.steps-1]
 
         # Create fields in module
         value_map = copy.deepcopy(module_field_map)
-        value_map['savemaps_save_steps'] = torch.tensor(save_steps).to(device=shared.device, dtype=torch.int32)
-        value_map['savemaps_step'] = torch.tensor([0]).to(device=shared.device, dtype=torch.int32)
+        value_map['savemaps_save_steps'] = save_steps
+        value_map['savemaps_step'] = 0
         #value_map['savemaps_shape'] = torch.tensor(latent_shape).to(device=shared.device, dtype=torch.int32)
         self.hook_modules(module_list, value_map)
         self.create_save_hook(module_list)
 
-        def on_cfg_denoised(params: script_callbacks.CFGDenoisedParams):
-            step = torch.tensor([params.sampling_step]).to(device=shared.device, dtype=torch.int32)
+        def on_cfg_denoiser(params: script_callbacks.CFGDenoiserParams):
+            """ Sets the step for all modules
+                the webui reports an incorrect step so we just count it ourselves
+            """
             for module in module_list:
-                module.savemaps_step = step
+                module.savemaps_step = p.savemaps_step
+            logger.debug('Setting step to %d for %d modules', p.savemaps_step, len(module_list))
+            p.savemaps_step += 1
         
-        script_callbacks.on_cfg_denoised(on_cfg_denoised)
+        script_callbacks.on_cfg_denoiser(on_cfg_denoiser)
 
 
     def process(self, p, *args, **kwargs):
@@ -183,8 +188,8 @@ class SaveAttentionMapsScript(UIWrapper):
                         save_path = os.path.join(save_image_path, out_file_name)
 
                         plot_title = f"{module.network_layer_name}\n"\
-                            f"{token_idx}: ({token_id}, '{word}')\n"\
-                            f"Step {savestep_num}"
+                            f"Step {savestep_num}, "\
+                            f"({token_idx}, {token_id}, '{word}')\n"\
 
                         plot_tools.plot_attention_map(
                             attention_map = attn_map,
@@ -271,8 +276,6 @@ class SaveAttentionMapsScript(UIWrapper):
                 module_hooks.module_add_forward_hook(submodule, hook_fn, 'forward', with_kwargs=True)
     
     def unhook_modules(self, module_list: list, value_map: dict):
-        script_callbacks.remove_current_script_callbacks()
-
         for module in module_list:
             for key_name, _ in value_map.items():
                 module_hooks.modules_remove_field(module, key_name)
@@ -285,6 +288,7 @@ class SaveAttentionMapsScript(UIWrapper):
                     submodule = getattr(module, module_name)
                     module_hooks.modules_remove_field(submodule, 'savemaps_parent_module')    
                     module_hooks.remove_module_forward_hook(submodule, f'savemaps_{module_name}_hook')
+
 
     def print_modules(self, module_name_filter, class_name_filter):
             logger.info("Module name filter: '%s', Class name filter: '%s'", module_name_filter, class_name_filter)
