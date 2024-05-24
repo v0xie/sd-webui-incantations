@@ -104,11 +104,14 @@ class SaveAttentionMapsScript(UIWrapper):
         latent_shape = [p.height // p.rng.shape[1], p.width // p.rng.shape[2]] # (height, width)
         
         save_steps = []
-        min_step = max(save_every_n_step, 0) 
+        min_step = max(save_every_n_step-1, 0) 
         if save_every_n_step > 0:
             save_steps = list(range(min_step, p.steps, save_every_n_step))
         else:
             save_steps = [p.steps-1]
+        # always save last step
+        if p.steps-1 not in save_steps:
+            save_steps.append(p.steps-1)
 
         # Create fields in module
         value_map = copy.deepcopy(module_field_map)
