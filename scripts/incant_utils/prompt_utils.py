@@ -12,8 +12,6 @@ def get_token_count(text, steps, is_positive: bool = True, return_tokens = False
         token_count: int - The total number of tokens in the prompt text
         max_length: int - The maximum length of the prompt text
     """
-
-
     try:
         text, _ = extra_networks.parse_prompt(text)
 
@@ -33,6 +31,7 @@ def get_token_count(text, steps, is_positive: bool = True, return_tokens = False
     prompts = [prompt_text for step, prompt_text in flat_prompts]
 
     token_count, max_length = max([sd_hijack.model_hijack.get_prompt_lengths(prompt) for prompt in prompts], key=lambda args: args[0])
+    return token_count, max_length
 
 
 def tokenize_prompt(text):
