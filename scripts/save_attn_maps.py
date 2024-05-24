@@ -66,6 +66,10 @@ class SaveAttentionMapsScript(UIWrapper):
         
         token_count, _= prompt_utils.get_token_count(p.prompt, p.steps, True)
 
+        if token_count <= 0:
+            logger.warning("No tokens found in prompt. Skipping saving attention maps.")
+            return
+
         setattr(p, 'savemaps_token_count', token_count)
         setattr(p, 'savemaps_step', 0)
 
