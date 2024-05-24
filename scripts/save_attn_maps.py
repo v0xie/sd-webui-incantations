@@ -69,6 +69,7 @@ class SaveAttentionMapsScript(UIWrapper):
         setattr(p, 'savemaps_token_count', token_count)
         setattr(p, 'savemaps_step', 0)
 
+        token_indices = []
         # Tokenize/decode the prompts
         tokenized_prompts = []
         batch_chunks, _ = prompt_utils.tokenize_prompt(p.prompt)
@@ -78,9 +79,16 @@ class SaveAttentionMapsScript(UIWrapper):
         for tp_prompt in tokenized_prompts:
             for tp in tp_prompt:
                 token_idx, token_id, word = tp
+                # jank
+                if token_id < 49406:
+                    token_indices.append(token_idx)
                 # sanitize tokenized prompts
                 tp[2] = re.escape(word)
+
+
         setattr(p, 'savemaps_tokenized_prompts', tokenized_prompts)
+        setattr(p, 'savemaps_token_indices', token_indices)
+
                 
         # Make sure the output folder exists
         outpath_samples = p.outpath_samples
@@ -164,8 +172,9 @@ class SaveAttentionMapsScript(UIWrapper):
             # crossattn: seq_len = # of tokens
             attn_map_num, batch_num, hw, seq_len = attn_maps.shape
 
-            max_token = min(token_count+1, seq_len)
-            token_indices = [x for x in range(1, max_token)]
+            # min_token = 1
+            # max_token = min(token_count+2, seq_len)
+            token_indices = p.savemaps_token_indices
 
             downscale_ratio = max_dims / hw
             downscale_h = round((hw * (p.height / p.width)) ** 0.5)
@@ -187,7 +196,7 @@ class SaveAttentionMapsScript(UIWrapper):
                 attn_maps = attn_maps.unsqueeze(2) # (attn_map num, batch_num, 1, hw, hw)
 
             else:
-                attn_maps = attn_maps[:, :, :, token_indices] # (attn_map num, batch_num, height * width)
+                # attn_maps = attn_maps[:, :, :, token_indices] # (attn_map num, batch_num, height * width, token_indices)
                 attn_maps = rearrange(attn_maps, 'n (m b) (h w) t -> n m b t h w', m = 2, h = downscale_h).mean(dim=1) # (attn_map num, batch_num, token_idx, height, width)
                 attn_map_num, batch_num, token_dim, h, w = attn_maps.shape
 
@@ -201,7 +210,8 @@ class SaveAttentionMapsScript(UIWrapper):
             attn_map_num, batch_num, token_num, height, width = attn_maps.shape
             for attn_map_idx in range(attn_map_num):
                 for batch_idx in range(batch_num):
-                    for token_idx in range(token_num):
+                    for token_idx in token_indices:
+                    #for token_idx in range(token_num):
 
                         token_idx, token_id, word = tokenized_prompts[batch_idx][token_idx]
 
@@ -256,12 +266,13 @@ class SaveAttentionMapsScript(UIWrapper):
 
             # we want to reweight the attention scores by removing influence of the first token
             orig_seq_len = to_k_map.shape[1]
-            token_count = module.savemaps_token_count
-            min_token = 0
-            max_token = min(token_count+1, orig_seq_len)
+            # token_count = module.savemaps_token_count
+            # min_token = 0
+            # max_token = min(token_count+1, orig_seq_len)
+            token_indices = module.savemaps_token_indices
 
             if not is_self and reweight_crossattn:
-                to_k_map = to_k_map[:, 1:max_token, :]
+                to_k_map = to_k_map[:, token_indices, :]
 
             attn_map = get_attention_scores(to_q_map, to_k_map, dtype=to_q_map.dtype)
             b, hw, seq_len = attn_map.shape
@@ -300,6 +311,7 @@ class SaveAttentionMapsScript(UIWrapper):
 
             module_hooks.module_add_forward_hook(module, savemaps_hook, 'forward', with_kwargs=True)
             module_hooks.modules_add_field(module, 'savemaps_token_count', p.savemaps_token_count)
+            module_hooks.modules_add_field(module, 'savemaps_token_indices', p.savemaps_token_indices)
 
             if module.network_layer_name.endswith('attn1'): # self attn
                 module_hooks.modules_add_field(module, 'savemaps_is_self', True)
