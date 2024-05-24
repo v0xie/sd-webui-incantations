@@ -191,9 +191,9 @@ class SaveAttentionMapsScript(UIWrapper):
             if is_self:
                 attn_maps = attn_maps.view(attn_map_num * batch_num, downscale_h, downscale_w, seq_len)
             
+            gaussian_blur = GaussianBlur(kernel_size=3, sigma=1)
             if blur_this:
                 # don't blur because we want the accurate maps
-                gaussian_blur = GaussianBlur(kernel_size=3, sigma=1)
                 attn_maps = attn_maps.permute(0, 3, 1, 2) # (ab, seq_len, height, width)
                 attn_maps = gaussian_blur(attn_maps)  # Applying Gaussian smoothing
                 attn_maps = attn_maps.permute(0, 2, 3, 1) # (ab, height, width, seq_len)
@@ -214,7 +214,59 @@ class SaveAttentionMapsScript(UIWrapper):
                 #attn_maps = torch.nn.functional.interpolate(attn_maps, scale_factor=scale_factor, mode='bilinear', align_corners=False) # (attn_map num, batch_num, token_idx, height*scale, width*scale)
                 #attn_maps = attn_maps.view(attn_map_num, batch_num, token_dim, attn_maps.size(-2), attn_maps.size(-1))
 
+            one_hot_dict_maps = []
+                    #for token_idx in token_indices:
+            indices_len = len(token_indices)
+
+            one_hot_map = attn_maps[:, :, token_indices] # (attn_map num, batch_num, token_idx, height, width)
+            one_hot_map = one_hot_map.max(dim=2, keepdim=True).values
+            # quantize
+            num_colors = len(token_indices)
+            min_val, max_val = one_hot_map.min(), one_hot_map.max()
+            step = (max_val - min_val) / (num_colors - 1)
+            one_hot_map = ((one_hot_map - min_val) / step).round() * step + min_val
+            # blur
+            n, b, c, h, w = one_hot_map.shape
+            one_hot_map = one_hot_map.view(n * b, c, h, w)
+            one_hot_map = gaussian_blur(one_hot_map) # (attn_map num, batch_num, token_idx, height, width)
+            one_hot_map = one_hot_map.view(n , b, c, h, w)
+
+            # write to dict
+            for attn_map_idx in range(attn_map_num):
+                for batch_idx in range(batch_num):
+                    one_hot_dict_maps.append(
+                        {
+                        'attn_map_idx': attn_map_idx,
+                        'batch_idx': batch_idx,
+                        'attnmap': one_hot_map[attn_map_idx, batch_idx],
+                    })
+            
+            #for attn_map_idx in range(attn_map_num):
+            #    for batch_idx in range(batch_num):
+            for ohm_dict in one_hot_dict_maps:
+                attn_map_idx = ohm_dict['attn_map_idx']
+                batch_idx = ohm_dict['batch_idx']
+                one_hot_map = ohm_dict['attnmap'].sum(dim=0)
+
+                fn_pad_zeroes = lambda num: f"{num:04}"
+                savestep_num = module.savemaps_save_steps[attn_map_idx] + 1
+                out_file_name = f'{module.network_layer_name}_step{savestep_num:04}_onehotmap_{attn_map_idx:04}_batch{batch_idx:04}.png'
+                save_path = os.path.join(save_image_path, out_file_name)
+
+                plot_title = f"{module.network_layer_name}\n"\
+                    f"Step {savestep_num}, "\
+
+                plot_tools.plot_attention_map(
+                    attention_map = one_hot_map,
+                    title = plot_title,
+                    save_path = save_path,
+                    plot_type = "plasma"
+                )
+                if shared.state.interrupted:
+                    return
+
             attn_map_num, batch_num, token_num, height, width = attn_maps.shape
+
             for attn_map_idx in range(attn_map_num):
                 for batch_idx in range(batch_num):
                     for token_idx in token_indices:
@@ -238,6 +290,8 @@ class SaveAttentionMapsScript(UIWrapper):
                             save_path = save_path,
                             plot_type = "default"
                         )
+                    if shared.state.interrupted:
+                        return 
 
         self.unhook_modules(module_list, copy.deepcopy(module_field_map))
     
