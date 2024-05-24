@@ -26,9 +26,7 @@ def plot_attention_map(attention_map: torch.Tensor, title, x_label="X", y_label=
                 ax.imshow(attention_map, cmap='viridis', interpolation='nearest')
         elif plot_type == 'num':
                 ax.imshow(attention_map, cmap='tab20c', interpolation='nearest')
-                #for x in range(attention_map.shape[0]):
-                #        for y in range(attention_map.shape[1]):
-                #                fig.text(x, y, f"{attention_map[x, y]:.2f}", ha="center", va="center")
+
                 elements = list(set(attention_map.flatten()))
                 labels = [f"{x}" for x in elements]
                 fig.legend(elements, labels, loc='lower left')
@@ -43,11 +41,3 @@ def plot_attention_map(attention_map: torch.Tensor, title, x_label="X", y_label=
                 plt.savefig(save_path)
         
         plt.close(fig)
-
-        # Show the plot
-        # plt.show()
-
-        # Convert the plot to PIL image
-        #image = Image.fromarray(np.uint8(fig.canvas.tostring_rgb()))
-
-        #return image
