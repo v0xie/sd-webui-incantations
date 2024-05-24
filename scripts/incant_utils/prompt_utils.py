@@ -46,7 +46,7 @@ def tokenize_prompt(text):
     if isinstance(text, str):
         prompts = [text]
 
-    clip = getattr(sd_hijack, 'clip', None)
+    clip = getattr(sd_hijack.model_hijack, 'clip', None)
     if clip is None:
         return None, None
     batch_chunks, token_count = clip.process_texts(prompts)
@@ -61,7 +61,7 @@ def decode_tokenized_prompt(tokens):
         a list of tuples containing the token index, token, and decoded token
     
     """
-    clip = getattr(sd_hijack, 'clip', None)
+    clip = getattr(sd_hijack.model_hijack, 'clip', None)
     if clip is None:
         return None
     decoded_prompt = [
