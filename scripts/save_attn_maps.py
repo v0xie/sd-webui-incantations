@@ -143,6 +143,8 @@ class SaveAttentionMapsScript(UIWrapper):
 
         save_image_path = os.path.join(p.outpath_samples, 'attention_maps')
 
+        blur_this = True 
+
         max_dims = p.height * p.width
         token_count = p.savemaps_token_count
 
@@ -151,30 +153,48 @@ class SaveAttentionMapsScript(UIWrapper):
                 logger.error(f"No attention maps found for module: {module.network_layer_name}")
                 continue
 
+            is_self = getattr(module, 'savemaps_is_self', False)
             attn_maps = module.savemaps_batch # (attn_map num, 2 * batch_num, height * width, sequence_len)
 
-            attn_map_num, batch_num, hw, tokens = attn_maps.shape
+            # selfattn: seq_len = hw
+            # crossattn: seq_len = # of tokens
+            attn_map_num, batch_num, hw, seq_len = attn_maps.shape
 
-            max_token = min(token_count+1, tokens)
+            max_token = min(token_count+1, seq_len)
             token_indices = [x for x in range(0, max_token)]
 
             downscale_ratio = max_dims / hw
             downscale_h = round((hw * (p.height / p.width)) ** 0.5)
             downscale_w = hw // downscale_h
 
-            # if take_mean_of_all_dims:
-            # attn_maps = attn_maps.mean(dim=-1) # (attn_map num, batch_num, height * width)
+            # if it is a self-attn map, we need to blur over the sequence length
+            if is_self:
+                attn_maps = attn_maps.view(attn_map_num * batch_num, downscale_h, downscale_w, seq_len)
+            
+            if blur_this:
+                # don't blur because we want the accurate maps
+                gaussian_blur = GaussianBlur(kernel_size=3, sigma=1)
+                attn_maps = attn_maps.permute(0, 3, 1, 2) # (ab, seq_len, height, width)
+                attn_maps = gaussian_blur(attn_maps)  # Applying Gaussian smoothing
+                attn_maps = attn_maps.permute(0, 2, 3, 1) # (ab, height, width, seq_len)
 
-            gaussian_blur = GaussianBlur(kernel_size=3, sigma=1)
-            attn_maps = attn_maps.permute(0, 3, 1, 2)
-            attn_maps = gaussian_blur(attn_maps)  # Applying Gaussian smoothing
-            attn_maps = attn_maps.permute(0, 2, 3, 1)
+            if is_self:
+                attn_maps = attn_maps.view(attn_map_num, 2, batch_num // 2, downscale_h * downscale_w, seq_len).mean(dim=1) # (attn_map num, batch_num, hw, hw)
+                attn_maps = attn_maps.unsqueeze(2) # (attn_map num, batch_num, 1, hw, hw)
 
-            attn_maps = attn_maps[:, :, :, token_indices] # (attn_map num, batch_num, height * width)
+            else:
+                attn_maps = attn_maps[:, :, :, token_indices] # (attn_map num, batch_num, height * width)
+                attn_maps = rearrange(attn_maps, 'n (m b) (h w) t -> n m b t h w', m = 2, h = downscale_h).mean(dim=1) # (attn_map num, batch_num, token_idx, height, width)
+                attn_map_num, batch_num, token_dim, h, w = attn_maps.shape
 
-            attn_maps = rearrange(attn_maps, 'n (m b) (h w) t -> n m b t h w', m = 2, h = downscale_h).mean(dim=1) # (attn_map num, batch_num, token_idx, height, width)
+                # resize to 256 min
+                #attn_maps = attn_maps.view(attn_map_num * batch_num, token_dim, h, w) # (attn_map num, batch_num, token_idx, height, width
+                ## resize to at least 256x256
+                #scale_factor = 256 / max(h, w)
+                #attn_maps = torch.nn.functional.interpolate(attn_maps, scale_factor=scale_factor, mode='bilinear', align_corners=False) # (attn_map num, batch_num, token_idx, height*scale, width*scale)
+                #attn_maps = attn_maps.view(attn_map_num, batch_num, token_dim, attn_maps.size(-2), attn_maps.size(-1))
+
             attn_map_num, batch_num, token_num, height, width = attn_maps.shape
-
             for attn_map_idx in range(attn_map_num):
                 for batch_idx in range(batch_num):
                     for token_idx in range(token_num):
@@ -223,11 +243,23 @@ class SaveAttentionMapsScript(UIWrapper):
 
             if not module.savemaps_step in module.savemaps_save_steps:
                 return
+            
+            is_self = getattr(module, 'savemaps_is_self', False)
 
             to_q_map = getattr(module, 'savemaps_to_q_map', None)
             to_k_map = to_q_map if module.savemaps_is_self else getattr(module, 'savemaps_to_k_map', None)
 
+            # we want to reweight the attention scores by removing influence of the first token
+            if not is_self:
+                #to_k_map -= to_k_map[:, 1, :]
+                to_k_map = to_k_map[:, 1:, :]
+
             attn_map = get_attention_scores(to_q_map, to_k_map, dtype=to_q_map.dtype)
+            b, hw, _ = attn_map.shape
+
+            if not is_self:
+                to_attn_zeros = torch.zeros([b, hw]).unsqueeze(-1).to(device=shared.device, dtype=attn_map.dtype) # (batch, h*w, 1)
+                attn_map = torch.cat([to_attn_zeros, attn_map], dim=-1) # re pad to original token dim size
 
             # multiply into text embeddings
             attn_map = attn_map.unsqueeze(0)

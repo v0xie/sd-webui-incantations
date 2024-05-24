@@ -9,8 +9,7 @@ def plot_attention_map(attention_map: torch.Tensor, title, x_label="X", y_label=
                         x_label: str (optional) - The x-axis label
                         y_label: str (optional) - The y-axis label
                         save_path: str (optional) - The path to save the plot
-                        plot_type: str (optional) - The type of plot to create. Default is 'default'. 
-                            Other option is 'num' which will plot the attention map with arbitrary colors.
+                        plot_type: str (optional) - The type of plot to create. Options: 'default', 'num', or any matplotlib colormap name. https://matplotlib.org/stable/gallery/color/colormap_reference.html
                 Returns:
                         None
         """
@@ -21,12 +20,17 @@ def plot_attention_map(attention_map: torch.Tensor, title, x_label="X", y_label=
         # Create figure and axis
         fig, ax = plt.subplots()
 
+        cmap_name = 'viridis'
+        match plot_type:
+                case 'default':
+                        cmap_name = 'viridis'
+                case 'num':
+                        cmap_name = 'tab20c'
+                case _:
+                        cmap_name = plot_type 
         # Plot the attention map
-        if plot_type=='default':
-                ax.imshow(attention_map, cmap='viridis', interpolation='nearest')
-        elif plot_type == 'num':
-                ax.imshow(attention_map, cmap='tab20c', interpolation='nearest')
-
+        ax.imshow(attention_map, cmap=cmap_name, interpolation='nearest')
+        if plot_type == 'num':
                 elements = list(set(attention_map.flatten()))
                 labels = [f"{x}" for x in elements]
                 fig.legend(elements, labels, loc='lower left')
