@@ -86,6 +86,64 @@ class TCGExtensionScript(UIWrapper):
 
     def get_xyz_axis_options(self) -> dict:
         return {}
+
+
+def min_distance_to_nearest_edge(verts, h, w):
+    """ Calculate the distances of the vertices from the nearest edge given the height and width of the image 
+    Arguments:
+        verts: torch.Tensor - The vertices of the attention map. Shape: (B, C, 2)
+        h: int - The height of the image
+        w: int - The width of the image
+    """
+    x_coords, y_coords = verts[:, :, 0], verts[:, :, 1] # coordinates
+    distances_to_edges = torch.stack([y_coords, h - y_coords, x_coords, w - x_coords], dim=-1) # (B, C, 4)
+    min_distances = torch.min(distances_to_edges, dim=-1).values # (B, C)
+    return min_distances
+
+
+def margin_force(attention_map, m, verts):
+    """ Margin force calculation
+    Arguments:
+        attention_map: torch.Tensor - The attention map to calculate the force. Shape: (B, H, W, C)
+        m: float - The margin force coefficient
+        verts: torch.Tensor - The vertices of the attention map. Shape: (B, C, 2)
+    Returns:
+        torch.Tensor - The direction of force for each vertex. Shape: (B, C, 2)
+    """
+    B, H, W, C = attention_map.shape
+    min_distances = min_distance_to_nearest_edge(verts, H, W) # (B, C)
+    force = -m / (min_distances ** 2)
+    return force
+
+def repulsive_force(attention_map, xi, pos_vertex, pos_target):
+    """ Repulsive force
+    Arguments:
+        attention_map: torch.Tensor - The attention map to calculate the force. Shape: (B, H, W, C)
+        xi: float - The global force coefficient
+        pos_vertex: torch.Tensor - The position of the vertex. Shape: (B, C, 2)
+        pos_target: torch.Tensor - The position of the target. Shape: (B, C, 2)
+    Returns:
+        torch.Tensor - The multi-target force. Shape: (B, C)
+    """
+    force = (-xi) ** 2
+    norm_pos = (pos_vertex - pos_target).norm(dim=-1)
+    return force / norm_pos
+
+
+def multi_target_force(attention_map, omega, xi, pos_vertex, pos_target):
+    """ Multi-target force calculation
+    Arguments:
+        attention_map: torch.Tensor - The attention map to calculate the force. Shape: (B, H, W, C)
+        omega: torch.tensor - Coefficients for balancing forces amongst j targets
+        xi: float - The global force coefficient
+        pos_vertex: torch.Tensor - The position of the vertex. Shape: (B, C, 2)
+        pos_target: torch.Tensor - The position of the target. Shape: (B, C, 2)
+    Returns:
+        torch.Tensor - The multi-target force. Shape: (B, C, 2)
+    """
+    force = -xi ** 2
+    pass
+
     
 
 def calculate_centroid(attention_map):
