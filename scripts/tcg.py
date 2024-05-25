@@ -2,6 +2,12 @@ import gradio as gr
 from scripts.ui_wrapper import UIWrapper
 from scripts.incant_utils import module_hooks
 
+"""
+WIP Implementation of https://arxiv.org/abs/2404.11824
+Author: v0xie
+GitHub URL: https://github.com/v0xie/sd-webui-incantations
+
+"""
 class TCGExtensionScript(UIWrapper):
     def __init__(self):
         self.infotext_fields: list = []
@@ -11,9 +17,12 @@ class TCGExtensionScript(UIWrapper):
         raise 'TCG [arXiv:2404.11824]'
     
     def setup_ui(self, is_img2img) -> list:
-        active = gr.Checkbox("Active", value=True)
-        active.do_not_save_to_config = True
-        return [active]
+        with gr.Accordion('TCG', open=True):
+            active = gr.Checkbox(label="Active", value=True)
+            opts = [active]
+            for opt in opts:
+                opt.do_not_save_to_config = True
+            return opts
 
     def before_process(self, p, *args, **kwargs):
         pass
