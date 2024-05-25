@@ -291,38 +291,8 @@ class SaveAttentionMapsScript(UIWrapper):
                 )
 
                 if shared.state.interrupted:
+                    self.unhook_modules(module_list, copy.deepcopy(module_field_map))
                     return 
-            
-            # #for attn_map_idx in range(attn_map_num):
-            # #    for batch_idx in range(batch_num):
-            # for ohm_dict in one_hot_dict_maps:
-            #     attn_map_idx = ohm_dict['attn_map_idx']
-            #     batch_idx = ohm_dict['batch_idx']
-            #     map_seq_num = ohm_dict['seq_num']
-            #     one_hot_map = ohm_dict['attnmap']
-
-            #     try:
-            #         savestep_num = module.savemaps_save_steps[attn_map_idx] + 1
-            #     except IndexError:
-            #         logger.error(f"IndexError: attn_map_idx: {attn_map_idx}, attn_map_num: {attn_map_num}, save_steps: {module.savemaps_save_steps}")
-            #         savestep_num = attn_map_idx
-
-            #     out_file_name = f'{map_seq_num:04}-{module.network_layer_name}_step{savestep_num:04}_onehotmap_{attn_map_idx:04}_batch{batch_idx:04}.png'
-            #     out_save_path = os.path.join(save_image_path, out_file_name)
-
-            #     plot_title = f"{module.network_layer_name}\n"\
-            #         f"Step {savestep_num}, "\
-
-            #     plot_tools.plot_attention_map(
-            #         attention_map = one_hot_map,
-            #         title = plot_title,
-            #         save_path = out_save_path,
-            #         plot_type = "plasma"
-            #     )
-            #     if shared.state.interrupted:
-            #         return
-
-
         self.unhook_modules(module_list, copy.deepcopy(module_field_map))
 
     def create_base_dict(self, plot_type:str, base_seq_num: int, network_layer_name: str, save_steps: list, attn_map_idx: int, batch_idx: int, attnmap: torch.Tensor, filename_info: str, plot_color: str):
