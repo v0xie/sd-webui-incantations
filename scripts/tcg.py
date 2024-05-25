@@ -2,6 +2,7 @@ import os, sys
 import logging
 import gradio as gr
 import torch
+import torch.nn.functional as F
 
 if __name__ == '__main__' and os.environ.get('INCANT_DEBUG', None):
     sys.path.append(f'{os.getcwd()}')
@@ -88,31 +89,46 @@ class TCGExtensionScript(UIWrapper):
         return {}
 
 
-def displacement_force(attention_map, verts, f_rep_strength, f_margin_strength):
+def displacement_force(attention_map, verts, target_pos, f_rep_strength, f_margin_strength):
     """ Given a set of vertices, calculate the displacement force given by the sum of margin force and repulsive force.
     Arguments:
         attention_map: torch.Tensor - The attention map to calculate the force. Shape: (B, H, W, C)
         verts: torch.Tensor - The vertices of the attention map. Shape: (B, C, 2)
+        target : torch.Tensor - The vertices of the targets. Shape: (2)
         f_rep_strength: float - The strength of the repulsive force
         f_margin_strength: float - The strength of the margin force
     """
     B, H, W, C = attention_map.shape
-    f_rep = repulsive_force(f_rep_strength, verts, calculate_centroid(attention_map))
+    f_rep = repulsive_force(f_rep_strength, verts, target_pos)
     f_margin = margin_force(f_margin_strength, H, W, verts)
     return f_rep + f_margin
 
 
 def min_distance_to_nearest_edge(verts, h, w):
-    """ Calculate the distances of the vertices from the nearest edge given the height and width of the image 
+    """ Calculate the distances and direction to the nearest edge bounded by (H, W) for each channel's vertices 
     Arguments:
-        verts: torch.Tensor - The vertices of the attention map. Shape: (B, C, 2)
+        verts: torch.Tensor - The vertices. Shape: (B, C, 2)
         h: int - The height of the image
         w: int - The width of the image
+    Returns:
+        torch.Tensor, torch.Tensor:
+          - The minimum distance of each vertex to the nearest edge. Shape: (B, C)
+          - The direction to the nearest edge. Shape: (B, C, 2)
     """
-    x_coords, y_coords = verts[:, :, 0], verts[:, :, 1] # coordinates
-    distances_to_edges = torch.stack([y_coords, h - y_coords, x_coords, w - x_coords], dim=-1) # (B, C, 4)
-    min_distances = torch.min(distances_to_edges, dim=-1).values # (B, C)
-    return min_distances
+    x = verts[..., 0]
+    y = verts[..., 1]
+    
+    # Calculate distances to the edges
+    distances = torch.stack([y, h - y, x, w - x], dim=-1)
+    
+    # Find the minimum distance and the corresponding edge
+    min_distances, min_indices = distances.min(dim=-1)
+    
+    # Map edge indices to direction vectors
+    directions = torch.tensor([[0, -1], [0, 1], [-1, 0], [1, 0]]).to(verts.device)
+    nearest_edge_dir = directions[min_indices]
+    
+    return min_distances, nearest_edge_dir
 
 
 def margin_force(strength, H, W, verts):
@@ -125,9 +141,10 @@ def margin_force(strength, H, W, verts):
     Returns:
         torch.Tensor - The force for each vertex. Shape: (B, C, 2)
     """
-    min_distances = min_distance_to_nearest_edge(verts, H, W) # (B, C)
+    min_distances, nearest_edge_dir = min_distance_to_nearest_edge(verts, H, W) # (B, C), (B, C, 2)
+    min_distances = min_distances.unsqueeze(-1) # (B, C, 1)
     force = -strength / (min_distances ** 2)
-    return force
+    return force * nearest_edge_dir
 
 
 def repulsive_force(strength, pos_vertex, pos_target):
@@ -161,7 +178,6 @@ def multi_target_force(attention_map, omega, xi, pos_vertex, pos_target):
     force = -xi ** 2
     pass
 
-    
 
 def calculate_centroid(attention_map):
     """ Calculate the centroid of the attention map 
@@ -214,6 +230,54 @@ def detect_conflict(attention_map, region, theta):
     return conflict
 
 
+### TODO: do this
+def translate_image(image, tx, ty):
+    """
+    Translate an image tensor by (tx, ty).
+
+    Parameters:
+    - image: The image tensor of shape (B, C, H, W)
+    - tx: The translation along the x-axis (B, C, 2)
+    - ty: The translation along the y-axis (B, C, 2)
+
+    Returns:
+    - Translated image tensor
+    """
+    B, C, H, W = image.size()
+
+    # Create an affine transformation matrix for translation
+    theta = torch.tensor([ [1, 0, 0], [0, 1, 0]], dtype=image.dtype, device=image.device)
+    theta = theta.unsqueeze(0).repeat(B, 1, 1)
+
+    # sgfdgfdfgsdfg
+    ...
+
+    # Create the grid
+    grid = F.affine_grid(theta, image.size(), align_corners=False)
+
+    # Apply the grid to the image using grid_sample
+    translated_image = F.grid_sample(image, grid, mode='bilinear', padding_mode='zeros', align_corners=False)
+
+    return translated_image
+
+
+def apply_displacements(attention_map, displacements):
+    """ Update the attention map based on the displacements.
+    The attention map is updated by displacing the attention values based on the displacements. 
+    - Areas that are displaced out of the attention map are discarded.
+    - Areas that are displaced into the attention map are initialized with zeros.
+    Arguments:
+        attention_map: torch.Tensor - The attention map to update. Shape: (B, H, W, C)
+        displacements: torch.Tensor - The displacements to apply. Shape: (B, C, 2)
+    """
+    B, H, W, C = attention_map.shape
+    attention_map = attention_map.permute(0, 3, 1, 2) # (B, H, W, C) -> (B, C, H, W)
+    # apply displacements
+    attention_map = translate_image(attention_map, displacements[..., 0], displacements[..., 1])
+
+    attention_map = attention_map.permute(0, 2, 3, 1) # (B, C, H, W) -> (B, H, W, C)
+    return attention_map
+
 
 def get_attention_scores(to_q_map, to_k_map, dtype):
         """ Calculate the attention scores for the given query and key maps
@@ -245,13 +309,16 @@ def get_attention_scores(to_q_map, to_k_map, dtype):
 
 
 if __name__ == '__main__':
-    # repulsive force
-    B, H, W, C = 1, 64, 64, 1
-    verts = torch.tensor([[[8, 8], [16, 48], [31, 31]]], dtype=torch.float16, device='cuda') # B C 2
+    B, H, W, C = 1, 64, 64, 3
+    verts = torch.tensor([[[1, 2], [16, 48], [31, 31]]], dtype=torch.float16, device='cuda') # B C 2
     target = torch.tensor([[[32, 32]]], dtype=torch.float16, device='cuda') # B 1 2
-    r_force = repulsive_force(1, verts, target)
+    attention_map = torch.ones(B, H, W, C).to('cuda') # B H W C
 
+    s_margin = 10.0
+    s_repl = 1.0
 
+    displ_force = displacement_force(attention_map, verts, target, s_repl, s_margin)
+    new_attention_map = apply_displacements(attention_map, displ_force)
 
 
     # conflict detection
