@@ -38,17 +38,18 @@ class SaveAttentionMapsScript(UIWrapper):
     
     def setup_ui(self, is_img2img) -> list:
         with gr.Accordion('Save Attention Maps', open = False):
-            active = gr.Checkbox(label = 'Active', default = False)
-            export_folder = gr.Textbox(label = 'Export Folder', value = 'attention_maps', info = 'Folder to save attention maps to as a subdirectory of the outputs.')
+            with gr.Row():
+                active = gr.Checkbox(label = 'Active', default = False)
+                map_types = gr.CheckboxGroup(
+                    label = 'Map Types',
+                    choices = ['One-Hot Map', 'Per-Token Maps'],
+                    value = ['One-Hot Map'],
+                    info = 'Select the type of attention maps to save.',
+                )
+            export_folder = gr.Textbox(visible=False, label = 'Export Folder', value = 'attention_maps', info = 'Folder to save attention maps to as a subdirectory of the outputs.')
             module_name_filter = gr.Textbox(label = 'Module Names', value = 'input_blocks_5_1_transformer_blocks_0_attn2', info = 'Module name to save attention maps for. If the substring is found in the module name, the attention maps will be saved for that module.')
             class_name_filter = gr.Textbox(label = 'Class Name Filter', value = 'CrossAttention', info = 'Filters eligible modules by the class name.')
             save_every_n_step = gr.Slider(label = 'Save Every N Step', value = 0, min = 0, max = 100, step = 1, info = 'Save attention maps every N steps. 0 to save last step.')
-            map_types = gr.CheckboxGroup(
-                label = 'Map Types',
-                choices = ['One-Hot Map', 'Per-Token Maps'],
-                value = ['One-Hot Map'],
-                info = 'Select the type of attention maps to save.',
-            )
             print_modules = gr.Button(value = 'Print Modules To Console')
             print_modules.click(self.print_modules, inputs=[module_name_filter, class_name_filter])
 
