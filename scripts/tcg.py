@@ -118,6 +118,28 @@ def calculate_centroid(attention_map):
     return centroids
 
 
+def detect_conflict(attention_map, region, theta):
+    """
+    Detect conflict in an attention map with respect to a designated region in PyTorch.
+    Parameters:
+    attention_map (torch.Tensor): Attention map of shape (B, H, W, K).
+    region (torch.Tensor): Binary mask of shape (B, H, W, 1) indicating the region of interest.
+    theta (float): Threshold value.
+    Returns:
+    torch.Tensor: Conflict detection result of shape (B, K), with values 0 or 1 indicating conflict between tokens and the region.
+    """
+    # Ensure region is the same shape as the spatial dimensions of attention_map
+    assert region.shape[1:] == attention_map.shape[1:3], "Region mask must match spatial dimensions of attention map"
+    # Calculate the mean attention within the region
+    region = region.unsqueeze(-1) # Add channel dimension: (B, H, W) -> (B, H, W, 1)
+    attention_in_region = attention_map * region # Element-wise multiplication
+    mean_attention_in_region = torch.sum(attention_in_region, dim=(1, 2)) / torch.sum(region, dim=(1, 2)) # Mean over (H, W)
+    # Compare with threshold theta
+    conflict = (mean_attention_in_region > theta).float() # Convert boolean to float (0 or 1)
+    return conflict
+
+
+
 def get_attention_scores(to_q_map, to_k_map, dtype):
         """ Calculate the attention scores for the given query and key maps
         Arguments:
@@ -148,6 +170,15 @@ def get_attention_scores(to_q_map, to_k_map, dtype):
 
 
 if __name__ == '__main__':
+    B, H, W, C = 1, 64, 64, 10
+    attention_map = torch.ones(B, H, W, C).to('cuda') # B H W C
+    region = torch.zeros((B, H, W), dtype=torch.float16, device='cuda') # B H W C
+    # set the left half of region to 1
+    region[:, :, :W//2] = 1
+    theta = 0.5 # Example threshold
+    conflict_detection = detect_conflict(attention_map, region, theta)
+    print(conflict_detection)
+
     # Create a simple attention map with known values
     attention_map = torch.zeros((2, 5, 5, 1))  # Shape (batch_size, height, width, channels)
     attention_map[0, 2, 2, 0] = 1  # Put all attention on the center
