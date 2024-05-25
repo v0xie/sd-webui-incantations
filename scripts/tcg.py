@@ -88,6 +88,20 @@ class TCGExtensionScript(UIWrapper):
         return {}
 
 
+def displacement_force(attention_map, verts, f_rep_strength, f_margin_strength):
+    """ Given a set of vertices, calculate the displacement force given by the sum of margin force and repulsive force.
+    Arguments:
+        attention_map: torch.Tensor - The attention map to calculate the force. Shape: (B, H, W, C)
+        verts: torch.Tensor - The vertices of the attention map. Shape: (B, C, 2)
+        f_rep_strength: float - The strength of the repulsive force
+        f_margin_strength: float - The strength of the margin force
+    """
+    B, H, W, C = attention_map.shape
+    f_rep = repulsive_force(f_rep_strength, verts, calculate_centroid(attention_map))
+    f_margin = margin_force(f_margin_strength, H, W, verts)
+    return f_rep + f_margin
+
+
 def min_distance_to_nearest_edge(verts, h, w):
     """ Calculate the distances of the vertices from the nearest edge given the height and width of the image 
     Arguments:
@@ -101,33 +115,36 @@ def min_distance_to_nearest_edge(verts, h, w):
     return min_distances
 
 
-def margin_force(attention_map, m, verts):
+def margin_force(strength, H, W, verts):
     """ Margin force calculation
     Arguments:
-        attention_map: torch.Tensor - The attention map to calculate the force. Shape: (B, H, W, C)
-        m: float - The margin force coefficient
+        strength: float - The margin force coefficient
+        H: float - The height of the image
+        W: float - The width of the image
         verts: torch.Tensor - The vertices of the attention map. Shape: (B, C, 2)
     Returns:
-        torch.Tensor - The direction of force for each vertex. Shape: (B, C, 2)
+        torch.Tensor - The force for each vertex. Shape: (B, C, 2)
     """
-    B, H, W, C = attention_map.shape
     min_distances = min_distance_to_nearest_edge(verts, H, W) # (B, C)
-    force = -m / (min_distances ** 2)
+    force = -strength / (min_distances ** 2)
     return force
 
-def repulsive_force(attention_map, xi, pos_vertex, pos_target):
-    """ Repulsive force
+
+def repulsive_force(strength, pos_vertex, pos_target):
+    """ Repulsive force repels the vertices in the direction away from the target 
     Arguments:
         attention_map: torch.Tensor - The attention map to calculate the force. Shape: (B, H, W, C)
-        xi: float - The global force coefficient
+        strength: float - The global force coefficient
         pos_vertex: torch.Tensor - The position of the vertex. Shape: (B, C, 2)
-        pos_target: torch.Tensor - The position of the target. Shape: (B, C, 2)
+        pos_target: torch.Tensor - The position of the target. Shape: (2)
     Returns:
-        torch.Tensor - The multi-target force. Shape: (B, C)
+        torch.Tensor - The force away from the target. Shape: (B, C, 2)
     """
-    force = (-xi) ** 2
-    norm_pos = (pos_vertex - pos_target).norm(dim=-1)
-    return force / norm_pos
+    d_pos = pos_vertex - pos_target # (B, C, 2)
+    d_pos_norm = d_pos.norm(dim=-1, keepdim=True) # normalize the direction
+    d_pos /= d_pos_norm
+    force = (-strength) ** 2 
+    return force * d_pos
 
 
 def multi_target_force(attention_map, omega, xi, pos_vertex, pos_target):
@@ -228,8 +245,16 @@ def get_attention_scores(to_q_map, to_k_map, dtype):
 
 
 if __name__ == '__main__':
-    # conflict detection
+    # repulsive force
     B, H, W, C = 1, 64, 64, 1
+    verts = torch.tensor([[[8, 8], [16, 48], [31, 31]]], dtype=torch.float16, device='cuda') # B C 2
+    target = torch.tensor([[[32, 32]]], dtype=torch.float16, device='cuda') # B 1 2
+    r_force = repulsive_force(1, verts, target)
+
+
+
+
+    # conflict detection
     attention_map = torch.ones(B, H, W, C).to('cuda') # B H W C
     region = torch.zeros((B, H, W), dtype=torch.float16, device='cuda') # B H W C
     # set the left half of region to 1
