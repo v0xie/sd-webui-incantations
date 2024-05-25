@@ -170,7 +170,8 @@ def get_attention_scores(to_q_map, to_k_map, dtype):
 
 
 if __name__ == '__main__':
-    B, H, W, C = 1, 64, 64, 10
+    # conflict detection
+    B, H, W, C = 1, 64, 64, 1
     attention_map = torch.ones(B, H, W, C).to('cuda') # B H W C
     region = torch.zeros((B, H, W), dtype=torch.float16, device='cuda') # B H W C
     # set the left half of region to 1
@@ -180,15 +181,14 @@ if __name__ == '__main__':
     print(conflict_detection)
 
     # Create a simple attention map with known values
-    attention_map = torch.zeros((2, 5, 5, 1))  # Shape (batch_size, height, width, channels)
-    attention_map[0, 2, 2, 0] = 1  # Put all attention on the center
-    attention_map[1, 2, 2, 0] = 1  # Put all attention on the center
+    attention_map = torch.zeros((B, H, W, C), device='cuda')  # Shape (batch_size, height, width, channels)
+    attention_map[0, H//2, W//2, 0] = 1.0  # Put all attention on the center
     
     # Calculate centroids
-    centroids = calculate_centroid(attention_map)
+    centroids = calculate_centroid(attention_map) # (B, C, 2)
     
     # Expected centroid is the center of the attention map (2, 2)
-    expected_centroid = torch.tensor([[[2.0], [2.0]]])
+    expected_centroid = torch.tensor([[[H/2, W/2]]], device='cuda')
     
     # Check if the calculated centroid matches the expected centroid
     assert torch.allclose(centroids, expected_centroid), f"Expected {expected_centroid}, but got {centroids}"
