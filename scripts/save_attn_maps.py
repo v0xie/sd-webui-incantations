@@ -207,32 +207,40 @@ class SaveAttentionMapsScript(UIWrapper):
                 attn_maps = rearrange(attn_maps, 'n (m b) (h w) t -> n m b t h w', m = 2, h = downscale_h).mean(dim=1) # (attn_map num, batch_num, token_idx, height, width)
                 attn_map_num, batch_num, token_dim, h, w = attn_maps.shape
 
-                # resize to 256 min
-                #attn_maps = attn_maps.view(attn_map_num * batch_num, token_dim, h, w) # (attn_map num, batch_num, token_idx, height, width
-                ## resize to at least 256x256
-                #scale_factor = 256 / max(h, w)
-                #attn_maps = torch.nn.functional.interpolate(attn_maps, scale_factor=scale_factor, mode='bilinear', align_corners=False) # (attn_map num, batch_num, token_idx, height*scale, width*scale)
-                #attn_maps = attn_maps.view(attn_map_num, batch_num, token_dim, attn_maps.size(-2), attn_maps.size(-1))
 
             one_hot_dict_maps = []
                     #for token_idx in token_indices:
             indices_len = len(token_indices)
 
             one_hot_map = attn_maps[:, :, token_indices] # (attn_map num, batch_num, token_idx, height, width)
-            one_hot_map = one_hot_map.max(dim=2, keepdim=True).values
-            # quantize
+            one_hot_map = one_hot_map.argmax(dim=2, keepdim=True)
+            one_hot_map = one_hot_map.to(dtype=torch.float16)
+
+
+            # blur
+            # quantize to stable number of colors s.t. 
             num_colors = len(token_indices)
+            #num_colors = max(len(token_indices), 20.0)
             min_val, max_val = one_hot_map.min(), one_hot_map.max()
             step = (max_val - min_val) / (num_colors - 1)
-            one_hot_map = ((one_hot_map - min_val) / step).round() * step + min_val
-            # blur
+            one_hot_map /= step
+
+            # resize to 256 min
             n, b, c, h, w = one_hot_map.shape
             one_hot_map = one_hot_map.view(n * b, c, h, w)
+            #attn_maps = attn_maps.view(attn_map_num * batch_num, token_dim, h, w) # (attn_map num, batch_num, token_idx, height, width
+            ## resize to at least 256x256
+            scale_factor = 256 / max(h, w)
+            one_hot_map = torch.nn.functional.interpolate(one_hot_map, scale_factor=scale_factor, mode='bilinear', align_corners=False) # (attn_map num, batch_num, token_idx, height*scale, width*scale)
+            #attn_maps = attn_maps.view(attn_map_num, batch_num, token_dim, attn_maps.size(-2), attn_maps.size(-1))
+
+            nb, c, h, w = one_hot_map.shape
             one_hot_map = gaussian_blur(one_hot_map) # (attn_map num, batch_num, token_idx, height, width)
-            one_hot_map = one_hot_map.view(n , b, c, h, w)
+            one_hot_map = one_hot_map.view(n, b, c, h, w)
+
 
             # write to dict
-            for attn_map_idx in range(attn_map_num):
+            for attn_map_idx in range(one_hot_map.shape[0]):
                 for batch_idx in range(batch_num):
                     one_hot_dict_maps.append(
                         {
@@ -249,7 +257,12 @@ class SaveAttentionMapsScript(UIWrapper):
                 one_hot_map = ohm_dict['attnmap'].sum(dim=0)
 
                 fn_pad_zeroes = lambda num: f"{num:04}"
-                savestep_num = module.savemaps_save_steps[attn_map_idx] + 1
+                try:
+                    savestep_num = module.savemaps_save_steps[attn_map_idx] + 1
+                except IndexError:
+                    logger.error(f"IndexError: attn_map_idx: {attn_map_idx}, attn_map_num: {attn_map_num}, save_steps: {module.savemaps_save_steps}")
+                    savestep_num = attn_map_idx
+
                 out_file_name = f'{module.network_layer_name}_step{savestep_num:04}_onehotmap_{attn_map_idx:04}_batch{batch_idx:04}.png'
                 save_path = os.path.join(save_image_path, out_file_name)
 
@@ -275,7 +288,11 @@ class SaveAttentionMapsScript(UIWrapper):
                         token_idx, token_id, word = tokenized_prompts[batch_idx][token_idx]
 
                         fn_pad_zeroes = lambda num: f"{num:04}"
-                        savestep_num = module.savemaps_save_steps[attn_map_idx] + 1
+                        try:
+                            savestep_num = module.savemaps_save_steps[attn_map_idx] + 1
+                        except:
+                            logger.error(f"IndexError: attn_map_idx: {attn_map_idx}, attn_map_num: {attn_map_num}, save_steps: {module.savemaps_save_steps}")
+                            savestep_num = attn_map_idx
                         attn_map = attn_maps[attn_map_idx, batch_idx, token_idx]
                         out_file_name = f'{module.network_layer_name}_token{token_idx:04}_step{savestep_num:04}_attnmap_{attn_map_idx:04}_batch{batch_idx:04}.png'
                         save_path = os.path.join(save_image_path, out_file_name)
@@ -288,7 +305,7 @@ class SaveAttentionMapsScript(UIWrapper):
                             attention_map = attn_map,
                             title = plot_title,
                             save_path = save_path,
-                            plot_type = "default"
+                            plot_type = "viridis"
                         )
                     if shared.state.interrupted:
                         return 
