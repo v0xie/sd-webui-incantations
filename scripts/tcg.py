@@ -91,38 +91,29 @@ class TCGExtensionScript(UIWrapper):
 def calculate_centroid(attention_map):
     """ Calculate the centroid of the attention map 
     Arguments:
-        attention_map: torch.Tensor - The attention map to calculate the centroid. Shape: (batch_size, height, width, channels)
+        attention_map: torch.Tensor - The attention map to calculate the centroid. Shape: (B, H, W, C)
     Returns:
-        torch.Tensor - The centroid of the attention map. Shape: (batch_size, 2, channels)
+        torch.Tensor - The centroid of the attention map. Shape: (B, C, 2)
     """
     
     # Get the height and width
-    batch_size, height, width, channels = attention_map.shape
-    
-    # Create a mesh grid of height and width coordinates
-    h_coords = torch.arange(height).unsqueeze(1).expand(height, width).to(attention_map.device)
-    w_coords = torch.arange(width).unsqueeze(0).expand(height, width).to(attention_map.device)
-    
-    # Flatten the coordinates to apply the sum
-    h_coords = h_coords.reshape(-1)
-    w_coords = w_coords.reshape(-1)
-    
-    # Flatten the attention_map for easier manipulation
-    attention_map_flat = attention_map.view(batch_size, -1, channels)
+    B, H, W, C = attention_map.shape
+
+    h_coords = torch.arange(H).view(1, H, 1, 1).to(attention_map.device)
+    w_coords = torch.arange(W).view(1, 1, W, 1).to(attention_map.device)
     
     # Sum of attention scores for each channel
-    attention_sum = attention_map_flat.sum(dim=1, keepdim=True) + 1e-10  # Add small value to avoid division by zero
+    attention_sum = torch.sum(attention_map, dim=(1, 2)) # shape: (B, C)
     
     # Weighted sum of the coordinates
-    h_weighted_sum = (h_coords.unsqueeze(0) * attention_map_flat).sum(dim=1)
-    w_weighted_sum = (w_coords.unsqueeze(0) * attention_map_flat).sum(dim=1)
+    h_weighted_sum = torch.sum(h_coords * attention_map, dim=(1,2)) # (B, C)
+    w_weighted_sum = torch.sum(w_coords * attention_map, dim=(1,2)) # (B, C)
     
     # Calculate the centroids
     centroid_h = h_weighted_sum / attention_sum
     centroid_w = w_weighted_sum / attention_sum
     
-    # Combine the centroids into a single tensor of shape (batch_size, 2, channels)
-    centroids = torch.stack([centroid_h, centroid_w], dim=1)
+    centroids = torch.stack([centroid_h, centroid_w], dim=-1) # (B, C, 2)
     
     return centroids
 
@@ -158,8 +149,9 @@ def get_attention_scores(to_q_map, to_k_map, dtype):
 
 if __name__ == '__main__':
     # Create a simple attention map with known values
-    attention_map = torch.zeros((1, 5, 5, 1))  # Shape (batch_size, height, width, channels)
+    attention_map = torch.zeros((2, 5, 5, 1))  # Shape (batch_size, height, width, channels)
     attention_map[0, 2, 2, 0] = 1  # Put all attention on the center
+    attention_map[1, 2, 2, 0] = 1  # Put all attention on the center
     
     # Calculate centroids
     centroids = calculate_centroid(attention_map)
@@ -169,4 +161,3 @@ if __name__ == '__main__':
     
     # Check if the calculated centroid matches the expected centroid
     assert torch.allclose(centroids, expected_centroid), f"Expected {expected_centroid}, but got {centroids}"
-    print("Sanity check passed!")    
