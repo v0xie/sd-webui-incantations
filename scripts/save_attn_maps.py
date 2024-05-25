@@ -9,6 +9,7 @@ from torchvision.transforms import GaussianBlur
 
 from einops import rearrange
 from modules import shared, script_callbacks
+from modules.images import get_next_sequence_number
 from modules.processing import StableDiffusionProcessing
 from scripts.ui_wrapper import UIWrapper, arg
 from scripts.incant_utils import module_hooks, plot_tools, prompt_utils
@@ -42,24 +43,31 @@ class SaveAttentionMapsScript(UIWrapper):
             module_name_filter = gr.Textbox(label = 'Module Names', value = 'input_blocks_5_1_transformer_blocks_0_attn2', info = 'Module name to save attention maps for. If the substring is found in the module name, the attention maps will be saved for that module.')
             class_name_filter = gr.Textbox(label = 'Class Name Filter', value = 'CrossAttention', info = 'Filters eligible modules by the class name.')
             save_every_n_step = gr.Slider(label = 'Save Every N Step', value = 0, min = 0, max = 100, step = 1, info = 'Save attention maps every N steps. 0 to save last step.')
+            map_types = gr.CheckboxGroup(
+                label = 'Map Types',
+                choices = ['One-Hot Map', 'Per-Token Maps'],
+                value = ['One-Hot Map'],
+                info = 'Select the type of attention maps to save.',
+            )
             print_modules = gr.Button(value = 'Print Modules To Console')
             print_modules.click(self.print_modules, inputs=[module_name_filter, class_name_filter])
-        active.do_not_save_to_config = True
-        export_folder.do_not_save_to_config = True
-        module_name_filter.do_not_save_to_config = True
-        class_name_filter.do_not_save_to_config = True
-        save_every_n_step.do_not_save_to_config = True
+
         self.infotext_fields = []
         self.paste_field_names = []
-        return [active, module_name_filter, class_name_filter, save_every_n_step]
+
+        opts = [active, module_name_filter, class_name_filter, save_every_n_step, map_types]
+        for opt in opts:
+            opt.do_not_save_to_config = True
+        return opts
     
-    def before_process_batch(self, p: StableDiffusionProcessing, active, module_name_filter, class_name_filter, save_every_n_step, *args, **kwargs):
+    def before_process_batch(self, p: StableDiffusionProcessing, active, module_name_filter, class_name_filter, save_every_n_step, map_types, *args, **kwargs):
         # Always unhook the modules first
         module_list = self.get_modules_by_filter(module_name_filter, class_name_filter)
         script_callbacks.remove_current_script_callbacks()
         self.unhook_modules(module_list, copy.deepcopy(module_field_map))
 
         setattr(p, 'savemaps_module_list', module_list)
+        setattr(p, 'savemaps_map_types', map_types)
 
         if not active:
             return
@@ -104,6 +112,10 @@ class SaveAttentionMapsScript(UIWrapper):
         if not os.path.exists(output_folder_path):
             logger.info(f"Creating directory: {output_folder_path}")
             os.makedirs(output_folder_path)
+        
+        # sequence number for saving
+        seq_num = get_next_sequence_number(output_folder_path, basename='')
+        setattr(p, 'savemaps_seq_num', seq_num)
 
         latent_shape = [p.height // p.rng.shape[1], p.width // p.rng.shape[2]] # (height, width)
         
@@ -140,22 +152,24 @@ class SaveAttentionMapsScript(UIWrapper):
     def process(self, p, *args, **kwargs):
         pass
 
-    def before_process(self, p: StableDiffusionProcessing, active, module_name_filter, class_name_filter, save_every_n_step, *args, **kwargs):
+    def before_process(self, p: StableDiffusionProcessing, active, module_name_filter, class_name_filter, save_every_n_step, map_types, *args, **kwargs):
         module_list = self.get_modules_by_filter(module_name_filter, class_name_filter)
         self.unhook_modules(module_list, copy.deepcopy(module_field_map))
 
     def process_batch(self, p, *args, **kwargs):
         pass
 
-    def postprocess_batch(self, p: StableDiffusionProcessing, active, module_name_filter, class_name_filter, save_every_n_step, *args, **kwargs):
+    def postprocess_batch(self, p: StableDiffusionProcessing, active, module_name_filter, class_name_filter, save_every_n_step, map_types, *args, **kwargs):
         module_list = self.get_modules_by_filter(module_name_filter, class_name_filter)
 
         if getattr(p, 'savemaps_token_count', None) is None:
             self.unhook_modules(module_list, copy.deepcopy(module_field_map))
             return
 
-        tokenized_prompts = getattr(p, 'savemaps_tokenized_prompts', None)
+        seq_num = getattr(p, 'savemaps_seq_num', None)
+        save_image_prefix = f'{seq_num:04}-'
 
+        tokenized_prompts = getattr(p, 'savemaps_tokenized_prompts', None)
         save_image_path = os.path.join(p.outpath_samples, 'attention_maps')
 
         blur_this = True 
@@ -163,107 +177,146 @@ class SaveAttentionMapsScript(UIWrapper):
 
         max_dims = p.height * p.width
         token_count = p.savemaps_token_count
+        map_types = p.savemaps_map_types
 
         for module in module_list:
             if not hasattr(module, 'savemaps_batch') or module.savemaps_batch is None:
                 logger.error(f"No attention maps found for module: {module.network_layer_name}")
                 continue
 
+            # self attn maps are kind of useless atm
             is_self = getattr(module, 'savemaps_is_self', False)
             if is_self and not plot_is_self:
                 continue
 
-            attn_maps = module.savemaps_batch # (attn_map num, 2 * batch_num, height * width, sequence_len)
-
             # selfattn: seq_len = hw
             # crossattn: seq_len = # of tokens
+            attn_maps = module.savemaps_batch # (attn_map num, 2 * batch_num, height * width, sequence_len)
             attn_map_num, batch_num, hw, seq_len = attn_maps.shape
 
-            # min_token = 1
-            # max_token = min(token_count+2, seq_len)
             token_indices = p.savemaps_token_indices
-
-            downscale_ratio = max_dims / hw
             downscale_h = round((hw * (p.height / p.width)) ** 0.5)
             downscale_w = hw // downscale_h
-
-            # if it is a self-attn map, we need to blur over the sequence length
-            if is_self:
-                attn_maps = attn_maps.view(attn_map_num * batch_num, downscale_h, downscale_w, seq_len)
-            
             gaussian_blur = GaussianBlur(kernel_size=3, sigma=1)
-            if blur_this:
-                # don't blur because we want the accurate maps
-                attn_maps = attn_maps.permute(0, 3, 1, 2) # (ab, seq_len, height, width)
-                attn_maps = gaussian_blur(attn_maps)  # Applying Gaussian smoothing
-                attn_maps = attn_maps.permute(0, 2, 3, 1) # (ab, height, width, seq_len)
 
+            # Blur maps
+            if is_self:
+                attn_maps = attn_maps.view(attn_map_num * batch_num, downscale_h, downscale_w, seq_len) # if self-attn, we need to blur over the sequence length
+            attn_maps = attn_maps.permute(0, 3, 1, 2) # (ab, seq_len, height, width)
+            attn_maps = gaussian_blur(attn_maps)  # Applying Gaussian smoothing
+            attn_maps = attn_maps.permute(0, 2, 3, 1) # (ab, height, width, seq_len)
             if is_self:
                 attn_maps = attn_maps.view(attn_map_num, 2, batch_num // 2, downscale_h * downscale_w, seq_len).mean(dim=1) # (attn_map num, batch_num, hw, hw)
                 attn_maps = attn_maps.unsqueeze(2) # (attn_map num, batch_num, 1, hw, hw)
-
             else:
-                # attn_maps = attn_maps[:, :, :, token_indices] # (attn_map num, batch_num, height * width, token_indices)
                 attn_maps = rearrange(attn_maps, 'n (m b) (h w) t -> n m b t h w', m = 2, h = downscale_h).mean(dim=1) # (attn_map num, batch_num, token_idx, height, width)
                 attn_map_num, batch_num, token_dim, h, w = attn_maps.shape
 
-
             one_hot_dict_maps = []
-                    #for token_idx in token_indices:
-            indices_len = len(token_indices)
+            per_token_dict_maps = []
 
-            one_hot_map = attn_maps[:, :, token_indices] # (attn_map num, batch_num, token_idx, height, width)
-            one_hot_map = one_hot_map.argmax(dim=2, keepdim=True)
-            one_hot_map = one_hot_map.to(dtype=torch.float16)
+            if 'Per-Token Maps' in map_types:
+                # write to dict
+                for attn_map_idx in range(attn_maps.shape[0]):
+                    for batch_idx in range(batch_num):
+                        for token_idx in token_indices:
+                            savestep_num = module.savemaps_save_steps[attn_map_idx] + 1
+                            try:
+                                savestep_num = module.savemaps_save_steps[attn_map_idx] + 1
+                            except:
+                                logger.error(f"IndexError: attn_map_idx: {attn_map_idx}, attn_map_num: {attn_map_num}, save_steps: {module.savemaps_save_steps}")
+                                savestep_num = attn_map_idx
 
+                            _, token_id, word = tokenized_prompts[batch_idx][token_idx]
+                            per_token_dict_maps.append(
+                                {
+                                'attn_map_idx': attn_map_idx,
+                                'savestep_num': savestep_num,
+                                'batch_idx': batch_idx,
+                                'seq_num': seq_num + batch_idx,
+                                'token_idx': token_idx,
+                                'token_id': token_id,
+                                'token_word': word,
+                                'attnmap': attn_maps[attn_map_idx, batch_idx, token_idx],
+                            })
 
-            # blur
-            # quantize to stable number of colors s.t. 
-            num_colors = len(token_indices)
-            #num_colors = max(len(token_indices), 20.0)
-            min_val, max_val = one_hot_map.min(), one_hot_map.max()
-            step = (max_val - min_val) / (num_colors - 1)
-            one_hot_map /= step
+            if 'One-Hot Map' in map_types:
+                one_hot_map = attn_maps[:, :, token_indices] # (attn_map num, batch_num, token_idx, height, width)
+                one_hot_map = one_hot_map.argmax(dim=2, keepdim=True)
+                one_hot_map = one_hot_map.to(dtype=torch.float16)
 
-            # resize to 256 min
-            n, b, c, h, w = one_hot_map.shape
-            one_hot_map = one_hot_map.view(n * b, c, h, w)
-            #attn_maps = attn_maps.view(attn_map_num * batch_num, token_dim, h, w) # (attn_map num, batch_num, token_idx, height, width
-            ## resize to at least 256x256
-            scale_factor = 256 / max(h, w)
-            one_hot_map = torch.nn.functional.interpolate(one_hot_map, scale_factor=scale_factor, mode='bilinear', align_corners=False) # (attn_map num, batch_num, token_idx, height*scale, width*scale)
-            #attn_maps = attn_maps.view(attn_map_num, batch_num, token_dim, attn_maps.size(-2), attn_maps.size(-1))
+                # blur
+                # quantize to stable number of colors s.t. 
+                num_colors = max(len(token_indices), 1)
+                min_val, max_val = one_hot_map.min(), one_hot_map.max()
+                step = 1 / num_colors
+                one_hot_map *= step
 
-            nb, c, h, w = one_hot_map.shape
-            one_hot_map = gaussian_blur(one_hot_map) # (attn_map num, batch_num, token_idx, height, width)
-            one_hot_map = one_hot_map.view(n, b, c, h, w)
+                # resize to 256 min
+                n, b, c, h, w = one_hot_map.shape
+                one_hot_map = one_hot_map.view(n * b, c, h, w)
+                scale_factor = 256 / max(h, w)
+                one_hot_map = torch.nn.functional.interpolate(one_hot_map, scale_factor=scale_factor, mode='bilinear', align_corners=False) # (attn_map num, batch_num, token_idx, height*scale, width*scale)
 
+                _, c, h, w = one_hot_map.shape
+                one_hot_map = gaussian_blur(one_hot_map) # (attn_map num, batch_num, token_idx, height, width)
+                one_hot_map = one_hot_map.view(n, b, c, h, w)
 
-            # write to dict
-            for attn_map_idx in range(one_hot_map.shape[0]):
-                for batch_idx in range(batch_num):
-                    one_hot_dict_maps.append(
-                        {
-                        'attn_map_idx': attn_map_idx,
-                        'batch_idx': batch_idx,
-                        'attnmap': one_hot_map[attn_map_idx, batch_idx],
-                    })
+                # write to dict
+                for attn_map_idx in range(one_hot_map.shape[0]):
+                    for batch_idx in range(batch_num):
+                        one_hot_dict_maps.append(
+                            {
+                            'attn_map_idx': attn_map_idx,
+                            'batch_idx': batch_idx,
+                            'seq_num': seq_num + batch_idx,
+                            'attnmap': one_hot_map[attn_map_idx, batch_idx],
+                        })
+
+            # Save maps from map dict
+            for md in per_token_dict_maps:
+                token_idx = md['token_idx']
+                seq_num = md['seq_num']
+                savestep_num = md['savestep_num']
+                attn_map_idx = md['attn_map_idx']
+                batch_idx = md['batch_idx']
+                token_idx = md['token_idx']
+                token_id = md['token_id']
+                word = md['token_word']
+                attn_map = md['attnmap']
+
+                out_file_name = f'{seq_num:04}-{module.network_layer_name}_token{token_idx:04}_step{savestep_num:04}_attnmap_{attn_map_idx:04}_batch{batch_idx:04}.png'
+                save_path = os.path.join(save_image_path, out_file_name)
+
+                plot_title = f"{module.network_layer_name}\n"\
+                    f"Step {savestep_num}, "\
+                    f"({token_idx}, {token_id}, '{word}')"\
+
+                plot_tools.plot_attention_map(
+                    attention_map = attn_map,
+                    title = plot_title,
+                    save_path = save_path,
+                    plot_type = "viridis"
+                )
+
+                if shared.state.interrupted:
+                    return 
             
             #for attn_map_idx in range(attn_map_num):
             #    for batch_idx in range(batch_num):
             for ohm_dict in one_hot_dict_maps:
                 attn_map_idx = ohm_dict['attn_map_idx']
                 batch_idx = ohm_dict['batch_idx']
+                map_seq_num = ohm_dict['seq_num']
                 one_hot_map = ohm_dict['attnmap'].sum(dim=0)
 
-                fn_pad_zeroes = lambda num: f"{num:04}"
                 try:
                     savestep_num = module.savemaps_save_steps[attn_map_idx] + 1
                 except IndexError:
                     logger.error(f"IndexError: attn_map_idx: {attn_map_idx}, attn_map_num: {attn_map_num}, save_steps: {module.savemaps_save_steps}")
                     savestep_num = attn_map_idx
 
-                out_file_name = f'{module.network_layer_name}_step{savestep_num:04}_onehotmap_{attn_map_idx:04}_batch{batch_idx:04}.png'
+                out_file_name = f'{map_seq_num:04}-{module.network_layer_name}_step{savestep_num:04}_onehotmap_{attn_map_idx:04}_batch{batch_idx:04}.png'
                 save_path = os.path.join(save_image_path, out_file_name)
 
                 plot_title = f"{module.network_layer_name}\n"\
@@ -278,37 +331,37 @@ class SaveAttentionMapsScript(UIWrapper):
                 if shared.state.interrupted:
                     return
 
-            attn_map_num, batch_num, token_num, height, width = attn_maps.shape
+            # attn_map_num, batch_num, token_num, height, width = attn_maps.shape
 
-            for attn_map_idx in range(attn_map_num):
-                for batch_idx in range(batch_num):
-                    for token_idx in token_indices:
-                    #for token_idx in range(token_num):
+            # for attn_map_idx in range(attn_map_num):
+            #     for batch_idx in range(batch_num):
+            #         for token_idx in token_indices:
+            #         #for token_idx in range(token_num):
 
-                        token_idx, token_id, word = tokenized_prompts[batch_idx][token_idx]
+            #             token_idx, token_id, word = tokenized_prompts[batch_idx][token_idx]
 
-                        fn_pad_zeroes = lambda num: f"{num:04}"
-                        try:
-                            savestep_num = module.savemaps_save_steps[attn_map_idx] + 1
-                        except:
-                            logger.error(f"IndexError: attn_map_idx: {attn_map_idx}, attn_map_num: {attn_map_num}, save_steps: {module.savemaps_save_steps}")
-                            savestep_num = attn_map_idx
-                        attn_map = attn_maps[attn_map_idx, batch_idx, token_idx]
-                        out_file_name = f'{module.network_layer_name}_token{token_idx:04}_step{savestep_num:04}_attnmap_{attn_map_idx:04}_batch{batch_idx:04}.png'
-                        save_path = os.path.join(save_image_path, out_file_name)
+            #             fn_pad_zeroes = lambda num: f"{num:04}"
+            #             try:
+            #                 savestep_num = module.savemaps_save_steps[attn_map_idx] + 1
+            #             except:
+            #                 logger.error(f"IndexError: attn_map_idx: {attn_map_idx}, attn_map_num: {attn_map_num}, save_steps: {module.savemaps_save_steps}")
+            #                 savestep_num = attn_map_idx
+            #             attn_map = attn_maps[attn_map_idx, batch_idx, token_idx]
+            #             out_file_name = f'{module.network_layer_name}_token{token_idx:04}_step{savestep_num:04}_attnmap_{attn_map_idx:04}_batch{batch_idx:04}.png'
+            #             save_path = os.path.join(save_image_path, out_file_name)
 
-                        plot_title = f"{module.network_layer_name}\n"\
-                            f"Step {savestep_num}, "\
-                            f"({token_idx}, {token_id}, '{word}')\n"\
+            #             plot_title = f"{module.network_layer_name}\n"\
+            #                 f"Step {savestep_num}, "\
+            #                 f"({token_idx}, {token_id}, '{word}')\n"\
 
-                        plot_tools.plot_attention_map(
-                            attention_map = attn_map,
-                            title = plot_title,
-                            save_path = save_path,
-                            plot_type = "viridis"
-                        )
-                    if shared.state.interrupted:
-                        return 
+            #             plot_tools.plot_attention_map(
+            #                 attention_map = attn_map,
+            #                 title = plot_title,
+            #                 save_path = save_path,
+            #                 plot_type = "viridis"
+            #             )
+            #         if shared.state.interrupted:
+            #             return 
 
         self.unhook_modules(module_list, copy.deepcopy(module_field_map))
     
