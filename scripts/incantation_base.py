@@ -9,6 +9,7 @@ from modules import script_callbacks
 from modules.processing import StableDiffusionProcessing
 from scripts.ui_wrapper import UIWrapper
 from scripts.incant import IncantExtensionScript
+from scripts.tcg import TCGExtensionScript 
 from scripts.t2i_zero import T2I0ExtensionScript
 from scripts.scfg import SCFGExtensionScript
 from scripts.pag import PAGExtensionScript
@@ -34,6 +35,7 @@ class SubmoduleInfo:
 
 # main scripts
 submodules: list[SubmoduleInfo] = [
+        SubmoduleInfo(module=TCGExtensionScript()),
         SubmoduleInfo(module=SCFGExtensionScript()),
         SubmoduleInfo(module=PAGExtensionScript()),
         SubmoduleInfo(module=T2I0ExtensionScript()),
