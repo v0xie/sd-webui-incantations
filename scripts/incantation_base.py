@@ -69,7 +69,7 @@ class IncantBaseExtensionScript(scripts.Script):
         def ui(self, is_img2img):
                 # setup UI
                 out = []
-                with gr.Accordion('Incantations', open=False):
+                with gr.Accordion('Incantations', open=True):
                         for idx, module_info in enumerate(submodules):
                                 module_info.module_idx = idx
                                 module = module_info.module
