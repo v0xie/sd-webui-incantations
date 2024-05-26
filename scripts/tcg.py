@@ -434,7 +434,7 @@ if __name__ == '__main__':
     # macro for saving to png
     _png = lambda attnmap, name, title: plot_tools.plot_attention_map(
         attnmap[0, :, :, 0],
-        save_path=os.path.join(tempdir, f'{name}.png'),
+        save_path=os.path.join(tempdir, f'{name:04}.png'),
         title=f'{title}',
     )
 
@@ -473,7 +473,11 @@ if __name__ == '__main__':
     _png(attention_map, 1, 'Attn Map Region + Centroid')
 
     # plot verts
-    attn_map_points = attention_map.detach().clone()
+    attn_map_points = torch.randn_like(attention_map)
+
+    # attn_centroid = calculate_centroid(attn_map_points) # (B, C, 2)
+
+    #attn_map_points = attention_map.detach().clone()
     for v in verts.squeeze(0):
         plot_point(attn_map_points, v, radius=1)
     _png(attn_map_points, 2, 'Points')
@@ -494,48 +498,57 @@ if __name__ == '__main__':
     #     _png(new_attention_map, img_idx+1, f'Move Initial [0, {ofs}]')
     #     img_idx += 1
 
-    s_margin = 1.0
-    s_repl = 1.0
+    s_margin = 0.2
+    s_repl = 0.2
 
     # simulate displacement forces on our points
     img_idx = 3
-    for i in range(3):
-        attn_map_points = torch.zeros_like(attention_map)
-        #attn_map_points = attention_map.detach().clone()
+    iters = 10
+    for i in range(iters):
+        # copy the map
+        attn_map_points = attn_map_points.detach().clone()
+        displ_force = displacement_force(attn_map_points, verts, centroid, s_repl, s_margin) # B C 2
+
+        # new map with displacements
+        displaced_map = apply_displacements(attn_map_points, displ_force)
+
+        # copy to put on top visualizations 
+        copied_map = displaced_map.detach().clone()
+
         for v in verts:
-            plot_point(attn_map_points, v.squeeze(0), radius=1)
-        displ_force = displacement_force(attention_map, verts, centroid, s_repl, s_margin) # B C 2
-        new_attention_map = apply_displacements(attention_map, displ_force)
+            plot_point(copied_map, v.squeeze(0), radius=1)
+        color_region(copied_map, region_yx, region_ab, color=1.0, mode='add')
+        plot_point(copied_map, centroid_points, radius=1, color=1)
 
-        color_region(attn_map_points, region_yx, region_ab, color=0.5, mode='add')
-        plot_point(attn_map_points, centroid_points, radius=1, color=1)
-
-        _png(new_attention_map, img_idx+i, f'Displacement Forces')
+        _png(copied_map, img_idx+i, f'Displacement Forces')
 
         new_vert_pos = verts + displ_force
         delta_vert_pos = new_vert_pos - verts
         verts += delta_vert_pos
+
+        # copy back to the original map
+        attn_map_points = displaced_map
         # verts = torch.tensor([vert_list], dtype=torch.float16, device='cuda') # B C 2
 
 
-    # conflict detection
-    attention_map = torch.ones(B, H, W, C).to('cuda') # B H W C
-    region = torch.zeros((B, H, W), dtype=torch.float16, device='cuda') # B H W C
-    # set the left half of region to 1
-    region[:, :, :W//2] = 1
-    theta = 0.5 # Example threshold
-    conflict_detection = detect_conflict(attention_map, region, theta)
-    print(conflict_detection)
+    # # conflict detection
+    # attention_map = torch.ones(B, H, W, C).to('cuda') # B H W C
+    # region = torch.zeros((B, H, W), dtype=torch.float16, device='cuda') # B H W C
+    # # set the left half of region to 1
+    # region[:, :, :W//2] = 1
+    # theta = 0.5 # Example threshold
+    # conflict_detection = detect_conflict(attention_map, region, theta)
+    # print(conflict_detection)
 
-    # Create a simple attention map with known values
-    attention_map = torch.zeros((B, H, W, C), device='cuda')  # Shape (batch_size, height, width, channels)
-    attention_map[0, H//2, W//2, 0] = 1.0  # Put all attention on the center
+    # # Create a simple attention map with known values
+    # attention_map = torch.zeros((B, H, W, C), device='cuda')  # Shape (batch_size, height, width, channels)
+    # attention_map[0, H//2, W//2, 0] = 1.0  # Put all attention on the center
     
-    # Calculate centroids
-    centroids = calculate_centroid(attention_map) # (B, C, 2)
+    # # Calculate centroids
+    # centroids = calculate_centroid(attention_map) # (B, C, 2)
     
-    # Expected centroid is the center of the attention map (2, 2)
-    expected_centroid = torch.tensor([[[H/2, W/2]]], device='cuda')
+    # # Expected centroid is the center of the attention map (2, 2)
+    # expected_centroid = torch.tensor([[[H/2, W/2]]], device='cuda')
     
-    # Check if the calculated centroid matches the expected centroid
-    assert torch.allclose(centroids, expected_centroid), f"Expected {expected_centroid}, but got {centroids}"
+    # # Check if the calculated centroid matches the expected centroid
+    # assert torch.allclose(centroids, expected_centroid), f"Expected {expected_centroid}, but got {centroids}"
