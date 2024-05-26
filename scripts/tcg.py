@@ -97,6 +97,8 @@ def displacement_force(attention_map, verts, target_pos, f_rep_strength, f_margi
         target : torch.Tensor - The vertices of the targets. Shape: (2)
         f_rep_strength: float - The strength of the repulsive force
         f_margin_strength: float - The strength of the margin force
+    Returns:
+        torch.Tensor - The displacement force for each vertex. Shape: (B, C, 2)
     """
     B, H, W, C = attention_map.shape
     f_rep = repulsive_force(f_rep_strength, verts, target_pos)
@@ -230,15 +232,14 @@ def detect_conflict(attention_map, region, theta):
     return conflict
 
 
-def translate_image_2d(image, tx, ty):
+def translate_image_2d(image, txy):
     """
     Translate an image tensor by (tx, ty).
     https://pytorch.org/docs/stable/generated/torch.nn.functional.grid_sample.html
 
     Parameters:
-    - image: The image tensor of shape (B, 1, H, W)
-    - tx: The translation along the x-axis (B, 2)
-    - ty: The translation along the y-axis (B, 2)
+    - image: The image tensor of shape (1, C, H, W)
+    - txy: The translation along y and x-axis (C, 2)
 
     Returns:
     - Translated image tensor
@@ -246,30 +247,40 @@ def translate_image_2d(image, tx, ty):
 
     #image = image.unsqueeze(dim=1)
 
-    B, C, H, W = image.size()
+    C, H, W = image.size()
 
+    # swap N and C
+    image = image.unsqueeze(dim=1).to(torch.float32)  # (C, 1, H, W)
+
+    # grid bounds, not doing this means losing information at the edges at low resolution
+    pos = 1 - 1e-6 # 
+    neg = -pos
     # Create an grid matrix for the translation
-    c_dim = torch.tensor([0], device=image.device, dtype=image.dtype)
-    h_dim = torch.linspace(-1, 1, H, device=image.device, dtype=image.dtype) # height dim from [-1 to 1]
-    w_dim = torch.linspace(-1, 1, W, device=image.device, dtype=image.dtype) # width dim to [-1 to 1]
+    h_dim = torch.linspace(neg, pos, H, device=image.device, dtype=image.dtype) # height dim from [-1 to 1]
+    w_dim = torch.linspace(neg, pos, W, device=image.device, dtype=image.dtype) # width dim to [-1 to 1]
 
-    c_dim = c_dim.view(C, 1, 1).repeat(1, H, W)
+    if C > 1:
+        c_dim = torch.linspace(-1, 1, C, device=image.device, dtype=image.dtype)
+    else:
+        c_dim = torch.tensor([0], device=image.device, dtype=image.dtype)
+
+    # c_dim = b_dim.view(C, 1, 1).repeat(1, H, W)
     h_dim = h_dim.view(1, H, 1).repeat(C, 1, W)
-    w_dim = w_dim.view(1, 1, W).repeat(1, H, 1)
+    w_dim = w_dim.view(1, 1, W).repeat(C, H, 1)
 
     # translate each dim by the displacements
-    h_dim = h_dim + ty.squeeze(0).view(C, 1, 1)
-    w_dim = w_dim + tx.squeeze(0).view(C, 1, 1)
+    # h_dim = h_dim + ty.squeeze(0).view(C, 1, 1)
+    # w_dim = w_dim + tx.squeeze(0).view(C, 1, 1)
 
     c_dim = c_dim.unsqueeze(-1)
     h_dim = h_dim.unsqueeze(-1)
     w_dim = w_dim.unsqueeze(-1)
 
     # Create 4D grid for 5D input
-    grid = torch.cat([h_dim, w_dim], dim=-1).repeat(1, 1, 1, 1) # (B, H, W, 2)
+    grid = torch.cat([w_dim, h_dim], dim=-1).repeat(1, 1, 1, 1) # (C, H, W, 2)
 
     # Apply the grid to the image using grid_sample
-    translated_image = F.grid_sample(image, grid, mode='nearest', padding_mode='zeros', align_corners=True)
+    translated_image = F.grid_sample(image, grid, mode='nearest', padding_mode='zeros', align_corners=False)
 
     return translated_image
 
@@ -337,12 +348,13 @@ def apply_displacements(attention_map, displacements):
     """
     B, H, W, C = attention_map.shape
     attention_map = attention_map.permute(0, 3, 1, 2) # (B, H, W, C) -> (B, C, H, W)
-
+    out_attn_map = attention_map.detach().clone()
+    for batch_idx in range(B):
     # apply displacements
-    attention_map = translate_image_2d(attention_map, displacements[..., 0], displacements[..., 1])
+        out_attn_map[batch_idx] = translate_image_2d(attention_map[batch_idx], displacements[batch_idx])
 #    attention_map = translate_image(attention_map, displacements[..., 0], displacements[..., 1])
 #
-    attention_map = attention_map.permute(0, 2, 3, 1) # (B, C, H, W) -> (B, H, W, C)
+    out_attn_map = out_attn_map.permute(0, 2, 3, 1) # (B, C, H, W) -> (B, H, W, C)
     return attention_map
 
 
