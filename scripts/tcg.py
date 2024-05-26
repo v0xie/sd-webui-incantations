@@ -234,6 +234,7 @@ def detect_conflict(attention_map, region, theta):
 def translate_image(image, tx, ty):
     """
     Translate an image tensor by (tx, ty).
+    https://pytorch.org/docs/stable/generated/torch.nn.functional.grid_sample.html
 
     Parameters:
     - image: The image tensor of shape (B, C, H, W)
@@ -243,22 +244,37 @@ def translate_image(image, tx, ty):
     Returns:
     - Translated image tensor
     """
+
+    #image = image.unsqueeze(dim=1)
+
     B, C, H, W = image.size()
 
-    # Create an affine transformation matrix for translation
-    theta = torch.tensor([ [1, 0, 0], [0, 1, 0]], dtype=image.dtype, device=image.device)
-    theta = theta.unsqueeze(0).repeat(B, 1, 1)
+    # Create an grid matrix for the translation
+    c_dim = torch.linspace(-1, 1, C, device=image.device, dtype=image.dtype) # channel dim from [-1 to 1]
+    h_dim = torch.linspace(-1, 1, H, device=image.device, dtype=image.dtype) # height dim from [-1 to 1]
+    w_dim = torch.linspace(-1, 1, W, device=image.device, dtype=image.dtype) # width dim to [-1 to 1]
 
-    # sgfdgfdfgsdfg
-    ...
+    c_dim = c_dim.view(C, 1, 1).repeat(1, H, W)
+    h_dim = h_dim.view(1, H, 1).repeat(C, 1, W)
+    w_dim = w_dim.view(1, 1, W).repeat(1, H, 1)
 
-    # Create the grid
-    grid = F.affine_grid(theta, image.size(), align_corners=False)
+    # translate each dim by the displacements
+    h_dim = h_dim + ty.squeeze(0).view(C, 1, 1)
+    w_dim = w_dim + tx.squeeze(0).view(C, 1, 1)
+
+    c_dim = c_dim.unsqueeze(-1)
+    h_dim = h_dim.unsqueeze(-1)
+    w_dim = w_dim.unsqueeze(-1)
+
+    # Create 4D grid for 5D input
+    grid = torch.cat([c_dim, h_dim, w_dim], dim=-1).unsqueeze(0).repeat(B, 1, 1, 1, 1) # (B, C, H, W, 3)
+
+    image = image.unsqueeze(dim=1) # (B, 1, C, H, W)
 
     # Apply the grid to the image using grid_sample
     translated_image = F.grid_sample(image, grid, mode='bilinear', padding_mode='zeros', align_corners=False)
 
-    return translated_image
+    return translated_image.squeeze(1)
 
 
 def apply_displacements(attention_map, displacements):
@@ -272,6 +288,7 @@ def apply_displacements(attention_map, displacements):
     """
     B, H, W, C = attention_map.shape
     attention_map = attention_map.permute(0, 3, 1, 2) # (B, H, W, C) -> (B, C, H, W)
+
     # apply displacements
     attention_map = translate_image(attention_map, displacements[..., 0], displacements[..., 1])
 
@@ -309,12 +326,12 @@ def get_attention_scores(to_q_map, to_k_map, dtype):
 
 
 if __name__ == '__main__':
-    B, H, W, C = 1, 64, 64, 3
-    verts = torch.tensor([[[1, 2], [16, 48], [31, 31]]], dtype=torch.float16, device='cuda') # B C 2
+    B, H, W, C = 2, 64, 64, 6
+    verts = torch.tensor([[[1, 2], [16, 48], [31, 31], [63, 63], [48, 12], [62,2]]], dtype=torch.float16, device='cuda') # B C 2
     target = torch.tensor([[[32, 32]]], dtype=torch.float16, device='cuda') # B 1 2
     attention_map = torch.ones(B, H, W, C).to('cuda') # B H W C
 
-    s_margin = 10.0
+    s_margin = 1.0
     s_repl = 1.0
 
     displ_force = displacement_force(attention_map, verts, target, s_repl, s_margin)
