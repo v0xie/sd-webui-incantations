@@ -265,19 +265,23 @@ def translate_image_2d(image, txy):
         c_dim = torch.tensor([0], device=image.device, dtype=image.dtype)
 
     # c_dim = b_dim.view(C, 1, 1).repeat(1, H, W)
-    h_dim = h_dim.view(1, H, 1).repeat(C, 1, W)
-    w_dim = w_dim.view(1, 1, W).repeat(C, H, 1)
+    h_dim = h_dim.view(1, H).repeat(C, 1)
+    w_dim = w_dim.view(1, W).repeat(C, 1)
 
     # translate each dim by the displacements
-    # h_dim = h_dim + ty.squeeze(0).view(C, 1, 1)
-    # w_dim = w_dim + tx.squeeze(0).view(C, 1, 1)
+    tx, ty = txy[..., 0], txy[..., 1]
+    h_dim = h_dim + tx.unsqueeze(-1)
+    w_dim = w_dim + ty.unsqueeze(-1)
 
-    c_dim = c_dim.unsqueeze(-1)
+    h_dim = h_dim.unsqueeze(dim=-1).repeat(1, 1, W) # (C, H, W)
+    w_dim = w_dim.unsqueeze(dim=1).repeat(1, H, 1) # (C, H, W)
+
+    #c_dim = c_dim.unsqueeze(-1)
     h_dim = h_dim.unsqueeze(-1)
     w_dim = w_dim.unsqueeze(-1)
 
     # Create 4D grid for 5D input
-    grid = torch.cat([w_dim, h_dim], dim=-1).repeat(1, 1, 1, 1) # (C, H, W, 2)
+    grid = torch.cat([w_dim, h_dim], dim=-1) # (C, H, W, 2)
 
     # Apply the grid to the image using grid_sample
     translated_image = F.grid_sample(image, grid, mode='nearest', padding_mode='zeros', align_corners=False)
