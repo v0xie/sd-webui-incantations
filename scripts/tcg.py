@@ -93,7 +93,7 @@ def displacement_force(attention_map, verts, target_pos, f_rep_strength, f_margi
     """ Given a set of vertices, calculate the displacement force given by the sum of margin force and repulsive force.
     Arguments:
         attention_map: torch.Tensor - The attention map to calculate the force. Shape: (B, H, W, C)
-        verts: torch.Tensor - The vertices of the attention map. Shape: (B, C, 2)
+        verts: torch.Tensor - The centroid vertices of the attention map. Shape: (B, C, 2)
         target : torch.Tensor - The vertices of the targets. Shape: (2)
         f_rep_strength: float - The strength of the repulsive force
         f_margin_strength: float - The strength of the margin force
@@ -160,7 +160,7 @@ def repulsive_force(strength, pos_vertex, pos_target):
         torch.Tensor - The force away from the target. Shape: (B, C, 2)
     """
     d_pos = pos_vertex - pos_target # (B, C, 2)
-    d_pos_norm = d_pos.norm(dim=-1, keepdim=True) # normalize the direction
+    d_pos_norm = d_pos.norm(dim=-1, keepdim=True) + torch.finfo(d_pos.dtype).eps # normalize the direction
     d_pos /= d_pos_norm
     force = (-strength) ** 2 
     return force * d_pos
@@ -400,7 +400,11 @@ def plot_point(image, point, radius=1, color=1.0):
         torch.Tensor - The image tensor with the point plotted
     """
     y, x = point
-    image[:, y - radius:y + radius + 1, x - radius:x + radius + 1, :] = color
+    y_min = (y- radius).to(torch.int32)
+    y_max = (y + radius + 1).to(torch.int32)
+    x_min = (x - radius).to(torch.int32)
+    x_max = (x + radius + 1).to(torch.int32)
+    image[:, y_min:y_max, x_min:x_max, :] = color
 
 
 def color_region(image, yx, ab, color=1.0, mode='set'):
@@ -440,9 +444,9 @@ if __name__ == '__main__':
 
     # plotted points as proxies for vertices
     vert_list = [
-        [3*H//4, W//2], # (lower middle)
-        [H//4, W//4],   # (upper left middle quadrant)
-        [H//2, W]       # (right middle)
+        #[3*H//4, W//2], # (lower middle)
+        [H//4+1, W//4+1],   # (upper left middle quadrant)
+        #[H//2, W]       # (right middle)
     ]
     target_position = [H//2, W//2]
     # upper left, lower right
@@ -455,49 +459,63 @@ if __name__ == '__main__':
     # initialize a map with all ones
     attention_map = torch.zeros((B, H, W, C)).to(device, dtype) # B H W C
 
-
-    # calculate centroid of region
-    centroid = calculate_centroid(attention_map) # (B, C, 2)
-    centroid = centroid.squeeze(0).squeeze(0).cpu().numpy().astype(int)
-
-    # color a middleish region
-    attention_map[:, :, W//4:3*W//4] = 0.5
-
-    # plot verts
-    for v in vert_list:
-        plot_point(attention_map, v, radius=1)
-
-    # color the target region and plot centroid last
+    # color the target region
     color_region(attention_map, region_yx, region_ab, color=0.5, mode='add')
-    plot_point(attention_map, centroid, radius=3, color=1)
 
     _png(attention_map, 0, 'Initial Attn Map')
 
+    # calculate centroid of region
+    centroid = calculate_centroid(attention_map) # (B, C, 2)
+    centroid_points = centroid.squeeze(0).squeeze(0)
+    #centroid_points = centroid.squeeze(0).squeeze(0).cpu().numpy().astype(int)
+    # plot region centroid
+    plot_point(attention_map, centroid_points, radius=1, color=1)
+    _png(attention_map, 1, 'Attn Map Region + Centroid')
+
+    # plot verts
+    attn_map_points = attention_map.detach().clone()
+    for v in verts.squeeze(0):
+        plot_point(attn_map_points, v, radius=1)
+    _png(attn_map_points, 2, 'Points')
+
     # apply a simple transformation
     # translate Y by -1, translate x by 0 
-    for i in range(3):
-        ofs = round(0.5 * (i+1), 2)
-        displacements = torch.tensor([ofs, 0], dtype=torch.float16, device='cuda').repeat(B, C, 1) # 2
-        new_attention_map = apply_displacements(attention_map, displacements)
-        _png(new_attention_map, img_idx+1, f'Move Initial [{ofs}, 0]')
-        img_idx += 1
+    # for i in range(3):
+    #     ofs = round(0.5 * (i+1), 2)
+    #     displacements = torch.tensor([ofs, 0], dtype=torch.float16, device='cuda').repeat(B, C, 1) # 2
+    #     new_attention_map = apply_displacements(attention_map, displacements)
+    #     _png(new_attention_map, img_idx+1, f'Move Initial [{ofs}, 0]')
+    #     img_idx += 1
 
-    for i in range(3):
-        ofs = round(0.5 * (i+1), 2)
-        displacements = torch.tensor([0, ofs], dtype=torch.float16, device='cuda').repeat(B, C, 1) # 2
-        new_attention_map = apply_displacements(attention_map, displacements)
-        _png(new_attention_map, img_idx+1, f'Move Initial [0, {ofs}]')
-        img_idx += 1
-
-    verts = torch.tensor([[[16, 16]]], dtype=torch.float16, device='cuda') # B C 2
-    #verts = torch.tensor([[[1, 2], [16, 48], [31, 31], [63, 63], [48, 12], [62,2]]], dtype=torch.float16, device='cuda') # B C 2
-    target = torch.tensor([[[32, 32]]], dtype=torch.float16, device='cuda') # B 1 2
+    # for i in range(3):
+    #     ofs = round(0.5 * (i+1), 2)
+    #     displacements = torch.tensor([0, ofs], dtype=torch.float16, device='cuda').repeat(B, C, 1) # 2
+    #     new_attention_map = apply_displacements(attention_map, displacements)
+    #     _png(new_attention_map, img_idx+1, f'Move Initial [0, {ofs}]')
+    #     img_idx += 1
 
     s_margin = 1.0
     s_repl = 1.0
 
-    displ_force = displacement_force(attention_map, verts, target, s_repl, s_margin)
-    new_attention_map = apply_displacements(attention_map, displ_force)
+    # simulate displacement forces on our points
+    img_idx = 3
+    for i in range(3):
+        attn_map_points = torch.zeros_like(attention_map)
+        #attn_map_points = attention_map.detach().clone()
+        for v in verts:
+            plot_point(attn_map_points, v.squeeze(0), radius=1)
+        displ_force = displacement_force(attention_map, verts, centroid, s_repl, s_margin) # B C 2
+        new_attention_map = apply_displacements(attention_map, displ_force)
+
+        color_region(attn_map_points, region_yx, region_ab, color=0.5, mode='add')
+        plot_point(attn_map_points, centroid_points, radius=1, color=1)
+
+        _png(new_attention_map, img_idx+i, f'Displacement Forces')
+
+        new_vert_pos = verts + displ_force
+        delta_vert_pos = new_vert_pos - verts
+        verts += delta_vert_pos
+        # verts = torch.tensor([vert_list], dtype=torch.float16, device='cuda') # B C 2
 
 
     # conflict detection
