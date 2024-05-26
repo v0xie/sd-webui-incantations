@@ -389,6 +389,38 @@ def get_attention_scores(to_q_map, to_k_map, dtype):
 
         return attn_probs
 
+def plot_point(image, point, radius=1, color=1.0):
+    """ Plot a point on an image tensor
+    Arguments:
+        image: torch.Tensor - The image tensor to plot the point on. Shape: (B, H, W, C)
+        point: tuple - The point to plot (y, x)
+        radius: int - The radius of the point
+        color: tuple - The color of the point
+    Returns:
+        torch.Tensor - The image tensor with the point plotted
+    """
+    y, x = point
+    image[:, y - radius:y + radius + 1, x - radius:x + radius + 1, :] = color
+
+
+def color_region(image, yx, ab, color=1.0, mode='set'):
+    """ Color in a region of an image tensor
+    Arguments:
+        image: torch.Tensor - The image tensor to plot the point on. Shape: (B, H, W, C)
+        yx: (int, int) - The y-coordinate and x-coordinate of the upper left corner of the region 
+        ab: (int, int) - The x-coordinate and y-coordinate of the lower right corner of the region
+        color: tuple - The color of the region
+        mode: str - The mode of coloring. 'set' to set the region to the color, 'add' to add the color to the region
+    Returns:
+        torch.Tensor - The image tensor with the point plotted
+    """
+    y, x = yx
+    a, b = ab
+    if mode == 'set':
+        image[:, y:a, x:b, :] = color
+    elif mode == 'add':
+        image[:, y:a, x:b, :] += color
+
 
 if __name__ == '__main__':
     tempdir = os.path.join(os.getcwd(), 'temp')
@@ -406,9 +438,39 @@ if __name__ == '__main__':
     dtype = torch.float16
     device = 'cuda'
 
+    # plotted points as proxies for vertices
+    vert_list = [
+        [3*H//4, W//2], # (lower middle)
+        [H//4, W//4],   # (upper left middle quadrant)
+        [H//2, W]       # (right middle)
+    ]
+    target_position = [H//2, W//2]
+    # upper left, lower right
+    verts = torch.tensor([vert_list], dtype=torch.float16, device='cuda') # B C 2
+
+    # region to represent the target region
+    region_yx = [H//8, W//8]
+    region_ab = [3*H//8, 3*W//8]
+
     # initialize a map with all ones
     attention_map = torch.zeros((B, H, W, C)).to(device, dtype) # B H W C
-    attention_map[:, :, W//4:3*W//4] = 1.0
+
+
+    # calculate centroid of region
+    centroid = calculate_centroid(attention_map) # (B, C, 2)
+    centroid = centroid.squeeze(0).squeeze(0).cpu().numpy().astype(int)
+
+    # color a middleish region
+    attention_map[:, :, W//4:3*W//4] = 0.5
+
+    # plot verts
+    for v in vert_list:
+        plot_point(attention_map, v, radius=1)
+
+    # color the target region and plot centroid last
+    color_region(attention_map, region_yx, region_ab, color=0.5, mode='add')
+    plot_point(attention_map, centroid, radius=3, color=1)
+
     _png(attention_map, 0, 'Initial Attn Map')
 
     # apply a simple transformation
