@@ -196,7 +196,7 @@ def calculate_centroid(attention_map):
     w_coords = torch.arange(W).view(1, 1, W, 1).to(attention_map.device)
     
     # Sum of attention scores for each channel
-    attention_sum = torch.sum(attention_map, dim=(1, 2)) # shape: (B, C)
+    attention_sum = torch.sum(attention_map, dim=(1, 2)) + torch.finfo(attention_map.dtype).eps # shape: (B, C)
     
     # Weighted sum of the coordinates
     h_weighted_sum = torch.sum(h_coords * attention_map, dim=(1,2)) # (B, C)
