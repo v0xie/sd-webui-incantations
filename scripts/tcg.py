@@ -8,7 +8,7 @@ if __name__ == '__main__' and os.environ.get('INCANT_DEBUG', None):
     sys.path.append(f'{os.getcwd()}')
     sys.path.append(f'{os.getcwd()}/extensions/sd-webui-incantations')
 from scripts.ui_wrapper import UIWrapper
-from scripts.incant_utils import module_hooks
+from scripts.incant_utils import module_hooks, plot_tools
 
 """
 WIP Implementation of https://arxiv.org/abs/2404.11824
@@ -230,6 +230,50 @@ def detect_conflict(attention_map, region, theta):
     return conflict
 
 
+def translate_image_2d(image, tx, ty):
+    """
+    Translate an image tensor by (tx, ty).
+    https://pytorch.org/docs/stable/generated/torch.nn.functional.grid_sample.html
+
+    Parameters:
+    - image: The image tensor of shape (B, 1, H, W)
+    - tx: The translation along the x-axis (B, 2)
+    - ty: The translation along the y-axis (B, 2)
+
+    Returns:
+    - Translated image tensor
+    """
+
+    #image = image.unsqueeze(dim=1)
+
+    B, C, H, W = image.size()
+
+    # Create an grid matrix for the translation
+    c_dim = torch.tensor([0], device=image.device, dtype=image.dtype)
+    h_dim = torch.linspace(-1, 1, H, device=image.device, dtype=image.dtype) # height dim from [-1 to 1]
+    w_dim = torch.linspace(-1, 1, W, device=image.device, dtype=image.dtype) # width dim to [-1 to 1]
+
+    c_dim = c_dim.view(C, 1, 1).repeat(1, H, W)
+    h_dim = h_dim.view(1, H, 1).repeat(C, 1, W)
+    w_dim = w_dim.view(1, 1, W).repeat(1, H, 1)
+
+    # translate each dim by the displacements
+    h_dim = h_dim + ty.squeeze(0).view(C, 1, 1)
+    w_dim = w_dim + tx.squeeze(0).view(C, 1, 1)
+
+    c_dim = c_dim.unsqueeze(-1)
+    h_dim = h_dim.unsqueeze(-1)
+    w_dim = w_dim.unsqueeze(-1)
+
+    # Create 4D grid for 5D input
+    grid = torch.cat([h_dim, w_dim], dim=-1).repeat(1, 1, 1, 1) # (B, H, W, 2)
+
+    # Apply the grid to the image using grid_sample
+    translated_image = F.grid_sample(image, grid, mode='nearest', padding_mode='zeros', align_corners=True)
+
+    return translated_image
+
+
 ### TODO: do this
 def translate_image(image, tx, ty):
     """
@@ -250,7 +294,10 @@ def translate_image(image, tx, ty):
     B, C, H, W = image.size()
 
     # Create an grid matrix for the translation
-    c_dim = torch.linspace(-1, 1, C, device=image.device, dtype=image.dtype) # channel dim from [-1 to 1]
+    if C > 1:
+        c_dim = torch.linspace(-1, 1, C, device=image.device, dtype=image.dtype) # channel dim from [-1 to 1]
+    else:
+        c_dim = torch.tensor([0], device=image.device, dtype=image.dtype)
     h_dim = torch.linspace(-1, 1, H, device=image.device, dtype=image.dtype) # height dim from [-1 to 1]
     w_dim = torch.linspace(-1, 1, W, device=image.device, dtype=image.dtype) # width dim to [-1 to 1]
 
@@ -272,7 +319,7 @@ def translate_image(image, tx, ty):
     image = image.unsqueeze(dim=1) # (B, 1, C, H, W)
 
     # Apply the grid to the image using grid_sample
-    translated_image = F.grid_sample(image, grid, mode='bilinear', padding_mode='zeros', align_corners=False)
+    translated_image = F.grid_sample(image, grid, mode='nearest', padding_mode='zeros', align_corners=True)
 
     return translated_image.squeeze(1)
 
@@ -285,13 +332,16 @@ def apply_displacements(attention_map, displacements):
     Arguments:
         attention_map: torch.Tensor - The attention map to update. Shape: (B, H, W, C)
         displacements: torch.Tensor - The displacements to apply. Shape: (B, C, 2)
+    Returns:
+        torch.Tensor - The updated attention map. Shape: (B, H, W, C)
     """
     B, H, W, C = attention_map.shape
     attention_map = attention_map.permute(0, 3, 1, 2) # (B, H, W, C) -> (B, C, H, W)
 
     # apply displacements
-    attention_map = translate_image(attention_map, displacements[..., 0], displacements[..., 1])
-
+    attention_map = translate_image_2d(attention_map, displacements[..., 0], displacements[..., 1])
+#    attention_map = translate_image(attention_map, displacements[..., 0], displacements[..., 1])
+#
     attention_map = attention_map.permute(0, 2, 3, 1) # (B, C, H, W) -> (B, H, W, C)
     return attention_map
 
@@ -326,10 +376,42 @@ def get_attention_scores(to_q_map, to_k_map, dtype):
 
 
 if __name__ == '__main__':
-    B, H, W, C = 2, 64, 64, 6
-    verts = torch.tensor([[[1, 2], [16, 48], [31, 31], [63, 63], [48, 12], [62,2]]], dtype=torch.float16, device='cuda') # B C 2
+    tempdir = os.path.join(os.getcwd(), 'temp')
+    os.makedirs(tempdir, exist_ok=True)
+
+    # macro for saving to png
+    _png = lambda attnmap, name, title: plot_tools.plot_attention_map(
+        attnmap[0, :, :, 0],
+        save_path=os.path.join(tempdir, f'{name}.png'),
+        title=f'{title}',
+    )
+
+    B, H, W, C = 1, 8, 8, 1
+    dtype = torch.float16
+    device = 'cuda'
+
+    # initialize a map with all ones
+    attention_map = torch.ones((B, H, W, C)).to(device, dtype) # B H W C
+
+    # color half of it with zeros
+    attention_map[:, :, :W//2] = 0
+
+    _png(attention_map, 0, 'Initial Attn Map')
+
+    displacements = torch.tensor([0.1, 0], dtype=torch.float16, device='cuda').repeat(B, C, 1) # 2
+    new_attention_map = apply_displacements(attention_map, displacements)
+
+    _png(new_attention_map, 1, 'Displaced Attn Map')
+
+    plot_tools.plot_attention_map(
+        new_attention_map[0, :, :, 0],
+        save_path = _png('1'),
+        title='Attention Map Displaced [0.5, 0.5]'
+    )
+
+    verts = torch.tensor([[[16, 16]]], dtype=torch.float16, device='cuda') # B C 2
+    #verts = torch.tensor([[[1, 2], [16, 48], [31, 31], [63, 63], [48, 12], [62,2]]], dtype=torch.float16, device='cuda') # B C 2
     target = torch.tensor([[[32, 32]]], dtype=torch.float16, device='cuda') # B 1 2
-    attention_map = torch.ones(B, H, W, C).to('cuda') # B H W C
 
     s_margin = 1.0
     s_repl = 1.0
