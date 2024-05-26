@@ -251,8 +251,11 @@ def translate_image_2d(image, tyx):
     image = image.transpose(0, 1)  # (C, B, H, W)
 
     # grid bounds, not doing this means losing information at the edges at low resolution
-    pos = 1 - 1e-6 # 
-    neg = -pos
+    # hack to prevent out of boudns when align_corners is false
+    # pos = 1 - 1e-3 # hack to prevent out of bounds
+    # neg = -pos
+    pos, neg = 1, -1
+
     # Create an grid matrix for the translation
     # (-1, -1) is left top pixel, (1, 1) is right bottom pixel
     h_dim = torch.linspace(neg, pos, H, device=image.device, dtype=image.dtype) # height dim from [-1 (top) to 1 (bottom)]
@@ -263,6 +266,8 @@ def translate_image_2d(image, tyx):
 
     # translate each dim by the displacements
     ty, tx = tyx[..., 0], tyx[..., 1] # C, C
+    ty *= -1 # invert y for some weird reason
+    tx *= -1 # invert x for some weird reason
     h_dim = h_dim + ty.view(C, 1, 1)
     w_dim = w_dim + tx.view(C, 1, 1)
 
@@ -277,7 +282,7 @@ def translate_image_2d(image, tyx):
     grid = torch.cat([h_dim, w_dim], dim=-1) # (C, H, W, 2)
 
     # Apply the grid to the image using grid_sample
-    translated_image = F.grid_sample(image, grid, mode='nearest', padding_mode='zeros', align_corners=False) # C N H W
+    translated_image = F.grid_sample(image, grid, mode='nearest', padding_mode='zeros', align_corners=True) # C N H W
 
     return translated_image.transpose(0, 1) # N C H W
 
@@ -388,6 +393,7 @@ def get_attention_scores(to_q_map, to_k_map, dtype):
 if __name__ == '__main__':
     tempdir = os.path.join(os.getcwd(), 'temp')
     os.makedirs(tempdir, exist_ok=True)
+    img_idx = 0
 
     # macro for saving to png
     _png = lambda attnmap, name, title: plot_tools.plot_attention_map(
@@ -402,7 +408,7 @@ if __name__ == '__main__':
 
     # initialize a map with all ones
     attention_map = torch.zeros((B, H, W, C)).to(device, dtype) # B H W C
-    attention_map[:, :, W//4:2*W//4] = 1.0
+    attention_map[:, :, W//4:3*W//4] = 1.0
     _png(attention_map, 0, 'Initial Attn Map')
 
     # apply a simple transformation
@@ -411,7 +417,15 @@ if __name__ == '__main__':
         ofs = round(0.5 * (i+1), 2)
         displacements = torch.tensor([ofs, 0], dtype=torch.float16, device='cuda').repeat(B, C, 1) # 2
         new_attention_map = apply_displacements(attention_map, displacements)
-        _png(new_attention_map, 1+i, f'Move Initial [{ofs}, 0]')
+        _png(new_attention_map, img_idx+1, f'Move Initial [{ofs}, 0]')
+        img_idx += 1
+
+    for i in range(3):
+        ofs = round(0.5 * (i+1), 2)
+        displacements = torch.tensor([0, ofs], dtype=torch.float16, device='cuda').repeat(B, C, 1) # 2
+        new_attention_map = apply_displacements(attention_map, displacements)
+        _png(new_attention_map, img_idx+1, f'Move Initial [0, {ofs}]')
+        img_idx += 1
 
     verts = torch.tensor([[[16, 16]]], dtype=torch.float16, device='cuda') # B C 2
     #verts = torch.tensor([[[1, 2], [16, 48], [31, 31], [63, 63], [48, 12], [62,2]]], dtype=torch.float16, device='cuda') # B C 2
