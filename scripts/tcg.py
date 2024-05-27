@@ -93,7 +93,11 @@ class TCGExtensionScript(UIWrapper):
         return {}
 
 
-def displacement_force(attention_map, verts, target_pos, f_rep_strength, f_margin_strength):
+
+debug_coord = lambda x: (round(x[0,0,0].item(),3), round(x[0,0,1].item(), 3))
+
+
+def displacement_force(attention_map, verts, target_pos, f_rep_strength, f_margin_strength, clamp=0):
     """ Given a set of vertices, calculate the displacement force given by the sum of margin force and repulsive force.
     Arguments:
         attention_map: torch.Tensor - The attention map to calculate the force. Shape: (B, H, W, C)
@@ -105,14 +109,16 @@ def displacement_force(attention_map, verts, target_pos, f_rep_strength, f_margi
         torch.Tensor - The displacement force for each vertex. Shape: (B, C, 2)
     """
     B, H, W, C = attention_map.shape
-    clamp_min = -1
-    clamp_max = 1
-    clamp = lambda x: torch.clamp(x, min=clamp_min, max=clamp_max)
+    f_clamp = lambda x: x
+    if clamp > 0:
+        clamp_min = -clamp
+        clamp_max = clamp
+        f_clamp = lambda x: torch.clamp(x, min=clamp_min, max=clamp_max)
 
-    f_rep = clamp(repulsive_force(f_rep_strength, verts, target_pos))
-    f_margin = clamp(margin_force(f_margin_strength, H, W, verts))
+    f_rep = f_clamp(repulsive_force(f_rep_strength, verts, target_pos))
+    f_margin = f_clamp(margin_force(f_margin_strength, H, W, verts))
 
-    logger.debug(f"Repulsive force: {f_rep}, Margin force: {f_margin}")
+    logger.debug(f"Repulsive force: {debug_coord(f_rep)}, Margin force: {debug_coord(f_margin)}")
     return f_rep + f_margin
 
 
@@ -204,38 +210,37 @@ def warping_force(attention_map, verts, displacements, h, w):
     """
     B, H, W, C = attention_map.shape
 
-    # rescale verts to -1 to 1
-    px_to_norm = torch.tensor([H, W], dtype=verts.dtype, device=verts.device)
+    # 
 
-    # verts = verts / px_to_norm * 2 - 1 # (B, C, 2)
-    # displacements = displacements / px_to_norm * 2 - 1
-
-    # relative to H and W
     old_centroids = verts # (B, C, 2)
     new_centroids = old_centroids + displacements # (B, C, 2)
 
-    #delta_centroids = new_centroids - old_centroids # (B, C, 2)
+    # check if new_centroids are out of bounds
+    min_bounds = torch.tensor([0, 0], dtype=torch.float32, device=attention_map.device)
+    max_bounds = torch.tensor([h-1, w-1], dtype=torch.float32, device=attention_map.device)
+    oob_new_centroids = torch.clamp(new_centroids, min_bounds, max_bounds)
 
-    # calculate scaling factors, which are the min of 1 or the calculated scaling factor
-    # is it w or h?
+    # diferenct between old and new centroids
+    correction = oob_new_centroids - new_centroids
+    new_centroids = new_centroids + correction
+
     s_y = (h - 1)/new_centroids[..., 0] # (B, C) 
     s_x = (w - 1)/new_centroids[..., 1] # (B, C) 
-    #s_y = 1/new_centroids[..., 0] # (B, C) 
-    #s_x = 1/new_centroids[..., 1] # (B, C)
     torch.clamp_max(s_y, 1.0, out=s_y)
     torch.clamp_max(s_x, 1.0, out=s_x)
 
     # displacements
-    delta_h = displacements[..., 0] - new_centroids[..., 0]# (B, C)
-    delta_w = displacements[..., 1] - new_centroids[..., 1] # (B, C)
+    o_new = old_centroids + displacements - new_centroids
+    delta_h = old_centroids + displacements[..., 0] - new_centroids[..., 0]# (B, C)
+    delta_w = old_centroids + displacements[..., 1] - new_centroids[..., 1] # (B, C)
 
     # construct affine transformation matrices (sx, 0, delta_x - o_new_x), (0, sy, delta_y - o_new_y)
     theta = torch.tensor([[1, 0, 0],[0, 1, 0]], dtype=torch.float32, device=attention_map.device)
     theta = theta.unsqueeze(0).repeat(C, 1, 1)
     theta[:, 0, 0] = s_x
     theta[:, 1, 1] = s_y
-    theta[:, 0, 2] = delta_h / h
-    theta[:, 1, 2] = delta_w / w
+    theta[:, 0, 2] = o_new[..., 1] / w # X
+    theta[:, 1, 2] = o_new[..., 0] / h # Y
 
     # apply the affine transformation
     grid = F.affine_grid(theta, [B, C, H, W], align_corners=True) # (C, H, W, 2)
@@ -262,7 +267,8 @@ def repulsive_force(strength, pos_vertex, pos_target):
         torch.Tensor - The force away from the target. Shape: (B, C, 2)
     """
     d_pos = pos_vertex - pos_target # (B, C, 2)
-    d_pos_norm = d_pos.norm(dim=-1, keepdim=True) + torch.finfo(d_pos.dtype).eps # normalize the direction
+    d_pos_norm = d_pos.norm() + torch.finfo(d_pos.dtype).eps # normalize the direction
+    #d_pos_norm = d_pos.norm(dim=-1, keepdim=True) + torch.finfo(d_pos.dtype).eps # normalize the direction
     d_pos = d_pos / d_pos_norm
     # d_pos /= d_pos_norm
     force = -(strength ** 2)
@@ -479,7 +485,7 @@ def apply_displacements(attention_map, verts, displacements):
     Arguments:
         attention_map: torch.Tensor - The attention map to update. Shape: (B, H, W, C)
         verts: torch.Tensor - The centroid vertices of the attention map. Shape: (B, C, 2)
-        displacements: torch.Tensor - The displacements to apply. Shape: (B, C, 2), where the last 2 dims are the translation by [Y, X]
+        displacements: torch.Tensor - The displacements to apply in pixel space. Shape: (B, C, 2), where the last 2 dims are the translation by [Y, X]
     Returns:
         torch.Tensor - The updated attention map. Shape: (B, H, W, C)
     """
@@ -636,9 +642,10 @@ if __name__ == '__main__':
 
     # strengths
     s_margin = 1.0
-    s_repl = 1.0
+    s_repl = 0.0
 
     # displacement forces 
+    d_zero = torch.tensor([[[0.0, 0]]], dtype=torch.float16, device='cuda') # B C 2
     d_down = torch.tensor([[[0.1, 0]]], dtype=torch.float16, device='cuda') # B C 2
 
     # simulate displacement forces on our points
@@ -649,8 +656,6 @@ if __name__ == '__main__':
         # copy the map
         bbox_map = calculate_region(attn_map_points) # (B, C, 4)
 
-
-
         displ_force = displacement_force(attn_map_points, verts, centroid, s_repl, s_margin) # B C 2
 
         # check for nan
@@ -658,12 +663,15 @@ if __name__ == '__main__':
             logger.warning(f'Nan in displ_force at iter {i}')
 
         # fix me
+        displ_force = d_zero
+
         attn_map_points, out_verts = apply_displacements(attn_map_points, verts, displ_force)
 
         # new_vert_pos = verts + displ_force
         # new_centroid = calculate_centroid(attn_map_points) # (B, C, 2)
 
-        logger.debug(f'Displacement Force: {displ_force}, Centroid: {out_verts}')
+
+        logger.debug(f'Displacement Force: {debug_coord(displ_force)}, Centroid: {debug_coord(out_verts)}')
 
         verts = out_verts 
 
