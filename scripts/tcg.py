@@ -134,7 +134,7 @@ def distances_to_nearest_edges(verts, h, w):
     
     distances = torch.stack([y, h - y, x, w - x], dim=-1) # (B, C, 4)
     
-    directions = torch.tensor([[-1, 0], [1, 0], [0, -1], [0, 1]]).view(1, 1, 4, 2).repeat(B, C, 1, 1) # (4, 2) -> (B, C, 4, 2)
+    directions = torch.tensor([[1, 0], [-1, 0], [0, 1], [0, -1]]).view(1, 1, 4, 2).repeat(B, C, 1, 1) # (4, 2) -> (B, C, 4, 2)
     directions = directions.to(verts.device)
     
     return distances, directions
@@ -203,7 +203,7 @@ def repulsive_force(strength, pos_vertex, pos_target):
     Returns:
         torch.Tensor - The force away from the target. Shape: (B, C, 2)
     """
-    d_pos = pos_target - pos_vertex # (B, C, 2)
+    d_pos = pos_vertex - pos_target # (B, C, 2)
     d_pos_norm = d_pos.norm(dim=-1, keepdim=True) + torch.finfo(d_pos.dtype).eps # normalize the direction
     d_pos = d_pos / d_pos_norm
     # d_pos /= d_pos_norm
@@ -556,7 +556,7 @@ if __name__ == '__main__':
         displ_force = displacement_force(attn_map_points, verts, centroid, s_repl, s_margin) # B C 2
 
         # fix me
-        displ_force = -displ_force
+        # displ_force = -displ_force
 
         attn_map_points = apply_displacements(attn_map_points, displ_force)
 
