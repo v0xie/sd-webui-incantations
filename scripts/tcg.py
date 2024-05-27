@@ -284,6 +284,39 @@ def multi_target_force(attention_map, omega, xi, pos_vertex, pos_target):
     pass
 
 
+def calculate_region(attention_map):
+    """ Given an attention map of shape [B, H, W, C], calculate a bounding box over each C
+    Arguments:
+        attention_map: torch.Tensor - The attention map to calculate the bounding box. Shape: (B, H, W, C)
+    Returns:
+        torch.Tensor - The bounding box of the region. Shape: (B, C, 4), where the last 4 dims are (y, x, a, b)
+        y, x: The top left corner of the bounding box
+        a, b: The height and width of the bounding box
+    """
+    B, H, W, C = attention_map.shape
+    # Calculate the sum of attention map along the height and width dimensions
+    sum_map = attention_map.sum(dim=(1, 2)) # (B, C)
+    # Find the indices of the maximum attention value for each channel
+    max_indices = sum_map.argmax(dim=1, keepdim=True) # (B, C)
+    # Initialize the bounding box tensor
+    bounding_box = torch.zeros((B, C, 4), dtype=torch.int32, device=attention_map.device)
+    # Iterate over each channel
+    for batch_idx in range(B):
+        for channel_idx in range(C):
+            # Calculate the row and column indices of the maximum attention value
+            row_index = max_indices[batch_idx, channel_idx] // W
+            col_index = max_indices[batch_idx, channel_idx] % W
+            # Calculate the top left corner coordinates of the bounding box
+            y = max(0, row_index - 1)
+            x = max(0, col_index - 1)
+            # Calculate the height and width of the bounding box
+            a = min(H - y, row_index + 2) - y
+            b = min(W - x, col_index + 2) - x
+            # Store the bounding box coordinates in the tensor
+            bounding_box[batch_idx, channel_idx] = torch.tensor([y, x, a, b])
+    return bounding_box
+
+
 def calculate_centroid(attention_map):
     """ Calculate the centroid of the attention map 
     Arguments:
@@ -614,6 +647,10 @@ if __name__ == '__main__':
     steps = 5
     for i in range(iters):
         # copy the map
+        bbox_map = calculate_region(attn_map_points) # (B, C, 4)
+
+
+
         displ_force = displacement_force(attn_map_points, verts, centroid, s_repl, s_margin) # B C 2
 
         # check for nan
