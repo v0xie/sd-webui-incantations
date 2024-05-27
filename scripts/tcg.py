@@ -230,15 +230,17 @@ def warping_force(attention_map, verts, displacements, h, w):
     torch.clamp_max(s_x, 1.0, out=s_x)
 
     # displacements
-    o_new = old_centroids + displacements - new_centroids
-    delta_h = old_centroids + displacements[..., 0] - new_centroids[..., 0]# (B, C)
-    delta_w = old_centroids + displacements[..., 1] - new_centroids[..., 1] # (B, C)
+    o_new = displacements - correction
+    #delta_h = old_centroids + displacements[..., 0] - new_centroids[..., 0]# (B, C)
+    #delta_w = old_centroids + displacements[..., 1] - new_centroids[..., 1] # (B, C)
 
     # construct affine transformation matrices (sx, 0, delta_x - o_new_x), (0, sy, delta_y - o_new_y)
     theta = torch.tensor([[1, 0, 0],[0, 1, 0]], dtype=torch.float32, device=attention_map.device)
     theta = theta.unsqueeze(0).repeat(C, 1, 1)
     theta[:, 0, 0] = s_x
     theta[:, 1, 1] = s_y
+    #theta[:, 0, 2] = o_new[..., 1] / w # X
+    #theta[:, 1, 2] = o_new[..., 0] / h # Y
     theta[:, 0, 2] = o_new[..., 1] / w # X
     theta[:, 1, 2] = o_new[..., 0] / h # Y
 
@@ -246,7 +248,7 @@ def warping_force(attention_map, verts, displacements, h, w):
     grid = F.affine_grid(theta, [B, C, H, W], align_corners=True) # (C, H, W, 2)
     attention_map = attention_map.permute(0, 3, 1, 2) # (B, H, W, C) -> (B, C, H, W)
     attention_map = attention_map.to(torch.float32)
-    out_attn_map = F.grid_sample(attention_map, grid, mode='bilinear', padding_mode='zeros', align_corners=True)
+    out_attn_map = F.grid_sample(attention_map, grid, mode='bicubic', padding_mode='zeros', align_corners=True)
     attention_map = attention_map.permute(0, 2, 3, 1) # (B, C, H, W) -> (B, H, W, C)
 
     out_attn_map = out_attn_map.permute(0, 2, 3, 1) # (B, C, H, W) -> (B, H, W, C)
@@ -642,7 +644,7 @@ if __name__ == '__main__':
 
     # strengths
     s_margin = 1.0
-    s_repl = 0.0
+    s_repl = 1.0
 
     # displacement forces 
     d_zero = torch.tensor([[[0.0, 0]]], dtype=torch.float16, device='cuda') # B C 2
@@ -656,14 +658,14 @@ if __name__ == '__main__':
         # copy the map
         bbox_map = calculate_region(attn_map_points) # (B, C, 4)
 
-        displ_force = displacement_force(attn_map_points, verts, centroid, s_repl, s_margin) # B C 2
+        displ_force = displacement_force(attn_map_points, verts, centroid, s_repl, s_margin, clamp = 2) # B C 2
 
         # check for nan
         if torch.isnan(displ_force).any():
             logger.warning(f'Nan in displ_force at iter {i}')
 
         # fix me
-        displ_force = d_zero
+        # displ_force = d_zero
 
         attn_map_points, out_verts = apply_displacements(attn_map_points, verts, displ_force)
 
@@ -686,9 +688,6 @@ if __name__ == '__main__':
 
         #if i % 10 == 0:
         _png(copied_map, img_idx+i, f'Displacement Forces Step {i}')
-
-        # # copy back to the original map
-        # attn_map_points = displaced_map
 
 
     # # conflict detection
