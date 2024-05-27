@@ -348,12 +348,12 @@ def calculate_centroid(attention_map):
     x_coords = x_coords.reshape(B, -1, C)
     
     # Calculate weighted sums
-    total_weight = flattened_matrix.sum(dim=1, keepdim=True)
-    centroid_y = (y_coords * flattened_matrix).sum(dim=1, keepdim=True) / total_weight
-    centroid_x = (x_coords * flattened_matrix).sum(dim=1, keepdim=True) / total_weight
+    total_weight = flattened_matrix.sum(dim=1)
+    centroid_y = (y_coords * flattened_matrix).sum(dim=1) / total_weight
+    centroid_x = (x_coords * flattened_matrix).sum(dim=1) / total_weight
     
     # Combine x and y centroids
-    centroids = torch.cat([centroid_y, centroid_x], dim=-1)
+    centroids = torch.stack([centroid_y, centroid_x], dim=-1)
     return centroids
 
 
