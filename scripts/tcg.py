@@ -198,19 +198,17 @@ def margin_force(strength, H, W, verts):
     return forces
 
 def warping_force(attention_map, verts, displacements, h, w):
-    """ Rescales the attention map based on the displacements.
+    """ Rescales the attention map based on the displacements. Expects a batch size of 1 to operate on all channels at once.
     Arguments:
-        attention_map: torch.Tensor - The attention map to update. Shape: (B, H, W, C)
-        verts: torch.Tensor - The centroid vertices of the attention map. Shape: (B, C, 2)
-        displacements: torch.Tensor - The displacements to apply. Shape: (B, C, 2), where the last 2 dims are the translation by [Y, X]
+        attention_map: torch.Tensor - The attention map to update. Shape: (1, H, W, C)
+        verts: torch.Tensor - The centroid vertices of the attention map. Shape: (1, C, 2)
+        displacements: torch.Tensor - The displacements to apply. Shape: (1, C, 2), where the last 2 dims are the translation by [Y, X]
         h: int - The height of the image
         w: int - The width of the image
     Returns:
         torch.Tensor - The updated attention map. Shape: (B, H, W, C)
     """
-    B, H, W, C = attention_map.shape
-
-    # 
+    _, H, W, C = attention_map.shape
 
     old_centroids = verts # (B, C, 2)
     new_centroids = old_centroids + displacements # (B, C, 2)
@@ -233,27 +231,24 @@ def warping_force(attention_map, verts, displacements, h, w):
 
     # displacements
     o_new = displacements - correction
-    #delta_h = old_centroids + displacements[..., 0] - new_centroids[..., 0]# (B, C)
-    #delta_w = old_centroids + displacements[..., 1] - new_centroids[..., 1] # (B, C)
 
     # construct affine transformation matrices (sx, 0, delta_x - o_new_x), (0, sy, delta_y - o_new_y)
     theta = torch.tensor([[1, 0, 0],[0, 1, 0]], dtype=torch.float32, device=attention_map.device)
     theta = theta.unsqueeze(0).repeat(C, 1, 1)
     theta[:, 0, 0] = s_x
     theta[:, 1, 1] = s_y
-    #theta[:, 0, 2] = o_new[..., 1] / w # X
-    #theta[:, 1, 2] = o_new[..., 0] / h # Y
     theta[:, 0, 2] = o_new[..., 1] / w # X
     theta[:, 1, 2] = o_new[..., 0] / h # Y
 
     # apply the affine transformation
-    grid = F.affine_grid(theta, [B, C, H, W], align_corners=False) # (C, H, W, 2)
-    attention_map = attention_map.permute(0, 3, 1, 2) # (B, H, W, C) -> (B, C, H, W)
+    grid = F.affine_grid(theta, [C, 1, H, W], align_corners=False) # (C, H, W, 2)
+
+    attention_map = attention_map.permute(3, 0, 1, 2) # (B, H, W, C) -> (C, B, H, W)
     attention_map = attention_map.to(torch.float32)
     out_attn_map = F.grid_sample(attention_map, grid, mode='bicubic', padding_mode='zeros', align_corners=False)
-    attention_map = attention_map.permute(0, 2, 3, 1) # (B, C, H, W) -> (B, H, W, C)
+    attention_map = attention_map.permute(1, 2, 3, 0) # (C, B, H, W) -> (B, H, W, C)
 
-    out_attn_map = out_attn_map.permute(0, 2, 3, 1) # (B, C, H, W) -> (B, H, W, C)
+    out_attn_map = out_attn_map.permute(1, 2, 3, 0) # (C, B, H, W) -> (B, H, W, C)
 
     # rescale centroids to pixel space
     return out_attn_map, new_centroids
