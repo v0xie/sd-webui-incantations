@@ -204,6 +204,12 @@ def warping_force(attention_map, verts, displacements, h, w):
     """
     B, H, W, C = attention_map.shape
 
+    # rescale verts to -1 to 1
+    px_to_norm = torch.tensor([H, W], dtype=verts.dtype, device=verts.device)
+
+    # verts = verts / px_to_norm * 2 - 1 # (B, C, 2)
+    # displacements = displacements / px_to_norm * 2 - 1
+
     # relative to H and W
     old_centroids = verts # (B, C, 2)
     new_centroids = old_centroids + displacements # (B, C, 2)
@@ -213,7 +219,9 @@ def warping_force(attention_map, verts, displacements, h, w):
     # calculate scaling factors, which are the min of 1 or the calculated scaling factor
     # is it w or h?
     s_y = (h - 1)/new_centroids[..., 0] # (B, C) 
-    s_x = (w - 1)/new_centroids[..., 1] # (B, C)
+    s_x = (w - 1)/new_centroids[..., 1] # (B, C) 
+    #s_y = 1/new_centroids[..., 0] # (B, C) 
+    #s_x = 1/new_centroids[..., 1] # (B, C)
     torch.clamp_max(s_y, 1.0, out=s_y)
     torch.clamp_max(s_x, 1.0, out=s_x)
 
@@ -226,17 +234,19 @@ def warping_force(attention_map, verts, displacements, h, w):
     theta = theta.unsqueeze(0).repeat(C, 1, 1)
     theta[:, 0, 0] = s_x
     theta[:, 1, 1] = s_y
-    theta[:, 0, 2] = delta_w / w
-    theta[:, 1, 2] = delta_h / h
+    theta[:, 0, 2] = delta_h / h
+    theta[:, 1, 2] = delta_w / w
 
     # apply the affine transformation
-    grid = F.affine_grid(theta, [B, C, H, W], align_corners=False) # (C, H, W, 2)
+    grid = F.affine_grid(theta, [B, C, H, W], align_corners=True) # (C, H, W, 2)
     attention_map = attention_map.permute(0, 3, 1, 2) # (B, H, W, C) -> (B, C, H, W)
     attention_map = attention_map.to(torch.float32)
-    out_attn_map = F.grid_sample(attention_map, grid, mode='bicubic', padding_mode='zeros', align_corners=False)
+    out_attn_map = F.grid_sample(attention_map, grid, mode='bilinear', padding_mode='zeros', align_corners=True)
     attention_map = attention_map.permute(0, 2, 3, 1) # (B, C, H, W) -> (B, H, W, C)
 
     out_attn_map = out_attn_map.permute(0, 2, 3, 1) # (B, C, H, W) -> (B, H, W, C)
+
+    # rescale centroids to pixel space
     return out_attn_map, new_centroids
 
 
@@ -573,7 +583,7 @@ if __name__ == '__main__':
     # plot verts
     attn_map_points = torch.zeros_like(attention_map)
     d_region_yx = [1*H//8, 1*W//8]
-    d_region_ab = [2*H//8, 2*W//8]
+    d_region_ab = [6*H//8, 3*W//8]
     color_region(attn_map_points, d_region_yx, d_region_ab, color=0.5, mode='set')
 
     # set areas outside the region to 0
