@@ -140,7 +140,6 @@ def distances_to_nearest_edges(verts, h, w):
     return distances, directions
 
 
-
 def min_distance_to_nearest_edge(verts, h, w):
     """ Calculate the distances and direction to the nearest edge bounded by (H, W) for each channel's vertices 
     Arguments:
@@ -191,6 +190,55 @@ def margin_force(strength, H, W, verts):
     forces = forces.sum(dim=-2) # (B, C, 2) # sum over the 4 directions to get total force
 
     return forces
+
+def warping_force(attention_map, verts, displacements, h, w):
+    """ Rescales the attention map based on the displacements.
+    Arguments:
+        attention_map: torch.Tensor - The attention map to update. Shape: (B, H, W, C)
+        verts: torch.Tensor - The centroid vertices of the attention map. Shape: (B, C, 2)
+        displacements: torch.Tensor - The displacements to apply. Shape: (B, C, 2), where the last 2 dims are the translation by [Y, X]
+        h: int - The height of the image
+        w: int - The width of the image
+    Returns:
+        torch.Tensor - The updated attention map. Shape: (B, H, W, C)
+    """
+    B, H, W, C = attention_map.shape
+
+    # relative to H and W
+    old_centroids = verts # (B, C, 2)
+    new_centroids = old_centroids + displacements # (B, C, 2)
+
+    #delta_centroids = new_centroids - old_centroids # (B, C, 2)
+
+    # calculate scaling factors, which are the min of 1 or the calculated scaling factor
+    # is it w or h?
+    s_y = (h - 1)/new_centroids[..., 0] # (B, C) 
+    s_x = (w - 1)/new_centroids[..., 1] # (B, C)
+    torch.clamp_max(s_y, 1.0, out=s_y)
+    torch.clamp_max(s_x, 1.0, out=s_x)
+
+    # displacements
+    delta_h = displacements[..., 0] - new_centroids[..., 0]# (B, C)
+    delta_w = displacements[..., 1] - new_centroids[..., 1] # (B, C)
+
+    # construct affine transformation matrices (sx, 0, delta_x - o_new_x), (0, sy, delta_y - o_new_y)
+    theta = torch.tensor([[1, 0, 0],[0, 1, 0]], dtype=torch.float32, device=attention_map.device)
+    theta = theta.unsqueeze(0).repeat(C, 1, 1)
+    theta[:, 0, 0] = s_x
+    theta[:, 1, 1] = s_y
+    theta[:, 0, 2] = delta_w / w
+    theta[:, 1, 2] = delta_h / h
+
+    # apply the affine transformation
+    grid = F.affine_grid(theta, [B, C, H, W], align_corners=False) # (C, H, W, 2)
+    attention_map = attention_map.permute(0, 3, 1, 2) # (B, H, W, C) -> (B, C, H, W)
+    attention_map = attention_map.to(torch.float32)
+    out_attn_map = F.grid_sample(attention_map, grid, mode='bicubic', padding_mode='zeros', align_corners=False)
+    attention_map = attention_map.permute(0, 2, 3, 1) # (B, C, H, W) -> (B, H, W, C)
+
+    out_attn_map = out_attn_map.permute(0, 2, 3, 1) # (B, C, H, W) -> (B, H, W, C)
+    return out_attn_map, new_centroids
+
 
 
 def repulsive_force(strength, pos_vertex, pos_target):
@@ -380,28 +428,29 @@ def translate_image(image, tx, ty):
     return translated_image.squeeze(1)
 
 
-def apply_displacements(attention_map, displacements):
+def apply_displacements(attention_map, verts, displacements):
     """ Update the attention map based on the displacements.
     The attention map is updated by displacing the attention values based on the displacements. 
     - Areas that are displaced out of the attention map are discarded.
     - Areas that are displaced into the attention map are initialized with zeros.
     Arguments:
         attention_map: torch.Tensor - The attention map to update. Shape: (B, H, W, C)
+        verts: torch.Tensor - The centroid vertices of the attention map. Shape: (B, C, 2)
         displacements: torch.Tensor - The displacements to apply. Shape: (B, C, 2), where the last 2 dims are the translation by [Y, X]
     Returns:
         torch.Tensor - The updated attention map. Shape: (B, H, W, C)
     """
     B, H, W, C = attention_map.shape
-    attention_map = attention_map.permute(0, 3, 2, 1) # (B, H, W, C) -> (B, C, H, W)
-    #attention_map = attention_map.permute(0, 3, 1, 2) # (B, H, W, C) -> (B, C, H, W)
     out_attn_map = attention_map.detach().clone()
-
+    out_verts = verts.detach().clone()
     # apply displacements
     for batch_idx in range(B):
-        out_attn_map[batch_idx] = translate_image_2d(attention_map[batch_idx].unsqueeze(0), displacements[batch_idx]).squeeze(0)
+        out_attn_map[batch_idx], out_verts[batch_idx] = warping_force(attention_map[batch_idx].unsqueeze(0), verts[batch_idx].unsqueeze(0), displacements[batch_idx], H, W)
+        out_attn_map[batch_idx] = out_attn_map[batch_idx].squeeze(0)
+#        out_attn_map[batch_idx] = translate_image_2d(attention_map[batch_idx].unsqueeze(0), displacements[batch_idx]).squeeze(0)
 #
-    out_attn_map = out_attn_map.permute(0, 2, 3, 1) # (B, C, H, W) -> (B, H, W, C)
-    return out_attn_map
+    #out_attn_map = out_attn_map.permute(0, 2, 3, 1) # (B, C, H, W) -> (B, H, W, C)
+    return out_attn_map, out_verts
 
 
 def get_attention_scores(to_q_map, to_k_map, dtype):
@@ -432,6 +481,8 @@ def get_attention_scores(to_q_map, to_k_map, dtype):
 
         return attn_probs
 
+#######################
+### Debug stuff
 def plot_point(image, point, radius=1, color=1.0):
     """ Plot a point on an image tensor
     Arguments:
@@ -542,7 +593,7 @@ if __name__ == '__main__':
 
     # strengths
     s_margin = 1.0
-    s_repl = 0.1
+    s_repl = 1.0
 
     # displacement forces 
     d_down = torch.tensor([[[0.1, 0]]], dtype=torch.float16, device='cuda') # B C 2
@@ -555,17 +606,19 @@ if __name__ == '__main__':
         # copy the map
         displ_force = displacement_force(attn_map_points, verts, centroid, s_repl, s_margin) # B C 2
 
+        # check for nan
+        if torch.isnan(displ_force).any():
+            logger.warning(f'Nan in displ_force at iter {i}')
+
         # fix me
-        # displ_force = -displ_force
+        attn_map_points, out_verts = apply_displacements(attn_map_points, verts, displ_force)
 
-        attn_map_points = apply_displacements(attn_map_points, displ_force)
+        # new_vert_pos = verts + displ_force
+        # new_centroid = calculate_centroid(attn_map_points) # (B, C, 2)
 
-        new_vert_pos = verts + displ_force
-        new_centroid = calculate_centroid(attn_map_points) # (B, C, 2)
+        logger.debug(f'Displacement Force: {displ_force}, Centroid: {out_verts}')
 
-        logger.debug(f'Displacement Force: {displ_force}, Centroid: {new_centroid}')
-
-        verts = new_centroid 
+        verts = out_verts 
 
         # copy to put on top visualizations 
         #copied_map = torch.zeros_like(displaced_map).to(device, dtype)
