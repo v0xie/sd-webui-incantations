@@ -228,6 +228,8 @@ def warping_force(attention_map, verts, displacements, h, w):
     s_x = (w - 1)/new_centroids[..., 1] # (B, C) 
     torch.clamp_max(s_y, 1.0, out=s_y)
     torch.clamp_max(s_x, 1.0, out=s_x)
+    if s_x < 0.99 or s_y < 0.99:
+        logger.debug(f"Scaling factor: {s_x}, {s_y}")
 
     # displacements
     o_new = displacements - correction
@@ -245,10 +247,10 @@ def warping_force(attention_map, verts, displacements, h, w):
     theta[:, 1, 2] = o_new[..., 0] / h # Y
 
     # apply the affine transformation
-    grid = F.affine_grid(theta, [B, C, H, W], align_corners=True) # (C, H, W, 2)
+    grid = F.affine_grid(theta, [B, C, H, W], align_corners=False) # (C, H, W, 2)
     attention_map = attention_map.permute(0, 3, 1, 2) # (B, H, W, C) -> (B, C, H, W)
     attention_map = attention_map.to(torch.float32)
-    out_attn_map = F.grid_sample(attention_map, grid, mode='bicubic', padding_mode='zeros', align_corners=True)
+    out_attn_map = F.grid_sample(attention_map, grid, mode='bicubic', padding_mode='zeros', align_corners=False)
     attention_map = attention_map.permute(0, 2, 3, 1) # (B, C, H, W) -> (B, H, W, C)
 
     out_attn_map = out_attn_map.permute(0, 2, 3, 1) # (B, C, H, W) -> (B, H, W, C)
@@ -635,16 +637,9 @@ if __name__ == '__main__':
 
     _png(attn_map_points, 2, 'Attn Map Proxy Map')
 
-    # attn_centroid = calculate_centroid(attn_map_points) # (B, C, 2)
-
-    #attn_map_points = attention_map.detach().clone()
-    # for v in verts.squeeze(0):
-    #     plot_point(attn_map_points, v, radius=1)
-    # _png(attn_map_points, 3, 'Points')
-
     # strengths
-    s_margin = 1.0
-    s_repl = 1.0
+    s_margin = 500.0
+    s_repl = 10.0
 
     # displacement forces 
     d_zero = torch.tensor([[[0.0, 0]]], dtype=torch.float16, device='cuda') # B C 2
@@ -658,7 +653,7 @@ if __name__ == '__main__':
         # copy the map
         bbox_map = calculate_region(attn_map_points) # (B, C, 4)
 
-        displ_force = displacement_force(attn_map_points, verts, centroid, s_repl, s_margin, clamp = 2) # B C 2
+        displ_force = displacement_force(attn_map_points, verts, centroid, s_repl, s_margin, clamp = 10) # B C 2
 
         # check for nan
         if torch.isnan(displ_force).any():
@@ -675,7 +670,8 @@ if __name__ == '__main__':
 
         logger.debug(f'Displacement Force: {debug_coord(displ_force)}, Centroid: {debug_coord(out_verts)}')
 
-        verts = out_verts 
+        verts = calculate_centroid(attn_map_points) # (B, C, 2)
+        # verts = out_verts 
 
         # copy to put on top visualizations 
         #copied_map = torch.zeros_like(displaced_map).to(device, dtype)
