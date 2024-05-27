@@ -18,6 +18,10 @@ GitHub URL: https://github.com/v0xie/sd-webui-incantations
 """
 
 logger = logging.getLogger(__name__)
+if os.environ.get('INCANT_DEBUG', None):
+    # suppress excess logging
+    logging.getLogger("PIL").setLevel(logging.WARNING)
+    logging.getLogger("matplotlib").setLevel(logging.WARNING)
 
 class TCGExtensionScript(UIWrapper):
     def __init__(self):
@@ -101,9 +105,40 @@ def displacement_force(attention_map, verts, target_pos, f_rep_strength, f_margi
         torch.Tensor - The displacement force for each vertex. Shape: (B, C, 2)
     """
     B, H, W, C = attention_map.shape
-    f_rep = repulsive_force(f_rep_strength, verts, target_pos)
-    f_margin = margin_force(f_margin_strength, H, W, verts)
+    clamp_min = -1
+    clamp_max = 1
+    clamp = lambda x: torch.clamp(x, min=clamp_min, max=clamp_max)
+
+    f_rep = clamp(repulsive_force(f_rep_strength, verts, target_pos))
+    f_margin = clamp(margin_force(f_margin_strength, H, W, verts))
+
+    logger.debug(f"Repulsive force: {f_rep}, Margin force: {f_margin}")
     return f_rep + f_margin
+
+
+def distances_to_nearest_edges(verts, h, w):
+    """ Calculate the distances and direction to the nearest edge bounded by (H, W) for each channel's vertices 
+    Arguments:
+        verts: torch.Tensor - The vertices. Shape: (B, C, 2), where the last 2 dims are (y, x)
+        h: int - The height of the image
+        w: int - The width of the image
+    Returns:
+        torch.Tensor, torch.Tensor:
+          - The minimum distance of each vertex to the nearest edge. Shape: (B, C, 1)
+          - The direction to the nearest edge. Shape: (B, C, 4, 2), where the last 2 dims are (y, x)
+    """
+    # y axis is 0!
+    y = verts[..., 0] # (B, C, 2)
+    x = verts[..., 1] # (B, C, 2)
+    B, C, _ = verts.shape
+    
+    distances = torch.stack([y, h - y, x, w - x], dim=-1) # (B, C, 4)
+    
+    directions = torch.tensor([[-1, 0], [1, 0], [0, -1], [0, 1]]).view(1, 1, 4, 2).repeat(B, C, 1, 1) # (4, 2) -> (B, C, 4, 2)
+    directions = directions.to(verts.device)
+    
+    return distances, directions
+
 
 
 def min_distance_to_nearest_edge(verts, h, w):
@@ -120,14 +155,18 @@ def min_distance_to_nearest_edge(verts, h, w):
     y = verts[..., 0] # y-axis is 0!
     x = verts[..., 1]
     
-    # Calculate distances to the edges
-    distances = torch.stack([y, h - y, x, w - x], dim=-1)
+    # Calculate distances to the edges (y, h-y, x, w-x)
+    # y: distance to top edge
+    # h - y: distance to bottom edge
+    # x: distance to left edge
+    # w - x: distance to right edge
+    distances = torch.abs(torch.stack([y, h - y, x, w - x], dim=-1))
     
-    # Find the minimum distance and the corresponding edge
+    # Find the minimum distance and the corresponding closest edge
     min_distances, min_indices = distances.min(dim=-1)
     
     # Map edge indices to direction vectors
-    directions = torch.tensor([[-1, 0], [1, 0], [0, 1], [0, -1]]).to(verts.device)
+    directions = torch.tensor([[-1, 0], [1, 0], [0, -1], [0, 1]]).to(verts.device)
     nearest_edge_dir = directions[min_indices]
     
     return min_distances, nearest_edge_dir
@@ -143,10 +182,15 @@ def margin_force(strength, H, W, verts):
     Returns:
         torch.Tensor - The force for each vertex. Shape: (B, C, 2)
     """
-    min_distances, nearest_edge_dir = min_distance_to_nearest_edge(verts, H, W) # (B, C), (B, C, 2)
-    min_distances = min_distances.unsqueeze(-1) # (B, C, 1)
-    force = -strength / (min_distances ** 2)
-    return force * nearest_edge_dir
+    distances, edge_dirs = distances_to_nearest_edges(verts, H, W) # (B, C, 4), (B, C, 4, 2)
+    distances = distances.unsqueeze(-1)
+
+    #distances = distances.unsqueeze(-1) # (B, C, 1)
+    force_multiplier = -strength / (distances ** 2 + torch.finfo(distances.dtype).eps)
+    forces = force_multiplier * edge_dirs # (B, C, 4, 2)
+    forces = forces.sum(dim=-2) # (B, C, 2) # sum over the 4 directions to get total force
+
+    return forces
 
 
 def repulsive_force(strength, pos_vertex, pos_target):
@@ -159,11 +203,12 @@ def repulsive_force(strength, pos_vertex, pos_target):
     Returns:
         torch.Tensor - The force away from the target. Shape: (B, C, 2)
     """
-    d_pos = pos_vertex - pos_target # (B, C, 2)
+    d_pos = pos_target - pos_vertex # (B, C, 2)
     d_pos_norm = d_pos.norm(dim=-1, keepdim=True) + torch.finfo(d_pos.dtype).eps # normalize the direction
-    d_pos /= d_pos_norm
-    force = (-strength) ** 2 
-    return force * d_pos
+    d_pos = d_pos / d_pos_norm
+    # d_pos /= d_pos_norm
+    force = -(strength ** 2)
+    return force / d_pos
 
 
 def multi_target_force(attention_map, omega, xi, pos_vertex, pos_target):
@@ -186,28 +231,28 @@ def calculate_centroid(attention_map):
     Arguments:
         attention_map: torch.Tensor - The attention map to calculate the centroid. Shape: (B, H, W, C)
     Returns:
-        torch.Tensor - The centroid of the attention map. Shape: (B, C, 2)
+        torch.Tensor - The centroid of the attention map. Shape: (B, C, 2), where the last 2 dims are (y, x)
     """
     
     # Get the height and width
     B, H, W, C = attention_map.shape
 
-    h_coords = torch.arange(H).view(1, H, 1, 1).to(attention_map.device)
-    w_coords = torch.arange(W).view(1, 1, W, 1).to(attention_map.device)
+    # Create a coordinate grid
+    y_coords = torch.arange(H).reshape(1, H, 1, 1).expand(B, H, W, C).to(attention_map.device)
+    x_coords = torch.arange(W).reshape(1, 1, W, 1).expand(B, H, W, C).to(attention_map.device)
     
-    # Sum of attention scores for each channel
-    attention_sum = torch.sum(attention_map, dim=(1, 2)) + torch.finfo(attention_map.dtype).eps # shape: (B, C)
+    # Flatten the height and width dimensions
+    flattened_matrix = attention_map.reshape(B, -1, C)
+    y_coords = y_coords.reshape(B, -1, C)
+    x_coords = x_coords.reshape(B, -1, C)
     
-    # Weighted sum of the coordinates
-    h_weighted_sum = torch.sum(h_coords * attention_map, dim=(1,2)) # (B, C)
-    w_weighted_sum = torch.sum(w_coords * attention_map, dim=(1,2)) # (B, C)
+    # Calculate weighted sums
+    total_weight = flattened_matrix.sum(dim=1, keepdim=True)
+    centroid_y = (y_coords * flattened_matrix).sum(dim=1, keepdim=True) / total_weight
+    centroid_x = (x_coords * flattened_matrix).sum(dim=1, keepdim=True) / total_weight
     
-    # Calculate the centroids
-    centroid_h = h_weighted_sum / attention_sum
-    centroid_w = w_weighted_sum / attention_sum
-    
-    centroids = torch.stack([centroid_h, centroid_w], dim=-1) # (B, C, 2)
-    
+    # Combine x and y centroids
+    centroids = torch.cat([centroid_y, centroid_x], dim=-1)
     return centroids
 
 
@@ -266,8 +311,6 @@ def translate_image_2d(image, tyx):
 
     # translate each dim by the displacements
     ty, tx = tyx[..., 0], tyx[..., 1] # C, C
-    ty *= -1 # invert y for some weird reason
-    tx *= -1 # invert x for some weird reason
     h_dim = h_dim + ty.view(C, 1, 1)
     w_dim = w_dim + tx.view(C, 1, 1)
 
@@ -282,7 +325,7 @@ def translate_image_2d(image, tyx):
     grid = torch.cat([h_dim, w_dim], dim=-1) # (C, H, W, 2)
 
     # Apply the grid to the image using grid_sample
-    translated_image = F.grid_sample(image, grid, mode='nearest', padding_mode='zeros', align_corners=True) # C N H W
+    translated_image = F.grid_sample(image, grid, mode='bicubic', padding_mode='zeros', align_corners=True) # C N H W
 
     return translated_image.transpose(0, 1) # N C H W
 
@@ -444,8 +487,9 @@ if __name__ == '__main__':
 
     # plotted points as proxies for vertices
     vert_list = [
-        #[3*H//4, W//2], # (lower middle)
-        [H//4+1, W//4+1],   # (upper left middle quadrant)
+        [3*H//4, W//2], # (lower middle)
+        #[H//4+1, W//4+1],   # (upper left middle quadrant)
+        #[H//4+1, W//4+1],   # (upper left middle quadrant)
         #[H//2, W]       # (right middle)
     ]
     target_position = [H//2, W//2]
@@ -453,82 +497,90 @@ if __name__ == '__main__':
     verts = torch.tensor([vert_list], dtype=torch.float16, device='cuda') # B C 2
 
     # region to represent the target region
-    region_yx = [H//8, W//8]
-    region_ab = [3*H//8, 3*W//8]
+    region_yx = [H//4, W//4]
+    region_ab = [3*H//4, 3*W//4]
+
+    #region_yx = [H//4, 3*H//4]
+    #region_ab = [W//4, 3*W//4]
 
     # initialize a map with all ones
     attention_map = torch.zeros((B, H, W, C)).to(device, dtype) # B H W C
 
     # color the target region
-    color_region(attention_map, region_yx, region_ab, color=0.5, mode='add')
+    color_region(attention_map, region_yx, region_ab, color=1.0, mode='set')
 
     _png(attention_map, 0, 'Initial Attn Map')
 
     # calculate centroid of region
     centroid = calculate_centroid(attention_map) # (B, C, 2)
     centroid_points = centroid.squeeze(0).squeeze(0)
-    #centroid_points = centroid.squeeze(0).squeeze(0).cpu().numpy().astype(int)
+
     # plot region centroid
     plot_point(attention_map, centroid_points, radius=1, color=1)
     _png(attention_map, 1, 'Attn Map Region + Centroid')
 
     # plot verts
-    attn_map_points = torch.randn_like(attention_map)
+    attn_map_points = torch.zeros_like(attention_map)
+    d_region_yx = [1*H//8, 1*W//8]
+    d_region_ab = [2*H//8, 2*W//8]
+    color_region(attn_map_points, d_region_yx, d_region_ab, color=0.5, mode='set')
+
+    # set areas outside the region to 0
+    #attn_map_points = attn_map_points * attention_map
+    verts = calculate_centroid(attn_map_points) # (B, C, 2)
+    for v in verts.squeeze(0):
+        plot_point(attn_map_points, v, radius=1, color=1)
+
+    _png(attn_map_points, 2, 'Attn Map Proxy Map')
 
     # attn_centroid = calculate_centroid(attn_map_points) # (B, C, 2)
 
     #attn_map_points = attention_map.detach().clone()
-    for v in verts.squeeze(0):
-        plot_point(attn_map_points, v, radius=1)
-    _png(attn_map_points, 2, 'Points')
+    # for v in verts.squeeze(0):
+    #     plot_point(attn_map_points, v, radius=1)
+    # _png(attn_map_points, 3, 'Points')
 
-    # apply a simple transformation
-    # translate Y by -1, translate x by 0 
-    # for i in range(3):
-    #     ofs = round(0.5 * (i+1), 2)
-    #     displacements = torch.tensor([ofs, 0], dtype=torch.float16, device='cuda').repeat(B, C, 1) # 2
-    #     new_attention_map = apply_displacements(attention_map, displacements)
-    #     _png(new_attention_map, img_idx+1, f'Move Initial [{ofs}, 0]')
-    #     img_idx += 1
+    # strengths
+    s_margin = 1.0
+    s_repl = 0.1
 
-    # for i in range(3):
-    #     ofs = round(0.5 * (i+1), 2)
-    #     displacements = torch.tensor([0, ofs], dtype=torch.float16, device='cuda').repeat(B, C, 1) # 2
-    #     new_attention_map = apply_displacements(attention_map, displacements)
-    #     _png(new_attention_map, img_idx+1, f'Move Initial [0, {ofs}]')
-    #     img_idx += 1
-
-    s_margin = 0.2
-    s_repl = 0.2
+    # displacement forces 
+    d_down = torch.tensor([[[0.1, 0]]], dtype=torch.float16, device='cuda') # B C 2
 
     # simulate displacement forces on our points
-    img_idx = 3
-    iters = 10
+    img_idx = 4
+    iters = 100
+    steps = 5
     for i in range(iters):
         # copy the map
-        attn_map_points = attn_map_points.detach().clone()
         displ_force = displacement_force(attn_map_points, verts, centroid, s_repl, s_margin) # B C 2
 
-        # new map with displacements
-        displaced_map = apply_displacements(attn_map_points, displ_force)
+        # fix me
+        displ_force = -displ_force
 
-        # copy to put on top visualizations 
-        copied_map = displaced_map.detach().clone()
-
-        for v in verts:
-            plot_point(copied_map, v.squeeze(0), radius=1)
-        color_region(copied_map, region_yx, region_ab, color=1.0, mode='add')
-        plot_point(copied_map, centroid_points, radius=1, color=1)
-
-        _png(copied_map, img_idx+i, f'Displacement Forces')
+        attn_map_points = apply_displacements(attn_map_points, displ_force)
 
         new_vert_pos = verts + displ_force
-        delta_vert_pos = new_vert_pos - verts
-        verts += delta_vert_pos
+        new_centroid = calculate_centroid(attn_map_points) # (B, C, 2)
 
-        # copy back to the original map
-        attn_map_points = displaced_map
-        # verts = torch.tensor([vert_list], dtype=torch.float16, device='cuda') # B C 2
+        logger.debug(f'Displacement Force: {displ_force}, Centroid: {new_centroid}')
+
+        verts = new_centroid 
+
+        # copy to put on top visualizations 
+        #copied_map = torch.zeros_like(displaced_map).to(device, dtype)
+        copied_map = attn_map_points.detach().clone()
+
+        color_region(copied_map, region_yx, region_ab, color=0.1, mode='add')
+
+        for v in verts:
+            plot_point(copied_map, v.squeeze(0), radius=1, color=1.0)
+
+        #if i % 10 == 0:
+        _png(copied_map, img_idx+i, f'Displacement Forces Step {i}')
+
+        # # copy back to the original map
+        # attn_map_points = displaced_map
 
 
     # # conflict detection
