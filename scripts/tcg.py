@@ -228,7 +228,7 @@ def warping_force(attention_map, verts, displacements, h, w):
     s_x = (w - 1)/new_centroids[..., 1] # (B, C) 
     torch.clamp_max(s_y, 1.0, out=s_y)
     torch.clamp_max(s_x, 1.0, out=s_x)
-    if s_x < 0.99 or s_y < 0.99:
+    if torch.any(s_x < 0.99) or torch.any(s_y < 0.99):
         logger.debug(f"Scaling factor: {s_x}, {s_y}")
 
     # displacements
