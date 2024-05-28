@@ -9,7 +9,8 @@ if __name__ == '__main__' and os.environ.get('INCANT_DEBUG', None):
     sys.path.append(f'{os.getcwd()}')
     sys.path.append(f'{os.getcwd()}/extensions/sd-webui-incantations')
 from scripts.ui_wrapper import UIWrapper
-from scripts.incant_utils import module_hooks, plot_tools
+from scripts.incant_utils import module_hooks, plot_tools, prompt_utils
+from modules import shared, script_callbacks
 
 """
 WIP Implementation of https://arxiv.org/abs/2404.11824
@@ -48,21 +49,86 @@ class TCGExtensionScript(UIWrapper):
         active = getattr(p, 'tcg_active', active)
         if not active:
             return
+        
+        batch_size = p.batch_size
+        height, width = p.height, p.width
+        hw = height * width
+
+        token_count, max_length = prompt_utils.get_token_count(p.prompt, p.steps, is_positive=True)
+        min_idx = 1
+        max_idx = token_count+1
+        token_indices = list(range(min_idx, max_idx))
 
         def tcg_forward_hook(module, input, kwargs, output):
-            pass
+            # calc attn scores
+            q_map = module.tcg_to_q_map
+            k_map = module.tcg_to_k_map
+            attn_scores = get_attention_scores(q_map, k_map, dtype=q_map.dtype) # (2*B, H*W, C)
+            B, HW, C = attn_scores.shape
+
+            downscale_h = round((HW * (height / width)) ** 0.5)
+            attn_scores = attn_scores.view(2, attn_scores.size(0)//2, downscale_h, HW//downscale_h, attn_scores.size(-1)).mean(dim=0) # (2*B, HW, C) -> (B, H, W, C)
+
+            # slice attn map
+            attn_map = attn_scores[..., module.tcg_token_indices]
+            attn_map = attn_map.detach().clone() # (B, H, W, K) where K is the subset of tokens
+
+            # region mask
+            region_mask = module.tcg_region_mask
+            if region_mask.shape[1:3] != attn_map.shape[1:3]:
+                region_mask = region_mask.permute(0, 3, 1, 2) # (B, H, W, 1) -> (B, 1, H, W)
+                region_mask = F.interpolate(region_mask, size=(attn_map.shape[1:3]), mode='nearest')
+                region_mask = region_mask.permute(0, 2, 3, 1) # (B, 1, H, W) -> (B, H, W, 1)
+                module.tcg_region_mask = region_mask
+
+            region_mask_centroid = calculate_centroid(region_mask) # (B, C, 2)
+
+            # detect conflicts and return if none
+            theta = 0.0000001 # parameterize this
+            conflicts = detect_conflict(attn_map, region_mask, theta) # (B, C)
+            if not torch.any(conflicts > 0.01):
+                return
+
+
+            centroids = calculate_centroid(attn_map) # (B, C, 2)
+            s_margin = 5.0
+            s_repl = 1.0
+            displ_force = displacement_force(attn_map, centroids, region_mask_centroid, s_repl, s_margin, clamp = 10) # B C 2
+
+            # reassign the attn map
+            output_attn_map = output.detach().clone()
+            #output_attn_map[..., module.tcg_token_indices] = output.detach().clone()
+            modified_attn_map, out_centroids = apply_displacements(output_attn_map[..., module.tcg_token_indices].unsqueeze(0), centroids, displ_force)
+            output_attn_map[..., module.tcg_token_indices] = modified_attn_map.squeeze(0)
+
+            output = output_attn_map
+
+
+
 
         def tcg_to_q_hook(module, input, kwargs, output):
                 setattr(module.tcg_parent_module[0], 'tcg_to_q_map', output)
 
         def tcg_to_k_hook(module, input, kwargs, output):
                 setattr(module.tcg_parent_module[0], 'tcg_to_k_map', output)
+        
+        def cfg_denoised_callback(params: script_callbacks.CFGDenoisedParams):
+            pass
+
+        script_callbacks.on_cfg_denoised(cfg_denoised_callback)
+
+        # TODO: Parameterize this
+        mask_H, mask_W = 64, 64
+        temp_region_mask = torch.zeros((batch_size, mask_H, mask_W, 1), dtype=torch.float32, device=shared.device) # (B, H, W)
+        temp_region_mask[0, 0:mask_H-1, 0:mask_W//2] = 1.0 # mask the left half of the thing
 
         for module in self.get_modules():
             if not module.network_layer_name.endswith('attn2'):
                 continue
             module_hooks.modules_add_field(module, 'tcg_to_q_map', None)
             module_hooks.modules_add_field(module, 'tcg_to_k_map', None)
+            module_hooks.modules_add_field(module, 'tcg_region_mask', temp_region_mask)
+            module_hooks.modules_add_field(module, 'tcg_token_indices', torch.tensor(token_indices, dtype=torch.int32, device=shared.device))
             module_hooks.modules_add_field(module.to_q, 'tcg_parent_module', [module])
             module_hooks.modules_add_field(module.to_k, 'tcg_parent_module', [module])
             module_hooks.module_add_forward_hook(module.to_q, tcg_to_q_hook, with_kwargs=True)
@@ -73,11 +139,14 @@ class TCGExtensionScript(UIWrapper):
         self.unhook_callbacks()
     
     def unhook_callbacks(self) -> None:
+        script_callbacks.remove_current_script_callbacks()
         for module in self.get_modules():
             module_hooks.remove_module_forward_hook(module.to_q, 'tcg_to_q_hook')
             module_hooks.remove_module_forward_hook(module.to_k, 'tcg_to_k_hook')
             module_hooks.modules_remove_field(module, 'tcg_to_q_map')
             module_hooks.modules_remove_field(module, 'tcg_to_k_map')
+            module_hooks.modules_remove_field(module, 'tcg_region_mask')
+            module_hooks.modules_remove_field(module, 'tcg_token_indices')
             module_hooks.modules_remove_field(module.to_q, 'tcg_parent_module')
             module_hooks.modules_remove_field(module.to_k, 'tcg_parent_module')
 
@@ -96,7 +165,6 @@ class TCGExtensionScript(UIWrapper):
 
 
 debug_coord = lambda x: (round(x[0,0,0].item(),3), round(x[0,0,1].item(), 3))
-
 
 def displacement_force(attention_map, verts, target_pos, f_rep_strength, f_margin_strength, clamp=0):
     """ Given a set of vertices, calculate the displacement force given by the sum of margin force and repulsive force.
@@ -332,6 +400,7 @@ def calculate_centroid(attention_map):
     """
     # necessary to avoid inf
     attention_map = attention_map.to(torch.float32)
+    B, H, W, C = attention_map.shape
 
     # Create tensors of the y and x coordinates
     y_coords = torch.arange(H, dtype=attention_map.dtype, device=attention_map.device).view(1, H, 1, 1)
@@ -342,7 +411,7 @@ def calculate_centroid(attention_map):
     weighted_sum_x = torch.sum(x_coords * attention_map, dim=[1, 2])
 
     # Calculate the total weights
-    total_weights = torch.sum(attention_map, dim=[1, 2])
+    total_weights = torch.sum(attention_map, dim=[1, 2]) + torch.finfo(attention_map.dtype).eps
 
     # Calculate the centroids
     centroid_y = weighted_sum_y / total_weights
@@ -368,7 +437,7 @@ def detect_conflict(attention_map, region, theta):
     assert region.shape[1:3] == attention_map.shape[1:3], "Region mask must match spatial dimensions of attention map"
     # Calculate the mean attention within the region
     #region = region.unsqueeze(-1) # Add channel dimension: (B, H, W) -> (B, H, W, 1)
-    attention_in_region = attention_map * region # Element-wise multiplication
+    attention_in_region = attention_map * region.unsqueeze(-1) # Element-wise multiplication
     #mean_attention_in_region = attention_in_region[attention_in_region > 0] 
     mean_attention_in_region = torch.sum(attention_in_region, dim=(1, 2)) / torch.sum(region, dim=(1, 2)) # Mean over (H, W)
     # Compare with threshold theta
@@ -519,16 +588,19 @@ def get_attention_scores(to_q_map, to_k_map, dtype):
         # attn_probs = attn_scores.softmax(dim=-1).to(device=shared.device, dtype=to_q_map.dtype)
 
         attn_probs = to_q_map @ to_k_map.transpose(-1, -2)
+        channel_dim = to_q_map.shape[-1]
+        attn_probs /= (channel_dim ** 0.5)
+        attn_probs = attn_probs.softmax(dim=-1).to(device=shared.device, dtype=to_q_map.dtype)
 
-        # avoid nan by converting to float32 and subtracting max 
-        attn_probs = attn_probs.to(dtype=torch.float32) #
-        attn_probs -= torch.max(attn_probs)
+        # # avoid nan by converting to float32 and subtracting max 
+        # attn_probs = attn_probs.to(dtype=torch.float32) #
+        # attn_probs -= torch.max(attn_probs)
 
-        torch.exp(attn_probs, out = attn_probs)
-        summed = attn_probs.sum(dim=-1, keepdim=True, dtype=torch.float32)
-        attn_probs /= summed
+        # torch.exp(attn_probs, out = attn_probs)
+        # summed = attn_probs.sum(dim=-1, keepdim=True, dtype=torch.float32)
+        # attn_probs /= summed + torch.finfo(torch.float32).eps
 
-        attn_probs = attn_probs.to(dtype=dtype)
+        #attn_probs = attn_probs.to(dtype=dtype)
 
         return attn_probs
 
@@ -572,6 +644,7 @@ def color_region(image, yx, ab, color=1.0, mode='set'):
 
 
 if __name__ == '__main__':
+
     tempdir = os.path.join(os.getcwd(), 'temp')
     os.makedirs(tempdir, exist_ok=True)
     img_idx = 0
@@ -657,7 +730,7 @@ if __name__ == '__main__':
     s_margin = 1.0
     s_repl = 1.0
 
-    # displacement forces 
+    # test displacement forces 
     d_zero = torch.tensor([[[0.0, 0]]], dtype=torch.float16, device='cuda') # B C 2
     d_down = torch.tensor([[[0.1, 0]]], dtype=torch.float16, device='cuda') # B C 2
 
