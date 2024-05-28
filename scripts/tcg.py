@@ -10,7 +10,7 @@ if __name__ == '__main__' and os.environ.get('INCANT_DEBUG', None):
     sys.path.append(f'{os.getcwd()}/extensions/sd-webui-incantations')
 from scripts.ui_wrapper import UIWrapper
 from scripts.incant_utils import module_hooks, plot_tools, prompt_utils
-from modules import shared, script_callbacks
+from modules import shared, scripts, script_callbacks
 
 """
 WIP Implementation of https://arxiv.org/abs/2404.11824
@@ -28,17 +28,22 @@ if os.environ.get('INCANT_DEBUG', None):
 class TCGExtensionScript(UIWrapper):
     def __init__(self):
         self.infotext_fields: list = []
-        self.paste_field_names: list = []
+        self.paste_field_names: list = [
+            "tcg_active",
+            "tcg_strength",
+            "tcg_f_margin",
+            "tcg_f_repl"
+        ]
 
     def title(self) -> str:
         raise 'TCG [arXiv:2404.11824]'
     
     def setup_ui(self, is_img2img) -> list:
         with gr.Accordion('TCG', open=True):
-            active = gr.Checkbox(label="Active", value=True)
-            strength = gr.Slider(label="Strength", value=1.0, minimum=-200.0, maximum=200.0, step=1.0)
-            f_margin = gr.Slider(label="Margin Force", value=1.0, minimum=-10.0, maximum=10.0, step=0.1)
-            f_repl = gr.Slider(label="Repulsion Force", value=1.0, minimum=-10.0, maximum=10.0, step=0.1)
+            active = gr.Checkbox(label="Active", value=True, elem_id="tcg_active")
+            strength = gr.Slider(label="Strength", value=1.0, minimum=-200.0, maximum=200.0, step=1.0, elem_id="tcg_strength")
+            f_margin = gr.Slider(label="Margin Force", value=1.0, minimum=-2.0, maximum=2.0, step=0.1, elem_id="tcg_f_margin")
+            f_repl = gr.Slider(label="Repulsion Force", value=1.0, minimum=-2.0, maximum=2.0, step=0.1, elem_id="tcg_f_repl")
             opts = [active, strength, f_margin, f_repl]
             for opt in opts:
                 opt.do_not_save_to_config = True
@@ -52,6 +57,9 @@ class TCGExtensionScript(UIWrapper):
         active = getattr(p, 'tcg_active', active)
         if not active:
             return
+        strength = getattr(p, 'tcg_strength', strength)
+        f_margin = getattr(p, 'tcg_f_margin', f_margin)
+        f_repl = getattr(p, 'tcg_f_repl', f_repl)
         
         batch_size = p.batch_size
         height, width = p.height, p.width
@@ -80,7 +88,7 @@ class TCGExtensionScript(UIWrapper):
             region_mask = module.tcg_region_mask
             if region_mask.shape[1:3] != attn_map.shape[1:3]:
                 region_mask = region_mask.permute(0, 3, 1, 2) # (B, H, W, 1) -> (B, 1, H, W)
-                region_mask = F.interpolate(region_mask, size=(attn_map.shape[1:3]), mode='nearest')
+                region_mask = F.interpolate(region_mask, size=(attn_map.shape[1:3]), mode='bilinear')
                 region_mask = region_mask.permute(0, 2, 3, 1) # (B, 1, H, W) -> (B, H, W, 1)
                 module.tcg_region_mask = region_mask
 
@@ -90,11 +98,12 @@ class TCGExtensionScript(UIWrapper):
             theta = 0.0000001 # parameterize this
             conflicts = detect_conflict(attn_map, region_mask, theta) # (B, C)
             if not torch.any(conflicts > 0.01):
-                return
+                logger.debug("No conflicts detected")
+                #return
 
             centroids = calculate_centroid(attn_map) # (B, C, 2)
             logger.debug(centroids)
-            displ_force = displacement_force(attn_map, centroids, region_mask_centroid, s_repl, s_margin, clamp = 10) # B C 2
+            displ_force = displacement_force(attn_map, centroids, region_mask_centroid, f_repl, f_margin, clamp = 10) # B C 2
 
             # reassign the attn map
             output_attn_map = output.detach().clone()
@@ -102,7 +111,7 @@ class TCGExtensionScript(UIWrapper):
             modified_attn_map, out_centroids = apply_displacements(output_attn_map[..., module.tcg_token_indices].unsqueeze(0), centroids, displ_force)
             output_attn_map[..., module.tcg_token_indices] = modified_attn_map.squeeze(0)
 
-            loss = output - output_attn_map
+            loss = output_attn_map - output
             loss = loss / (loss.norm() + torch.finfo(loss.dtype).eps)
             
             output += strength * loss
@@ -123,7 +132,7 @@ class TCGExtensionScript(UIWrapper):
         # TODO: Parameterize this
         mask_H, mask_W = 64, 64
         temp_region_mask = torch.zeros((batch_size, mask_H, mask_W, 1), dtype=torch.float32, device=shared.device) # (B, H, W)
-        temp_region_mask[0, mask_H//4:3*mask_H//4, mask_W//4:3*mask_W//4] = 1.0 # mask the center of the canvas
+        temp_region_mask[0, 1*mask_H//8 : 7*mask_H//8 , 2*mask_W//8 : 5*mask_W//8] = 1.0 # mask the left half ish of the canvas
 
         for module in self.get_modules():
             if not module.network_layer_name.endswith('attn2'):
@@ -164,7 +173,14 @@ class TCGExtensionScript(UIWrapper):
         pass
 
     def get_xyz_axis_options(self) -> dict:
-        return {}
+            xyz_grid = [x for x in scripts.scripts_data if x.script_class.__module__ in ("xyz_grid.py", "scripts.xyz_grid")][0].module
+            extra_axis_options = {
+                    xyz_grid.AxisOption("[TCG] Active", str, tcg_apply_override('tcg_active', boolean=True), choices=xyz_grid.boolean_choice(reverse=True)),
+                    xyz_grid.AxisOption("[TCG] Strength", float, tcg_apply_field("tcg_strength")),
+                    xyz_grid.AxisOption("[TCG] Repulsion Force", float, tcg_apply_field("tcg_f_repl")),
+                    xyz_grid.AxisOption("[TCG] Margin Force", float, tcg_apply_field("tcg_f_margin")),
+            }
+            return extra_axis_options
 
 
 
@@ -753,7 +769,7 @@ if __name__ == '__main__':
 
         verts = calculate_centroid(attn_map_points) # (B, C, 2)
         # Displacement forces
-        displ_force = displacement_force(attn_map_points, verts, centroid, s_repl, s_margin, clamp = 10) # B C 2
+        displ_force = displacement_force(attn_map_points, verts, centroid, s_repl, s_margin, clamp = 0) # B C 2
         if torch.isnan(displ_force).any():
             logger.warning(f'Nan in displ_force at iter {i}')
 
@@ -774,3 +790,19 @@ if __name__ == '__main__':
             #plot_point(copied_map[:c], img_idx+ofs+i+c, radius=1, color=1.0)
             _png(copied_map[..., c].unsqueeze(-1), img_idx+ofs+i, f'Displacement Forces Channel {c} Step {i}')
         #_png(copied_map, img_idx+i, f'Displacement Forces Step {i}')
+
+# XYZ Plot
+# Based on @mcmonkey4eva's XYZ Plot implementation here: https://github.com/mcmonkeyprojects/sd-dynamic-thresholding/blob/master/scripts/dynamic_thresholding.py
+def tcg_apply_override(field, boolean: bool = False):
+    def fun(p, x, xs):
+        if boolean:
+            x = True if x.lower() == "true" else False
+        setattr(p, field, x)
+    return fun
+
+def tcg_apply_field(field):
+    def fun(p, x, xs):
+        if not hasattr(p, "tcg_active"):
+                p.tcg_active = True
+        setattr(p, field, x)
+    return fun
