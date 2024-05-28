@@ -221,10 +221,13 @@ def soft_threshold(attention_map, threshold=0.5, sharpness=10):
         torch.Tensor - The attention map thresholded over all C. Shape: (B, H, W, C)
     """
     def normalize_map(attnmap):
-        flattened_attnmap = attnmap.view(attnmap.shape[0], -1, attnmap.shape[-1])
-        min_val = torch.min(flattened_attnmap, dim=1, keepdim=True).values.unsqueeze(dim=1)
-        max_val = torch.max(flattened_attnmap, dim=1, keepdim=True).values.unsqueeze(dim=1)
-        normalized_attn = attnmap - min_val / (max_val - min_val)
+        B, H, W, C = attnmap.shape
+        flattened_attnmap = attnmap.view(attnmap.shape[0], H*W, attnmap.shape[-1]).transpose(-1, -2) # B, C, H*W
+        min_val = torch.min(flattened_attnmap, dim=-1).values.unsqueeze(-1) # (B, C, 1)
+        max_val = torch.max(flattened_attnmap, dim=-1).values.unsqueeze(-1) # (B, C, 1)
+        normalized_attn = (flattened_attnmap - min_val) / ((max_val - min_val) + torch.finfo(attnmap.dtype).eps)
+        normalized_attn = normalized_attn.view(B, C, H*W).transpose(-1, -2) # B, H*W, C
+        normalized_attn = normalized_attn.view(B, H, W, C)
         return normalized_attn
     threshold = max(0.0, min(1.0, threshold))
     normalized_attn = normalize_map(attention_map)
