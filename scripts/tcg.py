@@ -5,12 +5,25 @@ import torch
 import random
 import torch.nn.functional as F
 
+if os.environ.get('INCANT_DEBUG', None):
+    # suppress excess logging
+    logging.getLogger("PIL").setLevel(logging.WARNING)
+    logging.getLogger("matplotlib").setLevel(logging.WARNING)
+
 if __name__ == '__main__' and os.environ.get('INCANT_DEBUG', None):
     sys.path.append(f'{os.getcwd()}')
     sys.path.append(f'{os.getcwd()}/extensions/sd-webui-incantations')
+else:
+    from scripts.incant_utils import module_hooks, plot_tools, prompt_utils
+    from modules import shared, scripts, script_callbacks
+
+from scripts.incant_utils import plot_tools
 from scripts.ui_wrapper import UIWrapper
-from scripts.incant_utils import module_hooks, plot_tools, prompt_utils
-from modules import shared, scripts, script_callbacks
+
+
+logger = logging.getLogger(__name__)
+logging.basicConfig()
+logger.setLevel(logging.DEBUG)
 
 """
 WIP Implementation of https://arxiv.org/abs/2404.11824
@@ -19,11 +32,6 @@ GitHub URL: https://github.com/v0xie/sd-webui-incantations
 
 """
 
-logger = logging.getLogger(__name__)
-if os.environ.get('INCANT_DEBUG', None):
-    # suppress excess logging
-    logging.getLogger("PIL").setLevel(logging.WARNING)
-    logging.getLogger("matplotlib").setLevel(logging.WARNING)
 
 class TCGExtensionScript(UIWrapper):
     def __init__(self):
@@ -32,7 +40,11 @@ class TCGExtensionScript(UIWrapper):
             "tcg_active",
             "tcg_strength",
             "tcg_f_margin",
-            "tcg_f_repl"
+            "tcg_f_repl",
+            "tcg_theta",
+            "tcg_attn_threshold",
+            "tcg_sharpness",
+            "tcg_selfguidance_scale",
         ]
 
     def title(self) -> str:
@@ -41,10 +53,14 @@ class TCGExtensionScript(UIWrapper):
     def setup_ui(self, is_img2img) -> list:
         with gr.Accordion('TCG', open=True):
             active = gr.Checkbox(label="Active", value=True, elem_id="tcg_active")
-            strength = gr.Slider(label="Strength", value=1.0, minimum=-200.0, maximum=200.0, step=1.0, elem_id="tcg_strength")
+            strength = gr.Slider(label="Strength", value=1.0, minimum=-5.0, maximum=5.0, step=0.1, elem_id="tcg_strength")
             f_margin = gr.Slider(label="Margin Force", value=1.0, minimum=-2.0, maximum=2.0, step=0.1, elem_id="tcg_f_margin")
             f_repl = gr.Slider(label="Repulsion Force", value=1.0, minimum=-2.0, maximum=2.0, step=0.1, elem_id="tcg_f_repl")
-            opts = [active, strength, f_margin, f_repl]
+            theta = gr.Slider(label="Conflict Threshold", value=0.01, minimum=0.0, maximum=1.0, step=0.001, elem_id="tcg_theta")
+            threshold = gr.Slider(label="Soft Threshold", value=0.5, minimum=0.0, maximum=1.0, step=0.01, elem_id="tcg_attn_threshold")
+            sharpness = gr.Slider(label="Threshold Sharpness", value=10.0, minimum=0.1, maximum=20.0, step=0.1, elem_id="tcg_sharpness")
+            selfguidance_scale = gr.Slider(label="Self-Guidance Scale", value=1.0, minimum=-2.0, maximum=2.0, step=0.1, elem_id="tcg_selfguidance_scale")
+            opts = [active, strength, f_margin, f_repl, theta, threshold, sharpness, selfguidance_scale]
             for opt in opts:
                 opt.do_not_save_to_config = True
             return opts
@@ -52,7 +68,7 @@ class TCGExtensionScript(UIWrapper):
     def get_modules(self):
         return module_hooks.get_modules( module_name_filter='CrossAttention')
     
-    def before_process_batch(self, p, active, strength, f_margin, f_repl, *args, **kwargs):
+    def before_process_batch(self, p, active, strength, f_margin, f_repl, theta, threshold, sharpness, selfguidance_scale, *args, **kwargs):
         self.unhook_callbacks()
         active = getattr(p, 'tcg_active', active)
         if not active:
@@ -60,6 +76,10 @@ class TCGExtensionScript(UIWrapper):
         strength = getattr(p, 'tcg_strength', strength)
         f_margin = getattr(p, 'tcg_f_margin', f_margin)
         f_repl = getattr(p, 'tcg_f_repl', f_repl)
+        theta = getattr(p, 'tcg_theta', theta)
+        threshold= getattr(p, 'tcg_attn_threshold', threshold)
+        sharpness = getattr(p, 'tcg_sharpness', sharpness)
+        selfguidance_scale = getattr(p, 'tcg_selfguidance_scale', selfguidance_scale)
         
         batch_size = p.batch_size
         height, width = p.height, p.width
@@ -74,15 +94,37 @@ class TCGExtensionScript(UIWrapper):
             # calc attn scores
             q_map = module.tcg_to_q_map
             k_map = module.tcg_to_k_map
+            # select k tokens
+            k_map = k_map.transpose(-1, -2)[..., module.tcg_token_indices].transpose(-1,-2)
             attn_scores = get_attention_scores(q_map, k_map, dtype=q_map.dtype) # (2*B, H*W, C)
+            attn_scores = attn_scores.to(torch.float32)
             B, HW, C = attn_scores.shape
 
             downscale_h = round((HW * (height / width)) ** 0.5)
             attn_scores = attn_scores.view(2, attn_scores.size(0)//2, downscale_h, HW//downscale_h, attn_scores.size(-1)).mean(dim=0) # (2*B, HW, C) -> (B, H, W, C)
 
             # slice attn map
-            attn_map = attn_scores[..., module.tcg_token_indices]
-            attn_map = attn_map.detach().clone() # (B, H, W, K) where K is the subset of tokens
+            attn_map = attn_scores.detach().clone() # (B, H, W, K) where K is the subset of tokens
+
+            # threshold it
+            # also represents object shape
+            attn_map = soft_threshold(attn_map, threshold=threshold, sharpness=sharpness)
+
+            # self-guidance
+            inner_dims = attn_map.shape[1:-1]
+            attn_map = attn_map.view(attn_map.size(0), -1, attn_map.size(-1))
+
+            shape_sum = torch.sum(attn_map, dim=1) # (B, HW)
+
+            obj_appearance = shape_sum * attn_map
+            obj_appearance /= shape_sum
+
+            self_guidance = obj_appearance
+            self_guidance = self_guidance.to(output.dtype)
+            self_guidance_factor = output.detach().clone()
+            self_guidance_factor[..., module.tcg_token_indices] = self_guidance
+
+            attn_map = attn_map.view(attn_map.size(0), *inner_dims, attn_map.size(-1))
 
             # region mask
             region_mask = module.tcg_region_mask
@@ -95,26 +137,32 @@ class TCGExtensionScript(UIWrapper):
             region_mask_centroid = calculate_centroid(region_mask) # (B, C, 2)
 
             # detect conflicts and return if none
-            theta = 0.0000001 # parameterize this
             conflicts = detect_conflict(attn_map, region_mask, theta) # (B, C)
             if not torch.any(conflicts > 0.01):
                 logger.debug("No conflicts detected")
-                #return
+                return
 
             centroids = calculate_centroid(attn_map) # (B, C, 2)
-            logger.debug(centroids)
+            #logger.debug(centroids)
+
             displ_force = displacement_force(attn_map, centroids, region_mask_centroid, f_repl, f_margin, clamp = 10) # B C 2
+
+            # zero out displacement force
+            displ_force = displ_force * conflicts.unsqueeze(-1)
+            logger.debug("Displacements: %s", displ_force)
 
             # reassign the attn map
             output_attn_map = output.detach().clone()
-            #output_attn_map[..., module.tcg_token_indices] = output.detach().clone()
             modified_attn_map, out_centroids = apply_displacements(output_attn_map[..., module.tcg_token_indices].unsqueeze(0), centroids, displ_force)
             output_attn_map[..., module.tcg_token_indices] = modified_attn_map.squeeze(0)
 
-            loss = output_attn_map - output
-            loss = loss / (loss.norm() + torch.finfo(loss.dtype).eps)
+            loss = output - output_attn_map
+            loss = normalize_map(loss)
+            loss **= 2
+
             
             output += strength * loss
+            output += selfguidance_scale * self_guidance_factor
 
             #output = output_attn_map
 
@@ -179,6 +227,10 @@ class TCGExtensionScript(UIWrapper):
                     xyz_grid.AxisOption("[TCG] Strength", float, tcg_apply_field("tcg_strength")),
                     xyz_grid.AxisOption("[TCG] Repulsion Force", float, tcg_apply_field("tcg_f_repl")),
                     xyz_grid.AxisOption("[TCG] Margin Force", float, tcg_apply_field("tcg_f_margin")),
+                    xyz_grid.AxisOption("[TCG] Conflict Threshold", float, tcg_apply_field("tcg_theta")),
+                    xyz_grid.AxisOption("[TCG] Soft Threshold", float, tcg_apply_field("tcg_attn_threshold")),
+                    xyz_grid.AxisOption("[TCG] Threshold Sharpness", float, tcg_apply_field("tcg_sharpness")),
+                    xyz_grid.AxisOption("[TCG] Self-Guidance Scale", float, tcg_apply_field("tcg_selfguidance_scale")),
             }
             return extra_axis_options
 
@@ -211,6 +263,21 @@ def displacement_force(attention_map, verts, target_pos, f_rep_strength, f_margi
     return f_rep + f_margin
 
 
+def normalize_map(attnmap):
+    """ Normalize the attention map over the channel dimension
+    Arguments:
+        attnmap: torch.Tensor - The attention map to normalize. Shape: (B, HW, C)
+    Returns:
+        torch.Tensor - The attention map normalized to (0, 1). Shape: (B, HW, C)
+    """
+    flattened_attnmap = attnmap.transpose(-1, -2)
+    min_val = torch.min(flattened_attnmap, dim=-1).values.unsqueeze(-1) # (B, C, 1)
+    max_val = torch.max(flattened_attnmap, dim=-1).values.unsqueeze(-1) # (B, C, 1)
+    normalized_attn = (flattened_attnmap - min_val) / ((max_val - min_val) + torch.finfo(attnmap.dtype).eps)
+    normalized_attn = normalized_attn.transpose(-1, -2)
+    return normalized_attn
+
+
 def soft_threshold(attention_map, threshold=0.5, sharpness=10):
     """ Soft threshold the attention map channels based on the given threshold. Derived from arXiv:2306.00986
     Arguments:
@@ -220,7 +287,13 @@ def soft_threshold(attention_map, threshold=0.5, sharpness=10):
     Returns:
         torch.Tensor - The attention map thresholded over all C. Shape: (B, H, W, C)
     """
-    def normalize_map(attnmap):
+    def _normalize_map(attnmap):
+        """ Normalize the attention map over the channel dimension
+        Arguments:
+            attnmap: torch.Tensor - The attention map to normalize. Shape: (B, H, W, C) or (B, HW, C)
+        Returns:
+            torch.Tensor - The attention map normalized to (0, 1). Shape: (B, H, W, C)
+        """
         B, H, W, C = attnmap.shape
         flattened_attnmap = attnmap.view(attnmap.shape[0], H*W, attnmap.shape[-1]).transpose(-1, -2) # B, C, H*W
         min_val = torch.min(flattened_attnmap, dim=-1).values.unsqueeze(-1) # (B, C, 1)
@@ -230,8 +303,8 @@ def soft_threshold(attention_map, threshold=0.5, sharpness=10):
         normalized_attn = normalized_attn.view(B, H, W, C)
         return normalized_attn
     threshold = max(0.0, min(1.0, threshold))
-    normalized_attn = normalize_map(attention_map)
-    normalized_attn = normalize_map(torch.sigmoid(sharpness * (normalized_attn - threshold)))
+    normalized_attn = _normalize_map(attention_map)
+    normalized_attn = _normalize_map(torch.sigmoid(sharpness * (normalized_attn - threshold)))
     return normalized_attn
 
 
