@@ -365,7 +365,7 @@ def detect_conflict(attention_map, region, theta):
     torch.Tensor: Conflict detection result of shape (B, K), with values 0 or 1 indicating conflict between tokens and the region.
     """
     # Ensure region is the same shape as the spatial dimensions of attention_map
-    assert region.shape[1:] == attention_map.shape[1:], "Region mask must match spatial dimensions of attention map"
+    assert region.shape[1:3] == attention_map.shape[1:3], "Region mask must match spatial dimensions of attention map"
     # Calculate the mean attention within the region
     #region = region.unsqueeze(-1) # Add channel dimension: (B, H, W) -> (B, H, W, 1)
     attention_in_region = attention_map * region # Element-wise multiplication
