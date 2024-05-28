@@ -211,6 +211,27 @@ def displacement_force(attention_map, verts, target_pos, f_rep_strength, f_margi
     return f_rep + f_margin
 
 
+def soft_threshold(attention_map, threshold=0.5, sharpness=10):
+    """ Soft threshold the attention map channels based on the given threshold. Derived from arXiv:2306.00986
+    Arguments:
+        attention_map: torch.Tensor - The attention map to threshold. Shape: (B, H, W, C)
+        threshold: float - The threshold value between 0.0 and 1.0 relative to the minimum/maximum attention value
+        sharpness: float - The sharpness of the thresholding function
+    Returns:
+        torch.Tensor - The attention map thresholded over all C. Shape: (B, H, W, C)
+    """
+    def normalize_map(attnmap):
+        flattened_attnmap = attnmap.view(attnmap.shape[0], -1, attnmap.shape[-1])
+        min_val = torch.min(flattened_attnmap, dim=1, keepdim=True).values.unsqueeze(dim=1)
+        max_val = torch.max(flattened_attnmap, dim=1, keepdim=True).values.unsqueeze(dim=1)
+        normalized_attn = attnmap - min_val / (max_val - min_val)
+        return normalized_attn
+    threshold = max(0.0, min(1.0, threshold))
+    normalized_attn = normalize_map(attention_map)
+    normalized_attn = normalize_map(torch.sigmoid(sharpness * (normalized_attn - threshold)))
+    return normalized_attn
+
+
 def distances_to_nearest_edges(verts, h, w):
     """ Calculate the distances and direction to the nearest edge bounded by (H, W) for each channel's vertices 
     Arguments:
