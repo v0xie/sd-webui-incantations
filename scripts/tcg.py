@@ -701,6 +701,15 @@ if __name__ == '__main__':
         title=f'{title}',
     )
 
+    def _png_batch(attnmap, name, title):
+        for batch_idx, _ in enumerate(attnmap):
+            for channel_idx in range(attnmap.shape[-1]):
+                plot_tools.plot_attention_map(
+                    attnmap[batch_idx, :, :, channel_idx],
+                    save_path=os.path.join(tempdir, f'batch{batch_idx:04}_{name:04}_{channel_idx:02}.png'),
+                    title=f'{title} - Channel {channel_idx}',
+                )
+
     B, H, W, C = 1, 64, 64, 3
     dtype = torch.float16
     device = 'cuda'
@@ -728,10 +737,12 @@ if __name__ == '__main__':
 
     # color the target region
     color_region(attention_map, region_yx, region_ab, color=1.0, mode='set')
-
     _png(attention_map, 0, 'Initial Attn Map')
 
     attention_map_region = attention_map.detach().clone()
+    attention_map_region = torch.zeros((B, H, W, 1)).to(device, dtype) # B H W 1
+    color_region(attention_map_region, region_yx, region_ab, color=1.0, mode='set')
+    _png(attention_map_region, 1, 'Attn Map Region + Centroid')
 
     # calculate centroid of region
     centroid = calculate_centroid(attention_map) # (B, C, 2)
@@ -742,13 +753,13 @@ if __name__ == '__main__':
     for batch_idx in range(B):
         for channel_idx in range(C):
             plot_point(attention_map[batch_idx, ..., channel_idx].unsqueeze(0).unsqueeze(-1), list(centroid_points[batch_idx, channel_idx]), radius=1, color=1)
-    _png(attention_map, 1, 'Attn Map Region + Centroid')
+    #_png(attention_map, 1, 'Attn Map Region + Centroid')
 
     # plot verts
     attn_map_points = torch.zeros_like(attention_map)
     d_region_yx = [1*H//8, 1*W//8]
     d_region_ab = [6*H//8, 3*W//8]
-    color_region(attn_map_points, d_region_yx, d_region_ab, color=0.5, mode='set')
+    # color_region(attn_map_points, d_region_yx, d_region_ab, color=0.5, mode='set')
 
     c0_region_yx = [12,24]
     c0_region_ab = [36, 48]
@@ -760,8 +771,13 @@ if __name__ == '__main__':
     c2_region_ab = [63, 63]
     if attn_map_points.shape[-1] > 1:
         color_region(attn_map_points[..., 0].unsqueeze(-1), c0_region_yx, c0_region_ab, color=1, mode='set')
-        color_region(attn_map_points[..., 1].unsqueeze(-1), c1_region_yx, c1_region_ab, color=1, mode='set')
-        color_region(attn_map_points[..., 2].unsqueeze(-1), c2_region_yx, c2_region_ab, color=1, mode='set')
+        color_region(attn_map_points[..., 1].unsqueeze(-1), c1_region_yx, c1_region_ab, color=0.5, mode='set')
+        color_region(attn_map_points[..., 2].unsqueeze(-1), c2_region_yx, c2_region_ab, color=0.2, mode='set')
+    _png_batch(attn_map_points, 3, 'Thresholded Attn Map Points -  Channel 0')
+    
+    attn_map_points_thresholded = soft_threshold(attn_map_points, threshold=0.5, sharpness=10)
+    #_png(attn_map_points_thresholded, 3, 'Thresholded Attn Map Points')
+    _png_batch(attn_map_points_thresholded, 4, 'Thresholded Attn Map Points')
 
     # set areas outside the region to 0
     #attn_map_points = attn_map_points * attention_map
@@ -769,23 +785,26 @@ if __name__ == '__main__':
     for v in verts.squeeze(0):
         plot_point(attn_map_points, v, radius=1, color=1)
 
-    _png(attn_map_points, 2, 'Attn Map Proxy Map')
+    _png(attn_map_points, 6, 'Attn Map Proxy Map')
 
     # strengths
-    s_margin = 1.0
+    s_margin = 5.0
     s_repl = 1.0
 
     # test displacement forces 
-    d_zero = torch.tensor([[[0.0, 0]]], dtype=torch.float16, device='cuda') # B C 2
+    displ_zero = torch.tensor([0.0, 0.0], dtype=torch.float16, device='cuda') # B C 2
+    #d_zero = torch.tensor([[[0.0, 0]]], dtype=torch.float16, device='cuda') # B C 2
     d_down = torch.tensor([[[0.1, 0]]], dtype=torch.float16, device='cuda') # B C 2
 
     # simulate displacement forces on our points
-    img_idx = 4
+    img_idx = 7
     iters = 100
     steps = 5
     for i in range(iters):
+        logger.debug('Step %d', i)
+
         # Check for conflicts between target region and attention map
-        theta = 0.001
+        theta = 0.01
         conflict_detection = detect_conflict(attn_map_points, attention_map_region, theta) # (B, C)
         logger.debug(f'Conflict Detection: {conflict_detection}')
         if not conflict_detection.any():
@@ -793,8 +812,14 @@ if __name__ == '__main__':
             break
 
         verts = calculate_centroid(attn_map_points) # (B, C, 2)
+
         # Displacement forces
-        displ_force = displacement_force(attn_map_points, verts, centroid, s_repl, s_margin, clamp = 0) # B C 2
+        displ_force = displacement_force(attn_map_points, verts, centroid, s_repl, s_margin, clamp = 10) # B C 2
+
+        # zero displacement where conflict is none
+        displ_force = displ_force * conflict_detection.unsqueeze(-1)
+
+
         if torch.isnan(displ_force).any():
             logger.warning(f'Nan in displ_force at iter {i}')
 
