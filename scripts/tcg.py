@@ -478,7 +478,11 @@ def detect_conflict(attention_map, region, theta):
     assert region.shape[1:3] == attention_map.shape[1:3], "Region mask must match spatial dimensions of attention map"
     # Calculate the mean attention within the region
     #region = region.unsqueeze(-1) # Add channel dimension: (B, H, W) -> (B, H, W, 1)
-    attention_in_region = attention_map * region.unsqueeze(-1) # Element-wise multiplication
+    # HACK: fixme
+    if region.dim() != attention_map.dim():
+        attention_in_region = attention_map * region.unsqueeze(-1) # Element-wise multiplication
+    else:
+        attention_in_region = attention_map * region
     #mean_attention_in_region = attention_in_region[attention_in_region > 0] 
     mean_attention_in_region = torch.sum(attention_in_region, dim=(1, 2)) / torch.sum(region, dim=(1, 2)) # Mean over (H, W)
     # Compare with threshold theta
