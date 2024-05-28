@@ -36,7 +36,10 @@ class TCGExtensionScript(UIWrapper):
     def setup_ui(self, is_img2img) -> list:
         with gr.Accordion('TCG', open=True):
             active = gr.Checkbox(label="Active", value=True)
-            opts = [active]
+            strength = gr.Slider(label="Strength", value=1.0, minimum=-200.0, maximum=200.0, step=1.0)
+            f_margin = gr.Slider(label="Margin Force", value=1.0, minimum=-10.0, maximum=10.0, step=0.1)
+            f_repl = gr.Slider(label="Repulsion Force", value=1.0, minimum=-10.0, maximum=10.0, step=0.1)
+            opts = [active, strength, f_margin, f_repl]
             for opt in opts:
                 opt.do_not_save_to_config = True
             return opts
@@ -44,7 +47,7 @@ class TCGExtensionScript(UIWrapper):
     def get_modules(self):
         return module_hooks.get_modules( module_name_filter='CrossAttention')
     
-    def before_process_batch(self, p, active, *args, **kwargs):
+    def before_process_batch(self, p, active, strength, f_margin, f_repl, *args, **kwargs):
         self.unhook_callbacks()
         active = getattr(p, 'tcg_active', active)
         if not active:
@@ -89,10 +92,8 @@ class TCGExtensionScript(UIWrapper):
             if not torch.any(conflicts > 0.01):
                 return
 
-
             centroids = calculate_centroid(attn_map) # (B, C, 2)
-            s_margin = 5.0
-            s_repl = 1.0
+            logger.debug(centroids)
             displ_force = displacement_force(attn_map, centroids, region_mask_centroid, s_repl, s_margin, clamp = 10) # B C 2
 
             # reassign the attn map
@@ -101,10 +102,12 @@ class TCGExtensionScript(UIWrapper):
             modified_attn_map, out_centroids = apply_displacements(output_attn_map[..., module.tcg_token_indices].unsqueeze(0), centroids, displ_force)
             output_attn_map[..., module.tcg_token_indices] = modified_attn_map.squeeze(0)
 
-            output = output_attn_map
+            loss = output - output_attn_map
+            loss = loss / (loss.norm() + torch.finfo(loss.dtype).eps)
+            
+            output += strength * loss
 
-
-
+            #output = output_attn_map
 
         def tcg_to_q_hook(module, input, kwargs, output):
                 setattr(module.tcg_parent_module[0], 'tcg_to_q_map', output)
@@ -120,7 +123,7 @@ class TCGExtensionScript(UIWrapper):
         # TODO: Parameterize this
         mask_H, mask_W = 64, 64
         temp_region_mask = torch.zeros((batch_size, mask_H, mask_W, 1), dtype=torch.float32, device=shared.device) # (B, H, W)
-        temp_region_mask[0, 0:mask_H-1, 0:mask_W//2] = 1.0 # mask the left half of the thing
+        temp_region_mask[0, mask_H//4:3*mask_H//4, mask_W//4:3*mask_W//4] = 1.0 # mask the center of the canvas
 
         for module in self.get_modules():
             if not module.network_layer_name.endswith('attn2'):
@@ -143,6 +146,7 @@ class TCGExtensionScript(UIWrapper):
         for module in self.get_modules():
             module_hooks.remove_module_forward_hook(module.to_q, 'tcg_to_q_hook')
             module_hooks.remove_module_forward_hook(module.to_k, 'tcg_to_k_hook')
+            module_hooks.remove_module_forward_hook(module, 'tcg_forward_hook')
             module_hooks.modules_remove_field(module, 'tcg_to_q_map')
             module_hooks.modules_remove_field(module, 'tcg_to_k_map')
             module_hooks.modules_remove_field(module, 'tcg_region_mask')
