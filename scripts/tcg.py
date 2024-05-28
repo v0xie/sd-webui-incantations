@@ -2,6 +2,7 @@ import os, sys
 import logging
 import gradio as gr
 import torch
+import random
 import torch.nn.functional as F
 
 if __name__ == '__main__' and os.environ.get('INCANT_DEBUG', None):
@@ -245,7 +246,7 @@ def warping_force(attention_map, verts, displacements, h, w):
 
     attention_map = attention_map.permute(3, 0, 1, 2) # (B, H, W, C) -> (C, B, H, W)
     attention_map = attention_map.to(torch.float32)
-    out_attn_map = F.grid_sample(attention_map, grid, mode='bicubic', padding_mode='zeros', align_corners=False)
+    out_attn_map = F.grid_sample(attention_map, grid, mode='bilinear', padding_mode='zeros', align_corners=False)
     attention_map = attention_map.permute(1, 2, 3, 0) # (C, B, H, W) -> (B, H, W, C)
 
     out_attn_map = out_attn_map.permute(1, 2, 3, 0) # (C, B, H, W) -> (B, H, W, C)
@@ -329,26 +330,27 @@ def calculate_centroid(attention_map):
     Returns:
         torch.Tensor - The centroid of the attention map. Shape: (B, C, 2), where the last 2 dims are (y, x)
     """
-    
-    # Get the height and width
-    B, H, W, C = attention_map.shape
+    # necessary to avoid inf
+    attention_map = attention_map.to(torch.float32)
 
-    # Create a coordinate grid
-    y_coords = torch.arange(H).reshape(1, H, 1, 1).expand(B, H, W, C).to(attention_map.device)
-    x_coords = torch.arange(W).reshape(1, 1, W, 1).expand(B, H, W, C).to(attention_map.device)
-    
-    # Flatten the height and width dimensions
-    flattened_matrix = attention_map.reshape(B, -1, C)
-    y_coords = y_coords.reshape(B, -1, C)
-    x_coords = x_coords.reshape(B, -1, C)
-    
-    # Calculate weighted sums
-    total_weight = flattened_matrix.sum(dim=1)
-    centroid_y = (y_coords * flattened_matrix).sum(dim=1) / total_weight
-    centroid_x = (x_coords * flattened_matrix).sum(dim=1) / total_weight
-    
+    # Create tensors of the y and x coordinates
+    y_coords = torch.arange(H, dtype=attention_map.dtype, device=attention_map.device).view(1, H, 1, 1)
+    x_coords = torch.arange(W, dtype=attention_map.dtype, device=attention_map.device).view(1, 1, W, 1)
+
+    # Calculate the weighted sums of the coordinates
+    weighted_sum_y = torch.sum(y_coords * attention_map, dim=[1, 2])
+    weighted_sum_x = torch.sum(x_coords * attention_map, dim=[1, 2])
+
+    # Calculate the total weights
+    total_weights = torch.sum(attention_map, dim=[1, 2])
+
+    # Calculate the centroids
+    centroid_y = weighted_sum_y / total_weights
+    centroid_x = weighted_sum_x / total_weights
+
     # Combine x and y centroids
-    centroids = torch.stack([centroid_y, centroid_x], dim=-1)
+    centroids = torch.stack([centroid_y, centroid_x], dim=-1) 
+    
     return centroids
 
 
@@ -363,10 +365,11 @@ def detect_conflict(attention_map, region, theta):
     torch.Tensor: Conflict detection result of shape (B, K), with values 0 or 1 indicating conflict between tokens and the region.
     """
     # Ensure region is the same shape as the spatial dimensions of attention_map
-    assert region.shape[1:] == attention_map.shape[1:3], "Region mask must match spatial dimensions of attention map"
+    assert region.shape[1:] == attention_map.shape[1:], "Region mask must match spatial dimensions of attention map"
     # Calculate the mean attention within the region
-    region = region.unsqueeze(-1) # Add channel dimension: (B, H, W) -> (B, H, W, 1)
+    #region = region.unsqueeze(-1) # Add channel dimension: (B, H, W) -> (B, H, W, 1)
     attention_in_region = attention_map * region # Element-wise multiplication
+    #mean_attention_in_region = attention_in_region[attention_in_region > 0] 
     mean_attention_in_region = torch.sum(attention_in_region, dim=(1, 2)) / torch.sum(region, dim=(1, 2)) # Mean over (H, W)
     # Compare with threshold theta
     conflict = (mean_attention_in_region > theta).float() # Convert boolean to float (0 or 1)
@@ -580,7 +583,7 @@ if __name__ == '__main__':
         title=f'{title}',
     )
 
-    B, H, W, C = 1, 64, 64, 1
+    B, H, W, C = 1, 64, 64, 3
     dtype = torch.float16
     device = 'cuda'
 
@@ -610,12 +613,17 @@ if __name__ == '__main__':
 
     _png(attention_map, 0, 'Initial Attn Map')
 
+    attention_map_region = attention_map.detach().clone()
+
     # calculate centroid of region
     centroid = calculate_centroid(attention_map) # (B, C, 2)
-    centroid_points = centroid.squeeze(0).squeeze(0)
+    #centroid_points = centroid.squeeze(0).squeeze(0)
+    centroid_points = centroid
 
     # plot region centroid
-    plot_point(attention_map, centroid_points, radius=1, color=1)
+    for batch_idx in range(B):
+        for channel_idx in range(C):
+            plot_point(attention_map[batch_idx, ..., channel_idx].unsqueeze(0).unsqueeze(-1), list(centroid_points[batch_idx, channel_idx]), radius=1, color=1)
     _png(attention_map, 1, 'Attn Map Region + Centroid')
 
     # plot verts
@@ -623,6 +631,19 @@ if __name__ == '__main__':
     d_region_yx = [1*H//8, 1*W//8]
     d_region_ab = [6*H//8, 3*W//8]
     color_region(attn_map_points, d_region_yx, d_region_ab, color=0.5, mode='set')
+
+    c0_region_yx = [12,24]
+    c0_region_ab = [36, 48]
+
+    c1_region_yx = [36,36]
+    c1_region_ab = [48, 48]
+
+    c2_region_yx = [48, 48]
+    c2_region_ab = [63, 63]
+    if attn_map_points.shape[-1] > 1:
+        color_region(attn_map_points[..., 0].unsqueeze(-1), c0_region_yx, c0_region_ab, color=1, mode='set')
+        color_region(attn_map_points[..., 1].unsqueeze(-1), c1_region_yx, c1_region_ab, color=1, mode='set')
+        color_region(attn_map_points[..., 2].unsqueeze(-1), c2_region_yx, c2_region_ab, color=1, mode='set')
 
     # set areas outside the region to 0
     #attn_map_points = attn_map_points * attention_map
@@ -633,8 +654,8 @@ if __name__ == '__main__':
     _png(attn_map_points, 2, 'Attn Map Proxy Map')
 
     # strengths
-    s_margin = 500.0
-    s_repl = 10.0
+    s_margin = 1.0
+    s_repl = 1.0
 
     # displacement forces 
     d_zero = torch.tensor([[[0.0, 0]]], dtype=torch.float16, device='cuda') # B C 2
@@ -645,60 +666,34 @@ if __name__ == '__main__':
     iters = 100
     steps = 5
     for i in range(iters):
-        # copy the map
-        bbox_map = calculate_region(attn_map_points) # (B, C, 4)
+        # Check for conflicts between target region and attention map
+        theta = 0.001
+        conflict_detection = detect_conflict(attn_map_points, attention_map_region, theta) # (B, C)
+        logger.debug(f'Conflict Detection: {conflict_detection}')
+        if not conflict_detection.any():
+            logger.info(f'No conflict detected at iter {i}')
+            break
 
+        verts = calculate_centroid(attn_map_points) # (B, C, 2)
+        # Displacement forces
         displ_force = displacement_force(attn_map_points, verts, centroid, s_repl, s_margin, clamp = 10) # B C 2
-
-        # check for nan
         if torch.isnan(displ_force).any():
             logger.warning(f'Nan in displ_force at iter {i}')
 
-        # fix me
-        # displ_force = d_zero
-
+        # apply displacements and calculate new centroids
         attn_map_points, out_verts = apply_displacements(attn_map_points, verts, displ_force)
-
-        # new_vert_pos = verts + displ_force
-        # new_centroid = calculate_centroid(attn_map_points) # (B, C, 2)
-
-
-        logger.debug(f'Displacement Force: {debug_coord(displ_force)}, Centroid: {debug_coord(out_verts)}')
-
         verts = calculate_centroid(attn_map_points) # (B, C, 2)
-        # verts = out_verts 
 
-        # copy to put on top visualizations 
-        #copied_map = torch.zeros_like(displaced_map).to(device, dtype)
+        # debug output
         copied_map = attn_map_points.detach().clone()
-
         color_region(copied_map, region_yx, region_ab, color=0.1, mode='add')
 
-        for v in verts:
-            plot_point(copied_map, v.squeeze(0), radius=1, color=1.0)
+        # for v in verts:
+        #     plot_point(copied_map, v.squeeze(0), radius=1, color=1.0)
 
-        #if i % 10 == 0:
-        _png(copied_map, img_idx+i, f'Displacement Forces Step {i}')
-
-
-    # # conflict detection
-    # attention_map = torch.ones(B, H, W, C).to('cuda') # B H W C
-    # region = torch.zeros((B, H, W), dtype=torch.float16, device='cuda') # B H W C
-    # # set the left half of region to 1
-    # region[:, :, :W//2] = 1
-    # theta = 0.5 # Example threshold
-    # conflict_detection = detect_conflict(attention_map, region, theta)
-    # print(conflict_detection)
-
-    # # Create a simple attention map with known values
-    # attention_map = torch.zeros((B, H, W, C), device='cuda')  # Shape (batch_size, height, width, channels)
-    # attention_map[0, H//2, W//2, 0] = 1.0  # Put all attention on the center
-    
-    # # Calculate centroids
-    # centroids = calculate_centroid(attention_map) # (B, C, 2)
-    
-    # # Expected centroid is the center of the attention map (2, 2)
-    # expected_centroid = torch.tensor([[[H/2, W/2]]], device='cuda')
-    
-    # # Check if the calculated centroid matches the expected centroid
-    # assert torch.allclose(centroids, expected_centroid), f"Expected {expected_centroid}, but got {centroids}"
+        logger.debug(f'Displacement Force: {debug_coord(displ_force)}, Centroid: {debug_coord(out_verts)}')
+        for c in range(C):
+            ofs = c * 100 
+            #plot_point(copied_map[:c], img_idx+ofs+i+c, radius=1, color=1.0)
+            _png(copied_map[..., c].unsqueeze(-1), img_idx+ofs+i, f'Displacement Forces Channel {c} Step {i}')
+        #_png(copied_map, img_idx+i, f'Displacement Forces Step {i}')
