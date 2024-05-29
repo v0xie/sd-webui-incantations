@@ -1,5 +1,7 @@
 import os, sys
 import logging
+import numpy as np
+from PIL import Image
 import gradio as gr
 import torch
 import random
@@ -25,13 +27,13 @@ logger = logging.getLogger(__name__)
 logging.basicConfig()
 logger.setLevel(logging.DEBUG)
 
+
 """
 WIP Implementation of https://arxiv.org/abs/2404.11824
 Author: v0xie
 GitHub URL: https://github.com/v0xie/sd-webui-incantations
 
 """
-
 
 class TCGExtensionScript(UIWrapper):
     def __init__(self):
@@ -52,23 +54,48 @@ class TCGExtensionScript(UIWrapper):
     
     def setup_ui(self, is_img2img) -> list:
         with gr.Accordion('TCG', open=True):
-            active = gr.Checkbox(label="Active", value=True, elem_id="tcg_active")
-            strength = gr.Slider(label="Strength", value=1.0, minimum=-5.0, maximum=5.0, step=0.1, elem_id="tcg_strength")
-            f_margin = gr.Slider(label="Margin Force", value=1.0, minimum=-2.0, maximum=2.0, step=0.1, elem_id="tcg_f_margin")
-            f_repl = gr.Slider(label="Repulsion Force", value=1.0, minimum=-2.0, maximum=2.0, step=0.1, elem_id="tcg_f_repl")
-            theta = gr.Slider(label="Conflict Threshold", value=0.01, minimum=0.0, maximum=1.0, step=0.001, elem_id="tcg_theta")
-            threshold = gr.Slider(label="Soft Threshold", value=0.5, minimum=0.0, maximum=1.0, step=0.01, elem_id="tcg_attn_threshold")
-            sharpness = gr.Slider(label="Threshold Sharpness", value=10.0, minimum=0.1, maximum=20.0, step=0.1, elem_id="tcg_sharpness")
-            selfguidance_scale = gr.Slider(label="Self-Guidance Scale", value=1.0, minimum=-2.0, maximum=2.0, step=0.1, elem_id="tcg_selfguidance_scale")
-            opts = [active, strength, f_margin, f_repl, theta, threshold, sharpness, selfguidance_scale]
+            with gr.Row():
+                image_mask = gr.Image(type='pil', image_mode='L', label="Mask", interactive=False, height = 256)
+            with gr.Row():
+                generate_mask = gr.Button("Generate Mask", elem_id="tcg_btn_generate_mask")
+            with gr.Row():
+                with gr.Column():
+                    left = gr.Slider(label="Left", value=0.2, minimum=0.0, maximum=1.0, step=0.05, elem_id="tcg_mask_left")
+                with gr.Column():
+                    with gr.Row():
+                        top = gr.Slider(label="Top", value=0.3, minimum=0.0, maximum=1.0, step=0.05, elem_id="tcg_mask_top")
+                    with gr.Row():
+                        bottom = gr.Slider(label="Bottom", value=0.7, minimum=0.0, maximum=1.0, step=0.05, elem_id="tcg_mask_bottom")
+                with gr.Column():
+                    right = gr.Slider(label="Right", value=0.5, minimum=0.0, maximum=1.0, step=0.05, elem_id="tcg_mask_right")
+            with gr.Row():
+                active = gr.Checkbox(label="Active", value=True, elem_id="tcg_active")
+                strength = gr.Slider(label="Strength", value=1.0, minimum=-5.0, maximum=5.0, step=0.1, elem_id="tcg_strength")
+                f_margin = gr.Slider(label="Margin Force", value=1.0, minimum=-2.0, maximum=2.0, step=0.1, elem_id="tcg_f_margin")
+                f_repl = gr.Slider(label="Repulsion Force", value=1.0, minimum=-2.0, maximum=2.0, step=0.1, elem_id="tcg_f_repl")
+                theta = gr.Slider(label="Conflict Threshold", value=0.01, minimum=0.0, maximum=1.0, step=0.001, elem_id="tcg_theta")
+                threshold = gr.Slider(label="Soft Threshold", value=0.5, minimum=0.0, maximum=1.0, step=0.01, elem_id="tcg_attn_threshold")
+                sharpness = gr.Slider(label="Threshold Sharpness", value=10.0, minimum=0.1, maximum=20.0, step=0.1, elem_id="tcg_sharpness")
+                selfguidance_scale = gr.Slider(label="Self-Guidance Scale", value=1.0, minimum=-2.0, maximum=2.0, step=0.1, elem_id="tcg_selfguidance_scale")
+            with gr.Row():
+                start_step = gr.Slider(label="Start Step", value=0, minimum=0, maximum=100, step=1, elem_id="tcg_start_step")
+                end_step = gr.Slider(label="End Step", value=0, minimum=1, maximum=100, step=1, elem_id="tcg_end_step")
+            opts = [active, strength, f_margin, f_repl, theta, threshold, sharpness, selfguidance_scale, image_mask, start_step, end_step]
             for opt in opts:
                 opt.do_not_save_to_config = True
+
+            generate_mask.click(
+                create_mask,
+                inputs = [left, right, top, bottom],
+                outputs = [image_mask]
+            )
+            
             return opts
     
     def get_modules(self):
         return module_hooks.get_modules( module_name_filter='CrossAttention')
     
-    def before_process_batch(self, p, active, strength, f_margin, f_repl, theta, threshold, sharpness, selfguidance_scale, *args, **kwargs):
+    def before_process_batch(self, p, active, strength, f_margin, f_repl, theta, threshold, sharpness, selfguidance_scale, image_mask, start_step, end_step, *args, **kwargs):
         self.unhook_callbacks()
         active = getattr(p, 'tcg_active', active)
         if not active:
@@ -80,10 +107,14 @@ class TCGExtensionScript(UIWrapper):
         threshold= getattr(p, 'tcg_attn_threshold', threshold)
         sharpness = getattr(p, 'tcg_sharpness', sharpness)
         selfguidance_scale = getattr(p, 'tcg_selfguidance_scale', selfguidance_scale)
+        start_step = getattr(p, 'tcg_start_step', start_step)
+        end_step = getattr(p, 'tcg_end_step', end_step)
         
         batch_size = p.batch_size
         height, width = p.height, p.width
         hw = height * width
+
+        setattr(p, 'tcg_current_step', 0)
 
         token_count, max_length = prompt_utils.get_token_count(p.prompt, p.steps, is_positive=True)
         min_idx = 1
@@ -91,13 +122,25 @@ class TCGExtensionScript(UIWrapper):
         token_indices = list(range(min_idx, max_idx))
 
         def tcg_forward_hook(module, input, kwargs, output):
+            current_step = module.tcg_current_step
+            if not start_step <= current_step <= end_step:
+                return
+
             # calc attn scores
             q_map = module.tcg_to_q_map
             k_map = module.tcg_to_k_map
+            v_map = module.tcg_to_v_map
+
+            batch_size, seq_len, inner_dim = output.shape
+            heads = module.heads
+
             # select k tokens
-            k_map = k_map.transpose(-1, -2)[..., module.tcg_token_indices].transpose(-1,-2)
-            attn_scores = get_attention_scores(q_map, k_map, dtype=q_map.dtype) # (2*B, H*W, C)
-            attn_scores = attn_scores.to(torch.float32)
+            # k_map = k_map.transpose(-1, -2)[..., module.tcg_token_indices].transpose(-1,-2)
+
+            # calc attn scores for q and k
+            out_attn_scores = get_attention_scores(q_map, k_map, dtype=q_map.dtype) # (2*B, H*W, C)
+            out_attn_scores = out_attn_scores.to(torch.float32)
+            attn_scores = out_attn_scores[..., module.tcg_token_indices] # (B, H*W, C)
             B, HW, C = attn_scores.shape
 
             downscale_h = round((HW * (height / width)) ** 0.5)
@@ -121,7 +164,8 @@ class TCGExtensionScript(UIWrapper):
 
             self_guidance = obj_appearance
             self_guidance = self_guidance.to(output.dtype)
-            self_guidance_factor = output.detach().clone()
+            self_guidance_factor = out_attn_scores.detach().clone()
+            #self_guidance_factor = output.detach().clone()
             self_guidance_factor[..., module.tcg_token_indices] = self_guidance
 
             attn_map = attn_map.view(attn_map.size(0), *inner_dims, attn_map.size(-1))
@@ -143,26 +187,38 @@ class TCGExtensionScript(UIWrapper):
                 return
 
             centroids = calculate_centroid(attn_map) # (B, C, 2)
-            #logger.debug(centroids)
 
             displ_force = displacement_force(attn_map, centroids, region_mask_centroid, f_repl, f_margin, clamp = 10) # B C 2
 
             # zero out displacement force
             displ_force = displ_force * conflicts.unsqueeze(-1)
-            logger.debug("Displacements: %s", displ_force)
+            
+            #displ_force *= strength
+            #logger.debug("Displacements: %s", displ_force)
 
-            # reassign the attn map
-            output_attn_map = output.detach().clone()
-            modified_attn_map, out_centroids = apply_displacements(output_attn_map[..., module.tcg_token_indices].unsqueeze(0), centroids, displ_force)
-            output_attn_map[..., module.tcg_token_indices] = modified_attn_map.squeeze(0)
+            # apply displacements to the attn map
+            output_attn_map = attn_map.detach().clone()
+            modified_attn_map, out_centroids = apply_displacements(output_attn_map, centroids, displ_force)
 
-            loss = output - output_attn_map
+            # do the rest of attention
+            output_attn_map = output_attn_map.view(output_attn_map.size(0), -1, output_attn_map.size(-1))
+            out_attn_scores[..., module.tcg_token_indices] = output_attn_map 
+            new_output = out_attn_scores @ v_map.to(out_attn_scores.dtype) # (B, HW, C) @ (B, HW, C) -> (B, HW, C)
+            new_output = new_output.to(output.dtype)
+
+            new_output = module.to_out[0](new_output)
+            new_output = module.to_out[1](new_output)
+
+            logger.debug("old: %s\nnew: %s\ndisplacements: %s\ndisplaced centroids: %s", centroids, out_centroids, displ_force, out_centroids - centroids)
+
+            #loss = strength * torch.norm(output - output_attn_map, dim=-1) ** 2 + selfguidance_scale * self_guidance_factor
+            loss = output - new_output 
             loss = normalize_map(loss)
             loss **= 2
-
+            loss *= strength
+            loss += selfguidance_scale * self_guidance_factor
             
-            output += strength * loss
-            output += selfguidance_scale * self_guidance_factor
+            output += loss
 
             #output = output_attn_map
 
@@ -171,28 +227,39 @@ class TCGExtensionScript(UIWrapper):
 
         def tcg_to_k_hook(module, input, kwargs, output):
                 setattr(module.tcg_parent_module[0], 'tcg_to_k_map', output)
+
+        def tcg_to_v_hook(module, input, kwargs, output):
+                setattr(module.tcg_parent_module[0], 'tcg_to_v_map', output)
         
         def cfg_denoised_callback(params: script_callbacks.CFGDenoisedParams):
-            pass
+            for module in self.get_modules():
+                setattr(module, 'tcg_current_step', p.tcg_current_step)
+            p.tcg_current_step += 1
 
         script_callbacks.on_cfg_denoised(cfg_denoised_callback)
 
-        # TODO: Parameterize this
-        mask_H, mask_W = 64, 64
-        temp_region_mask = torch.zeros((batch_size, mask_H, mask_W, 1), dtype=torch.float32, device=shared.device) # (B, H, W)
-        temp_region_mask[0, 1*mask_H//8 : 7*mask_H//8 , 2*mask_W//8 : 5*mask_W//8] = 1.0 # mask the left half ish of the canvas
+        mask_H, mask_W = image_mask.size
+        temp_region_mask = torch.from_numpy(np.array(image_mask)).unsqueeze(-1).unsqueeze(0).to(torch.float32).to(shared.device) # (1, H, W, 1)
+        temp_region_mask = temp_region_mask.repeat(batch_size, 1, 1, 1) # (B, H, W, 1)
+        # temp_region_mask = torch.zeros((batch_size, mask_H, mask_W, 1), dtype=torch.float32, device=shared.device) # (B, H, W)
+        #temp_region_mask = torch.zeros((batch_size, mask_H, mask_W, 1), dtype=torch.float32, device=shared.device) # (B, H, W)
+        #temp_region_mask[0, 1*mask_H//8 : 7*mask_H//8 , 2*mask_W//8 : 5*mask_W//8] = 1.0 # mask the left half ish of the canvas
 
         for module in self.get_modules():
             if not module.network_layer_name.endswith('attn2'):
                 continue
+            module_hooks.modules_add_field(module, 'tcg_current_step', 0)
             module_hooks.modules_add_field(module, 'tcg_to_q_map', None)
             module_hooks.modules_add_field(module, 'tcg_to_k_map', None)
+            module_hooks.modules_add_field(module, 'tcg_to_v_map', None)
             module_hooks.modules_add_field(module, 'tcg_region_mask', temp_region_mask)
             module_hooks.modules_add_field(module, 'tcg_token_indices', torch.tensor(token_indices, dtype=torch.int32, device=shared.device))
             module_hooks.modules_add_field(module.to_q, 'tcg_parent_module', [module])
             module_hooks.modules_add_field(module.to_k, 'tcg_parent_module', [module])
+            module_hooks.modules_add_field(module.to_v, 'tcg_parent_module', [module])
             module_hooks.module_add_forward_hook(module.to_q, tcg_to_q_hook, with_kwargs=True)
             module_hooks.module_add_forward_hook(module.to_k, tcg_to_k_hook, with_kwargs=True)
+            module_hooks.module_add_forward_hook(module.to_v, tcg_to_v_hook, with_kwargs=True)
             module_hooks.module_add_forward_hook(module, tcg_forward_hook, with_kwargs=True)
 
     def postprocess_batch(self, p, *args, **kwargs):
@@ -203,13 +270,17 @@ class TCGExtensionScript(UIWrapper):
         for module in self.get_modules():
             module_hooks.remove_module_forward_hook(module.to_q, 'tcg_to_q_hook')
             module_hooks.remove_module_forward_hook(module.to_k, 'tcg_to_k_hook')
+            module_hooks.remove_module_forward_hook(module.to_v, 'tcg_to_v_hook')
             module_hooks.remove_module_forward_hook(module, 'tcg_forward_hook')
+            module_hooks.modules_remove_field(module, 'tcg_current_step')
             module_hooks.modules_remove_field(module, 'tcg_to_q_map')
             module_hooks.modules_remove_field(module, 'tcg_to_k_map')
+            module_hooks.modules_remove_field(module, 'tcg_to_v_map')
             module_hooks.modules_remove_field(module, 'tcg_region_mask')
             module_hooks.modules_remove_field(module, 'tcg_token_indices')
             module_hooks.modules_remove_field(module.to_q, 'tcg_parent_module')
             module_hooks.modules_remove_field(module.to_k, 'tcg_parent_module')
+            module_hooks.modules_remove_field(module.to_v, 'tcg_parent_module')
 
     def before_process(self, p, *args, **kwargs):
         pass
@@ -916,6 +987,29 @@ if __name__ == '__main__':
             #plot_point(copied_map[:c], img_idx+ofs+i+c, radius=1, color=1.0)
             _png(copied_map[..., c].unsqueeze(-1), img_idx+ofs+i, f'Displacement Forces Channel {c} Step {i}')
         #_png(copied_map, img_idx+i, f'Displacement Forces Step {i}')
+
+
+def create_mask(left, right, top, bottom, width=256, height=256):
+    """ Create a PIL.Image mask for the region bounded by the given normalized coordinates 
+    Arguments:
+        left: float - The left coordinate of the region
+        right: float - The right coordinate of the region
+        top: float - The top coordinate of the region
+        bottom: float - The bottom coordinate of the region
+        width: int - The width of the mask
+        height: int - The height of the mask
+    Returns:
+        PIL.Image - The mask image
+    """
+    mask = np.zeros((height, width), dtype=np.uint8)
+    x0, x1 = int(left * width), int(right * width)
+    y0, y1 = int(top * height), int(bottom * height)
+    x_min, x_max = min(x0, x1), max(x0, x1) 
+    y_min, y_max = min(y0, y1), max(y0, y1)
+
+    mask[y_min:y_max, x_min:x_max] = 255
+    return Image.fromarray(mask.astype(np.uint8))
+
 
 # XYZ Plot
 # Based on @mcmonkey4eva's XYZ Plot implementation here: https://github.com/mcmonkeyprojects/sd-dynamic-thresholding/blob/master/scripts/dynamic_thresholding.py
