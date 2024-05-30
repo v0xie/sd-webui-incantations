@@ -82,7 +82,7 @@ class TCGExtensionScript(UIWrapper):
                 clamp = gr.Slider(label="Force Clamp", value=1.0, minimum=0.0, maximum=20.0, step=1.0, elem_id="tcg_clamp")
             with gr.Row():
                 start_step = gr.Slider(label="Start Step", value=0, minimum=0, maximum=100, step=1, elem_id="tcg_start_step")
-                end_step = gr.Slider(label="End Step", value=0, minimum=1, maximum=100, step=1, elem_id="tcg_end_step")
+                end_step = gr.Slider(label="End Step", value=100, minimum=1, maximum=100, step=1, elem_id="tcg_end_step")
             opts = [active, strength, f_margin, f_repl, theta, threshold, sharpness, selfguidance_scale, image_mask, start_step, end_step, clamp]
             for opt in opts:
                 opt.do_not_save_to_config = True
@@ -129,16 +129,36 @@ class TCGExtensionScript(UIWrapper):
             current_step = module.tcg_current_step
             if not start_step <= current_step <= end_step:
                 return
-            # calc attn scores
-            q_map = module.tcg_to_q_map # B, HW, inner_dim
-            k_map = module.tcg_to_k_map # B, C, inner_dim
-            v_map = module.tcg_to_v_map # B, C, inner_dim
+            if not len(token_indices) > 0:
+                return
 
+            heads = module.heads
+            # calc attn scores
+            q_map = head_to_batch_dim(module.tcg_to_q_map, heads) # B, heads, HW, inner_dim
+            k_map = head_to_batch_dim(module.tcg_to_k_map, heads) # B, heads, C, inner_dim
+            v_map = head_to_batch_dim(module.tcg_to_v_map, heads) # B, heads, C, inner_dim
+            batch_size, _, seq_len, inner_dim = q_map.shape
+
+            # attention
             attn_scores = q_map @ k_map.transpose(-1, -2)
-            #attn_scores *= module.scale
-            channel_dim = q_map.shape[-1]
-            attn_scores /= (channel_dim ** 0.5)
-            attn_scores = attn_scores.softmax(dim=-1).to(device=shared.device, dtype=q_map.dtype)
+
+            # attn_scores *= module.scale # same as dividing by channel dim
+            #channel_dim = q_map.shape[-1]
+            #attn_scores /= (channel_dim ** 0.5)
+
+            hidden_states = torch.nn.functional.scaled_dot_product_attention(
+                q_map, k_map, v_map, attn_mask=None, dropout_p=0.0, is_causal=False
+            )
+            # attn_scores = attn_scores.softmax(dim=-1).to(device=shared.device, dtype=q_map.dtype)
+            #orig_attn_map = attn_scores @ v_map
+            hidden_states = hidden_states.transpose(1, 2).reshape(batch_size, -1, heads * inner_dim)
+            #hidden_states = batch_to_head_dim(attn_scores, heads) # B, HW, C
+
+            hidden_states = module.to_out[0](hidden_states)
+            # dropout
+            hidden_states = module.to_out[1](hidden_states)
+
+            return hidden_states 
 
             # select k tokens
             # k_map = k_map.transpose(-1, -2)[..., module.tcg_token_indices].transpose(-1,-2)
@@ -221,8 +241,12 @@ class TCGExtensionScript(UIWrapper):
             output_attn_map = output_attn_map @ v_map
             self_guidance_factor = self_guidance_factor @ v_map
 
-            loss = output - output_attn_map
-            #loss **= 2
+            loss = output_attn_map
+            #loss = output - output_attn_map
+            return loss
+
+            loss = normalize_map(loss)
+            loss **= 2
             
             output += strength * loss
             output += selfguidance_scale * self_guidance_factor
@@ -1044,28 +1068,32 @@ def prepare_attn_map(to_k_map, heads):
 
 
 # based on diffusers/models/attention_processor.py Attention head_to_batch_dim
-def head_to_batch_dim(x, heads, out_dim=3):
-        head_size = heads
-        if x.ndim == 3:
-
-                batch_size, seq_len, dim = x.shape
-                extra_dim = 1
-        else:
-               batch_size, extra_dim, seq_len, dim = x.shape
-        x = x.reshape(batch_size, seq_len * extra_dim, head_size, dim // head_size)
-        x = x.permute(0, 2, 1, 3)
-        if out_dim == 3:
-               x = x.reshape(batch_size * head_size, seq_len * extra_dim, dim // head_size)
-        return x
+def head_to_batch_dim(x, heads):
+    """ Rearrange the tensor to have the head dimension as the batch dimension 
+    Arguments:
+        x: torch.Tensor - The tensor to rearrange (B, HW, D), where D is heads * dim
+        heads: int - The number of heads
+    Returns:
+        torch.Tensor - The rearranged tensor (B, heads, HW, D // heads)
+    """
+    B, HW, D = x.shape
+    x = x.view(B, HW, heads, D // heads).transpose(1, 2)
+    return x
 
 
 # based on diffusers/models/attention_processor.py Attention batch_to_head_dim
 def batch_to_head_dim(x, heads):
-        head_size = heads
-        batch_size, seq_len, dim = x.shape
-        x = x.reshape(batch_size // head_size, head_size, seq_len, dim)
-        x = x.permute(0, 2, 1, 3).reshape(batch_size // head_size, seq_len, dim * head_size)
-        return x
+    """ Rearrange the tensor to have the batch dimension as the head dimension
+    Arguments:
+        x: torch.Tensor - The tensor to rearrange (B, heads, HW, D // heads)
+        heads: int - The number of heads
+    Returns:
+        torch.Tensor - The rearranged tensor (B, HW, D)
+    """
+    B, head_dim, HW, D = x.shape
+    x = x.transpose(1, 2) # (B, HW, heads, D // heads)
+    x = x.reshape(B, HW, head_dim * D)
+    return x
 
 
 def average_over_head_dim(x, heads):
