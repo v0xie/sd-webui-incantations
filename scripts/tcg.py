@@ -132,30 +132,25 @@ class TCGExtensionScript(UIWrapper):
             if not len(token_indices) > 0:
                 return
 
+            # sdp attention from sd_hijack_optimizations.py
             heads = module.heads
-            # calc attn scores
             q_map = head_to_batch_dim(module.tcg_to_q_map, heads) # B, heads, HW, inner_dim
             k_map = head_to_batch_dim(module.tcg_to_k_map, heads) # B, heads, C, inner_dim
             v_map = head_to_batch_dim(module.tcg_to_v_map, heads) # B, heads, C, inner_dim
             batch_size, _, seq_len, inner_dim = q_map.shape
+            # sdp from pytorch
+            L, S = q_map.size(-2), k_map.size(-2)
+            scale_factor = module.scale
+            #attn_bias = torch.zeros(L, S, dtype=q_map.dtype)
+            attn_scores = q_map @ k_map.transpose(-1, -2) * scale_factor
+            #attn_scores += attn_bias
+            attn_scores = torch.softmax(attn_scores, dim=-1)
+            attn_scores @= v_map
+            hidden_states = attn_scores
 
-            # attention
-            attn_scores = q_map @ k_map.transpose(-1, -2)
-
-            # attn_scores *= module.scale # same as dividing by channel dim
-            #channel_dim = q_map.shape[-1]
-            #attn_scores /= (channel_dim ** 0.5)
-
-            hidden_states = torch.nn.functional.scaled_dot_product_attention(
-                q_map, k_map, v_map, attn_mask=None, dropout_p=0.0, is_causal=False
-            )
-            # attn_scores = attn_scores.softmax(dim=-1).to(device=shared.device, dtype=q_map.dtype)
-            #orig_attn_map = attn_scores @ v_map
+            # to output map
             hidden_states = hidden_states.transpose(1, 2).reshape(batch_size, -1, heads * inner_dim)
-            #hidden_states = batch_to_head_dim(attn_scores, heads) # B, HW, C
-
             hidden_states = module.to_out[0](hidden_states)
-            # dropout
             hidden_states = module.to_out[1](hidden_states)
 
             return hidden_states 
