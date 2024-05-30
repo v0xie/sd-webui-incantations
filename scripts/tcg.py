@@ -141,36 +141,38 @@ class TCGExtensionScript(UIWrapper):
             # sdp from pytorch
             L, S = q_map.size(-2), k_map.size(-2)
             scale_factor = module.scale
-            #attn_bias = torch.zeros(L, S, dtype=q_map.dtype)
             attn_scores = q_map @ k_map.transpose(-1, -2) * scale_factor
-            #attn_scores += attn_bias
             attn_scores = torch.softmax(attn_scores, dim=-1)
-            attn_scores @= v_map
-            hidden_states = attn_scores
 
-            # to output map
-            hidden_states = hidden_states.transpose(1, 2).reshape(batch_size, -1, heads * inner_dim)
-            hidden_states = module.to_out[0](hidden_states)
-            hidden_states = module.to_out[1](hidden_states)
 
-            return hidden_states 
+            #return hidden_states 
 
             # select k tokens
             # k_map = k_map.transpose(-1, -2)[..., module.tcg_token_indices].transpose(-1,-2)
             #attn_scores = get_attention_scores(q_map, k_map, dtype=q_map.dtype) # (2*B, H*W, C)
-            attn_scores = attn_scores.to(torch.float32)
-            B, HW, C = attn_scores.shape
+            # attn_scores = attn_scores.to(torch.float32)
+            B, _, HW, C = attn_scores.shape
 
-            downscale_h = round((HW * (height / width)) ** 0.5)
             # attn_scores = attn_scores.view(2, attn_scores.size(0)//2, downscale_h, HW//downscale_h, attn_scores.size(-1)).mean(dim=0) # (2*B, HW, C) -> (B, H, W, C)
-            attn_scores = attn_scores.view(attn_scores.size(0), downscale_h, HW//downscale_h, attn_scores.size(-1)) # (2*B, HW, C) -> (B, H, W, C)
 
             # slice attn map
-            attn_map = attn_scores[..., module.tcg_token_indices].detach().clone() # (B, H, W, K) where K is the subset of tokens
+            #attn_map = attn_scores[..., module.tcg_token_indices].detach().clone() # (B, H, W, K) where K is the subset of tokens
 
             # threshold it
             # also represents object shape
-            attn_map = soft_threshold(attn_map, threshold=threshold, sharpness=sharpness) # B H W C
+            downscale_h = round((HW * (height / width)) ** 0.5)
+            attn_scores = attn_scores.view(attn_scores.size(0) * heads, downscale_h, HW//downscale_h, attn_scores.size(-1)) # (B, heads, HW, C) -> (B*heads, H, W, C)
+            attn_map = soft_threshold(attn_scores, threshold=threshold, sharpness=sharpness) # B H W C
+
+            attn_map = attn_map.view(B, heads, HW, attn_map.size(-1)) # (B, heads, H, W, C) -> (B,heads, HW, C)
+
+            # to output map
+            hidden_states = attn_map @ v_map
+            #hidden_states = attn_scores @ v_map
+            hidden_states = hidden_states.transpose(1, 2).reshape(batch_size, -1, heads * inner_dim)
+            hidden_states = module.to_out[0](hidden_states)
+            hidden_states = module.to_out[1](hidden_states)
+            return hidden_states
 
             # self-guidance
             inner_dims = attn_map.shape[1:-1]
@@ -182,11 +184,9 @@ class TCGExtensionScript(UIWrapper):
             obj_appearance /= shape_sum + torch.finfo(torch.float32).eps
 
             self_guidance = obj_appearance
-
             self_guidance_factor = attn_scores.detach().clone()
             self_guidance_factor = self_guidance_factor.view(B, -1, C)
             self_guidance_factor[..., module.tcg_token_indices] = self_guidance
-
             attn_map = attn_map.view(attn_map.size(0), *inner_dims, attn_map.size(-1))
 
             # region mask
@@ -394,8 +394,8 @@ def soft_threshold(attention_map, threshold=0.5, sharpness=10):
         """
         B, H, W, C = attnmap.shape
         flattened_attnmap = attnmap.view(attnmap.shape[0], H*W, attnmap.shape[-1]).transpose(-1, -2) # B, C, H*W
-        min_val = torch.min(flattened_attnmap, dim=-1).values.unsqueeze(-1) # (B, C, 1)
-        max_val = torch.max(flattened_attnmap, dim=-1).values.unsqueeze(-1) # (B, C, 1)
+        min_val = torch.min(flattened_attnmap, dim=1).values.unsqueeze(1) # (B, 1, C)
+        max_val = torch.max(flattened_attnmap, dim=1).values.unsqueeze(1) # (B, 1, C)
         normalized_attn = (flattened_attnmap - min_val) / ((max_val - min_val) + torch.finfo(attnmap.dtype).eps)
         normalized_attn = normalized_attn.view(B, C, H*W).transpose(-1, -2) # B, H*W, C
         normalized_attn = normalized_attn.view(B, H, W, C)
