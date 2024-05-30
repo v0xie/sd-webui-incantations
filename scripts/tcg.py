@@ -127,6 +127,7 @@ class TCGExtensionScript(UIWrapper):
 
         def tcg_forward_hook(module, input, kwargs, output):
             current_step = module.tcg_current_step
+            tokens = module.tcg_token_indices
             if not start_step <= current_step <= end_step:
                 return
             if not len(token_indices) > 0:
@@ -139,35 +140,31 @@ class TCGExtensionScript(UIWrapper):
             v_map = head_to_batch_dim(module.tcg_to_v_map, heads) # B, heads, C, inner_dim
             batch_size, _, seq_len, inner_dim = q_map.shape
             # sdp from pytorch
-            L, S = q_map.size(-2), k_map.size(-2)
             scale_factor = module.scale
             attn_scores = q_map @ k_map.transpose(-1, -2) * scale_factor
-            attn_scores = torch.softmax(attn_scores, dim=-1)
+            attn_scores = torch.softmax(attn_scores, dim=-1) # (B, heads, HW, C)
 
-
-            #return hidden_states 
-
-            # select k tokens
-            # k_map = k_map.transpose(-1, -2)[..., module.tcg_token_indices].transpose(-1,-2)
-            #attn_scores = get_attention_scores(q_map, k_map, dtype=q_map.dtype) # (2*B, H*W, C)
-            # attn_scores = attn_scores.to(torch.float32)
-            B, _, HW, C = attn_scores.shape
-
-            # attn_scores = attn_scores.view(2, attn_scores.size(0)//2, downscale_h, HW//downscale_h, attn_scores.size(-1)).mean(dim=0) # (2*B, HW, C) -> (B, H, W, C)
-
-            # slice attn map
-            #attn_map = attn_scores[..., module.tcg_token_indices].detach().clone() # (B, H, W, K) where K is the subset of tokens
-
-            # threshold it
-            # also represents object shape
+            # dims
+            B, heads, HW, C = attn_scores.shape
             downscale_h = round((HW * (height / width)) ** 0.5)
-            attn_scores = attn_scores.view(attn_scores.size(0) * heads, downscale_h, HW//downscale_h, attn_scores.size(-1)) # (B, heads, HW, C) -> (B*heads, H, W, C)
-            attn_map = soft_threshold(attn_scores, threshold=threshold, sharpness=sharpness) # B H W C
+            H, W = downscale_h, HW // downscale_h
+            K = len(tokens) # number of tokens
 
-            attn_map = attn_map.view(B, heads, HW, attn_map.size(-1)) # (B, heads, H, W, C) -> (B,heads, HW, C)
+            # reshape
+            attn_scores = attn_scores.view(B * heads, H, W, C) # (B, heads, HW, C) -> (B*heads, H, W, C)
+
+            # slice attn_scores into attn_map to operate on target tokens
+            attn_map = attn_scores[..., tokens].detach().clone() # (..., K) where K is the subset of tokens
+
+            # threshold, also represents object shape
+            attn_map = soft_threshold(attn_map, threshold=threshold, sharpness=sharpness) # B H W C
 
             # to output map
-            hidden_states = attn_map @ v_map
+            attn_map = attn_map.view(B*heads, H, W, K) # (B, heads, H, W, C) -> (B,heads, HW, C)
+            attn_scores[..., tokens] = attn_map
+
+            attn_scores = attn_scores.view(B, heads, H*W, C) # (B, heads, HW, C) -> (B*heads, HW, C)
+            hidden_states = attn_scores @ v_map
             #hidden_states = attn_scores @ v_map
             hidden_states = hidden_states.transpose(1, 2).reshape(batch_size, -1, heads * inner_dim)
             hidden_states = module.to_out[0](hidden_states)
@@ -388,17 +385,17 @@ def soft_threshold(attention_map, threshold=0.5, sharpness=10):
     def _normalize_map(attnmap):
         """ Normalize the attention map over the channel dimension
         Arguments:
-            attnmap: torch.Tensor - The attention map to normalize. Shape: (B, H, W, C) or (B, HW, C)
+            attnmap: torch.Tensor - The attention map to normalize. Shape: (B, H, W, C)
         Returns:
             torch.Tensor - The attention map normalized to (0, 1). Shape: (B, H, W, C)
         """
         B, H, W, C = attnmap.shape
-        flattened_attnmap = attnmap.view(attnmap.shape[0], H*W, attnmap.shape[-1]).transpose(-1, -2) # B, C, H*W
+        flattened_attnmap = attnmap.view(attnmap.shape[0], H*W, attnmap.shape[-1]) # B, H*W, C
         min_val = torch.min(flattened_attnmap, dim=1).values.unsqueeze(1) # (B, 1, C)
         max_val = torch.max(flattened_attnmap, dim=1).values.unsqueeze(1) # (B, 1, C)
         normalized_attn = (flattened_attnmap - min_val) / ((max_val - min_val) + torch.finfo(attnmap.dtype).eps)
-        normalized_attn = normalized_attn.view(B, C, H*W).transpose(-1, -2) # B, H*W, C
-        normalized_attn = normalized_attn.view(B, H, W, C)
+        normalized_attn = normalized_attn.view(B, H, W, C) # B, H*W, C
+        #normalized_attn = normalized_attn.view(B, H, W, C)
         return normalized_attn
     threshold = max(0.0, min(1.0, threshold))
     normalized_attn = _normalize_map(attention_map)
