@@ -79,10 +79,11 @@ class TCGExtensionScript(UIWrapper):
                 threshold = gr.Slider(label="Soft Threshold", value=0.5, minimum=0.0, maximum=1.0, step=0.01, elem_id="tcg_attn_threshold")
                 sharpness = gr.Slider(label="Threshold Sharpness", value=10.0, minimum=0.1, maximum=20.0, step=0.1, elem_id="tcg_sharpness")
                 selfguidance_scale = gr.Slider(label="Self-Guidance Scale", value=1.0, minimum=-2.0, maximum=2.0, step=0.1, elem_id="tcg_selfguidance_scale")
+                clamp = gr.Slider(label="Force Clamp", value=1.0, minimum=0.0, maximum=20.0, step=1.0, elem_id="tcg_clamp")
             with gr.Row():
                 start_step = gr.Slider(label="Start Step", value=0, minimum=0, maximum=100, step=1, elem_id="tcg_start_step")
                 end_step = gr.Slider(label="End Step", value=0, minimum=1, maximum=100, step=1, elem_id="tcg_end_step")
-            opts = [active, strength, f_margin, f_repl, theta, threshold, sharpness, selfguidance_scale, image_mask, start_step, end_step]
+            opts = [active, strength, f_margin, f_repl, theta, threshold, sharpness, selfguidance_scale, image_mask, start_step, end_step, clamp]
             for opt in opts:
                 opt.do_not_save_to_config = True
 
@@ -97,7 +98,7 @@ class TCGExtensionScript(UIWrapper):
     def get_modules(self):
         return module_hooks.get_modules( module_name_filter='CrossAttention')
     
-    def before_process_batch(self, p, active, strength, f_margin, f_repl, theta, threshold, sharpness, selfguidance_scale, image_mask, start_step, end_step, *args, **kwargs):
+    def before_process_batch(self, p, active, strength, f_margin, f_repl, theta, threshold, sharpness, selfguidance_scale, image_mask, start_step, end_step, clamp, *args, **kwargs):
         self.unhook_callbacks()
         active = getattr(p, 'tcg_active', active)
         if not active:
@@ -111,6 +112,7 @@ class TCGExtensionScript(UIWrapper):
         selfguidance_scale = getattr(p, 'tcg_selfguidance_scale', selfguidance_scale)
         start_step = getattr(p, 'tcg_start_step', start_step)
         end_step = getattr(p, 'tcg_end_step', end_step)
+        clamp = getattr(p, 'tcg_clamp', clamp)
         
         batch_size = p.batch_size
         height, width = p.height, p.width
@@ -132,14 +134,10 @@ class TCGExtensionScript(UIWrapper):
             k_map = module.tcg_to_k_map # B, C, inner_dim
             v_map = module.tcg_to_v_map # B, C, inner_dim
 
-            # q_map = prepare_attn_map(q_map, module.heads)
-            # k_map = prepare_attn_map(k_map, module.heads)
-            # v_map = prepare_attn_map(v_map, module.heads)
-
             attn_scores = q_map @ k_map.transpose(-1, -2)
-            attn_scores *= module.scale
-            #channel_dim = q_map.shape[-1]
-            #attn_scores /= (channel_dim ** 0.5)
+            #attn_scores *= module.scale
+            channel_dim = q_map.shape[-1]
+            attn_scores /= (channel_dim ** 0.5)
             attn_scores = attn_scores.softmax(dim=-1).to(device=shared.device, dtype=q_map.dtype)
 
             # select k tokens
@@ -160,20 +158,21 @@ class TCGExtensionScript(UIWrapper):
             attn_map = soft_threshold(attn_map, threshold=threshold, sharpness=sharpness) # B H W C
 
             # self-guidance
-            # inner_dims = attn_map.shape[1:-1]
-            # attn_map = attn_map.view(attn_map.size(0), -1, attn_map.size(-1))
+            inner_dims = attn_map.shape[1:-1]
+            attn_map = attn_map.view(attn_map.size(0), -1, attn_map.size(-1))
 
-            # shape_sum = torch.sum(attn_map, dim=1) # (B, HW)
+            shape_sum = torch.sum(attn_map, dim=1, keepdim=True) # (B, HW)
 
-            # obj_appearance = shape_sum * attn_map
-            # obj_appearance /= shape_sum
+            obj_appearance = shape_sum * attn_map
+            obj_appearance /= shape_sum + torch.finfo(torch.float32).eps
 
-            # self_guidance = obj_appearance
-            # self_guidance = self_guidance.to(output.dtype)
-            # self_guidance_factor = output.detach().clone()
-            # self_guidance_factor[..., module.tcg_token_indices] = self_guidance
+            self_guidance = obj_appearance
 
-            # attn_map = attn_map.view(attn_map.size(0), *inner_dims, attn_map.size(-1))
+            self_guidance_factor = attn_scores.detach().clone()
+            self_guidance_factor = self_guidance_factor.view(B, -1, C)
+            self_guidance_factor[..., module.tcg_token_indices] = self_guidance
+
+            attn_map = attn_map.view(attn_map.size(0), *inner_dims, attn_map.size(-1))
 
             # region mask
             region_mask = module.tcg_region_mask
@@ -194,29 +193,39 @@ class TCGExtensionScript(UIWrapper):
             centroids = calculate_centroid(attn_map) # (B, C, 2)
             #logger.debug(centroids)
 
-            displ_force = displacement_force(attn_map, centroids, region_mask_centroid, f_repl, f_margin, clamp = 10) # B C 2
+            displ_force = displacement_force(attn_map, centroids, region_mask_centroid, f_repl, f_margin, clamp = clamp) # B C 2
 
             # zero out displacement force
             displ_force = displ_force * conflicts.unsqueeze(-1)
             logger.debug("Displacements: %s", displ_force)
 
-            # modify the attn map
+            # apply displacements
             output_attn_map = attn_scores.detach().clone() # B H W C
+            modified_attn_map, out_centroids = apply_displacements(
+                output_attn_map[..., module.tcg_token_indices],
+                #output_attn_map[..., module.tcg_token_indices],
+                centroids,
+                displ_force
+            ) # B H W C
 
-            modified_attn_map, out_centroids = apply_displacements(output_attn_map[..., module.tcg_token_indices], centroids, displ_force)
+            # zero out area in region for all conflict tokens
+            modified_attn_map = modified_attn_map * (1 - region_mask)
+
             output_attn_map[..., module.tcg_token_indices] = modified_attn_map.squeeze(0)
-
             output_attn_map = output_attn_map.view(B, -1, C) # B HW C
+
             # output_attn_map = output_attn_map.permute(0, 2, 1) # B C HW
+            orig_attn_map = attn_scores.view(B, -1, C) # B HW C
+            orig_attn_map = orig_attn_map @ v_map
+
             output_attn_map = output_attn_map @ v_map
+            self_guidance_factor = self_guidance_factor @ v_map
 
             loss = output - output_attn_map
-            loss = normalize_map(loss)
-            loss **= 2
-
+            #loss **= 2
             
             output += strength * loss
-            # output += selfguidance_scale * self_guidance_factor
+            output += selfguidance_scale * self_guidance_factor
 
             #output = output_attn_map
 
@@ -238,6 +247,7 @@ class TCGExtensionScript(UIWrapper):
 
         mask_H, mask_W = image_mask.size
         temp_region_mask = torch.from_numpy(np.array(image_mask)).unsqueeze(-1).unsqueeze(0).to(torch.float32).to(shared.device) # (1, H, W, 1)
+        temp_region_mask /= 255.0
         temp_region_mask = temp_region_mask.repeat(batch_size, 1, 1, 1) # (B, H, W, 1)
         # temp_region_mask = torch.zeros((batch_size, mask_H, mask_W, 1), dtype=torch.float32, device=shared.device) # (B, H, W)
         #temp_region_mask = torch.zeros((batch_size, mask_H, mask_W, 1), dtype=torch.float32, device=shared.device) # (B, H, W)
