@@ -130,6 +130,8 @@ class TCGExtensionScript(UIWrapper):
         def tcg_forward_hook(module, input, kwargs, output):
             current_step = module.tcg_current_step
             tokens = module.tcg_token_indices
+            if strength == 0:
+                return
             if not start_step <= current_step <= end_step:
                 return
             if not len(token_indices) > 0:
