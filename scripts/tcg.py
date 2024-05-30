@@ -4,6 +4,7 @@ import gradio as gr
 import torch
 import random
 import torch.nn.functional as F
+from einops import rearrange
 
 if os.environ.get('INCANT_DEBUG', None):
     # suppress excess logging
@@ -92,39 +93,52 @@ class TCGExtensionScript(UIWrapper):
 
         def tcg_forward_hook(module, input, kwargs, output):
             # calc attn scores
-            q_map = module.tcg_to_q_map
-            k_map = module.tcg_to_k_map
+            q_map = module.tcg_to_q_map # B, HW, inner_dim
+            k_map = module.tcg_to_k_map # B, C, inner_dim
+            v_map = module.tcg_to_v_map # B, C, inner_dim
+
+            # q_map = prepare_attn_map(q_map, module.heads)
+            # k_map = prepare_attn_map(k_map, module.heads)
+            # v_map = prepare_attn_map(v_map, module.heads)
+
+            attn_scores = q_map @ k_map.transpose(-1, -2)
+            attn_scores *= module.scale
+            #channel_dim = q_map.shape[-1]
+            #attn_scores /= (channel_dim ** 0.5)
+            attn_scores = attn_scores.softmax(dim=-1).to(device=shared.device, dtype=q_map.dtype)
+
             # select k tokens
-            k_map = k_map.transpose(-1, -2)[..., module.tcg_token_indices].transpose(-1,-2)
-            attn_scores = get_attention_scores(q_map, k_map, dtype=q_map.dtype) # (2*B, H*W, C)
+            # k_map = k_map.transpose(-1, -2)[..., module.tcg_token_indices].transpose(-1,-2)
+            #attn_scores = get_attention_scores(q_map, k_map, dtype=q_map.dtype) # (2*B, H*W, C)
             attn_scores = attn_scores.to(torch.float32)
             B, HW, C = attn_scores.shape
 
             downscale_h = round((HW * (height / width)) ** 0.5)
-            attn_scores = attn_scores.view(2, attn_scores.size(0)//2, downscale_h, HW//downscale_h, attn_scores.size(-1)).mean(dim=0) # (2*B, HW, C) -> (B, H, W, C)
+            # attn_scores = attn_scores.view(2, attn_scores.size(0)//2, downscale_h, HW//downscale_h, attn_scores.size(-1)).mean(dim=0) # (2*B, HW, C) -> (B, H, W, C)
+            attn_scores = attn_scores.view(attn_scores.size(0), downscale_h, HW//downscale_h, attn_scores.size(-1)) # (2*B, HW, C) -> (B, H, W, C)
 
             # slice attn map
-            attn_map = attn_scores.detach().clone() # (B, H, W, K) where K is the subset of tokens
+            attn_map = attn_scores[..., module.tcg_token_indices].detach().clone() # (B, H, W, K) where K is the subset of tokens
 
             # threshold it
             # also represents object shape
-            attn_map = soft_threshold(attn_map, threshold=threshold, sharpness=sharpness)
+            attn_map = soft_threshold(attn_map, threshold=threshold, sharpness=sharpness) # B H W C
 
             # self-guidance
-            inner_dims = attn_map.shape[1:-1]
-            attn_map = attn_map.view(attn_map.size(0), -1, attn_map.size(-1))
+            # inner_dims = attn_map.shape[1:-1]
+            # attn_map = attn_map.view(attn_map.size(0), -1, attn_map.size(-1))
 
-            shape_sum = torch.sum(attn_map, dim=1) # (B, HW)
+            # shape_sum = torch.sum(attn_map, dim=1) # (B, HW)
 
-            obj_appearance = shape_sum * attn_map
-            obj_appearance /= shape_sum
+            # obj_appearance = shape_sum * attn_map
+            # obj_appearance /= shape_sum
 
-            self_guidance = obj_appearance
-            self_guidance = self_guidance.to(output.dtype)
-            self_guidance_factor = output.detach().clone()
-            self_guidance_factor[..., module.tcg_token_indices] = self_guidance
+            # self_guidance = obj_appearance
+            # self_guidance = self_guidance.to(output.dtype)
+            # self_guidance_factor = output.detach().clone()
+            # self_guidance_factor[..., module.tcg_token_indices] = self_guidance
 
-            attn_map = attn_map.view(attn_map.size(0), *inner_dims, attn_map.size(-1))
+            # attn_map = attn_map.view(attn_map.size(0), *inner_dims, attn_map.size(-1))
 
             # region mask
             region_mask = module.tcg_region_mask
@@ -151,10 +165,15 @@ class TCGExtensionScript(UIWrapper):
             displ_force = displ_force * conflicts.unsqueeze(-1)
             logger.debug("Displacements: %s", displ_force)
 
-            # reassign the attn map
-            output_attn_map = output.detach().clone()
-            modified_attn_map, out_centroids = apply_displacements(output_attn_map[..., module.tcg_token_indices].unsqueeze(0), centroids, displ_force)
+            # modify the attn map
+            output_attn_map = attn_scores.detach().clone() # B H W C
+
+            modified_attn_map, out_centroids = apply_displacements(output_attn_map[..., module.tcg_token_indices], centroids, displ_force)
             output_attn_map[..., module.tcg_token_indices] = modified_attn_map.squeeze(0)
+
+            output_attn_map = output_attn_map.view(B, -1, C) # B HW C
+            # output_attn_map = output_attn_map.permute(0, 2, 1) # B C HW
+            output_attn_map = output_attn_map @ v_map
 
             loss = output - output_attn_map
             loss = normalize_map(loss)
@@ -162,7 +181,7 @@ class TCGExtensionScript(UIWrapper):
 
             
             output += strength * loss
-            output += selfguidance_scale * self_guidance_factor
+            # output += selfguidance_scale * self_guidance_factor
 
             #output = output_attn_map
 
@@ -172,6 +191,9 @@ class TCGExtensionScript(UIWrapper):
         def tcg_to_k_hook(module, input, kwargs, output):
                 setattr(module.tcg_parent_module[0], 'tcg_to_k_map', output)
         
+        def tcg_to_v_hook(module, input, kwargs, output):
+                setattr(module.tcg_parent_module[0], 'tcg_to_v_map', output)
+
         def cfg_denoised_callback(params: script_callbacks.CFGDenoisedParams):
             pass
 
@@ -187,12 +209,15 @@ class TCGExtensionScript(UIWrapper):
                 continue
             module_hooks.modules_add_field(module, 'tcg_to_q_map', None)
             module_hooks.modules_add_field(module, 'tcg_to_k_map', None)
+            module_hooks.modules_add_field(module, 'tcg_to_v_map', None)
             module_hooks.modules_add_field(module, 'tcg_region_mask', temp_region_mask)
             module_hooks.modules_add_field(module, 'tcg_token_indices', torch.tensor(token_indices, dtype=torch.int32, device=shared.device))
             module_hooks.modules_add_field(module.to_q, 'tcg_parent_module', [module])
             module_hooks.modules_add_field(module.to_k, 'tcg_parent_module', [module])
+            module_hooks.modules_add_field(module.to_v, 'tcg_parent_module', [module])
             module_hooks.module_add_forward_hook(module.to_q, tcg_to_q_hook, with_kwargs=True)
             module_hooks.module_add_forward_hook(module.to_k, tcg_to_k_hook, with_kwargs=True)
+            module_hooks.module_add_forward_hook(module.to_v, tcg_to_v_hook, with_kwargs=True)
             module_hooks.module_add_forward_hook(module, tcg_forward_hook, with_kwargs=True)
 
     def postprocess_batch(self, p, *args, **kwargs):
@@ -203,13 +228,16 @@ class TCGExtensionScript(UIWrapper):
         for module in self.get_modules():
             module_hooks.remove_module_forward_hook(module.to_q, 'tcg_to_q_hook')
             module_hooks.remove_module_forward_hook(module.to_k, 'tcg_to_k_hook')
+            module_hooks.remove_module_forward_hook(module.to_v, 'tcg_to_v_hook')
             module_hooks.remove_module_forward_hook(module, 'tcg_forward_hook')
             module_hooks.modules_remove_field(module, 'tcg_to_q_map')
             module_hooks.modules_remove_field(module, 'tcg_to_k_map')
+            module_hooks.modules_remove_field(module, 'tcg_to_v_map')
             module_hooks.modules_remove_field(module, 'tcg_region_mask')
             module_hooks.modules_remove_field(module, 'tcg_token_indices')
             module_hooks.modules_remove_field(module.to_q, 'tcg_parent_module')
             module_hooks.modules_remove_field(module.to_k, 'tcg_parent_module')
+            module_hooks.modules_remove_field(module.to_v, 'tcg_parent_module')
 
     def before_process(self, p, *args, **kwargs):
         pass
@@ -932,3 +960,41 @@ def tcg_apply_field(field):
                 p.tcg_active = True
         setattr(p, field, x)
     return fun
+
+
+def prepare_attn_map(to_k_map, heads):
+    to_k_map = head_to_batch_dim(to_k_map, heads)
+    to_k_map = average_over_head_dim(to_k_map, heads)
+    to_k_map = torch.stack([to_k_map[0], to_k_map[0]], dim=0)
+    return to_k_map
+
+
+# based on diffusers/models/attention_processor.py Attention head_to_batch_dim
+def head_to_batch_dim(x, heads, out_dim=3):
+        head_size = heads
+        if x.ndim == 3:
+
+                batch_size, seq_len, dim = x.shape
+                extra_dim = 1
+        else:
+               batch_size, extra_dim, seq_len, dim = x.shape
+        x = x.reshape(batch_size, seq_len * extra_dim, head_size, dim // head_size)
+        x = x.permute(0, 2, 1, 3)
+        if out_dim == 3:
+               x = x.reshape(batch_size * head_size, seq_len * extra_dim, dim // head_size)
+        return x
+
+
+# based on diffusers/models/attention_processor.py Attention batch_to_head_dim
+def batch_to_head_dim(x, heads):
+        head_size = heads
+        batch_size, seq_len, dim = x.shape
+        x = x.reshape(batch_size // head_size, head_size, seq_len, dim)
+        x = x.permute(0, 2, 1, 3).reshape(batch_size // head_size, seq_len, dim * head_size)
+        return x
+
+
+def average_over_head_dim(x, heads):
+        x = rearrange(x, '(b h) s t -> b h s t', h=heads).mean(1)
+        return x
+
