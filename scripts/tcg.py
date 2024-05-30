@@ -73,17 +73,18 @@ class TCGExtensionScript(UIWrapper):
             with gr.Row():
                 active = gr.Checkbox(label="Active", value=True, elem_id="tcg_active")
                 strength = gr.Slider(label="Strength", value=1.0, minimum=-5.0, maximum=5.0, step=0.1, elem_id="tcg_strength")
-                f_margin = gr.Slider(label="Margin Force", value=1.0, minimum=-2.0, maximum=2.0, step=0.1, elem_id="tcg_f_margin")
-                f_repl = gr.Slider(label="Repulsion Force", value=1.0, minimum=-2.0, maximum=2.0, step=0.1, elem_id="tcg_f_repl")
+                f_margin = gr.Slider(label="Margin Force", value=1.0, minimum=0.0, maximum=5.0, step=0.1, elem_id="tcg_f_margin")
+                f_repl = gr.Slider(label="Repulsion Force", value=1.0, minimum=0.0, maximum=5.0, step=0.1, elem_id="tcg_f_repl")
                 theta = gr.Slider(label="Conflict Threshold", value=0.01, minimum=0.0, maximum=1.0, step=0.001, elem_id="tcg_theta")
                 threshold = gr.Slider(label="Soft Threshold", value=0.5, minimum=0.0, maximum=1.0, step=0.01, elem_id="tcg_attn_threshold")
                 sharpness = gr.Slider(label="Threshold Sharpness", value=10.0, minimum=0.1, maximum=20.0, step=0.1, elem_id="tcg_sharpness")
                 selfguidance_scale = gr.Slider(label="Self-Guidance Scale", value=1.0, minimum=-2.0, maximum=2.0, step=0.1, elem_id="tcg_selfguidance_scale")
-                clamp = gr.Slider(label="Force Clamp", value=1.0, minimum=0.0, maximum=20.0, step=1.0, elem_id="tcg_clamp")
+                region_exclusion = gr.Slider(label="Region Exclusion Scale", value=1.0, minimum=0.0, maximum=1.0, step=0.1, elem_id="tcg_region_exclusion")
+                clamp = gr.Slider(label="Force Clamp", value=10.0, minimum=0.0, maximum=20.0, step=1.0, elem_id="tcg_clamp")
             with gr.Row():
                 start_step = gr.Slider(label="Start Step", value=0, minimum=0, maximum=100, step=1, elem_id="tcg_start_step")
                 end_step = gr.Slider(label="End Step", value=100, minimum=1, maximum=100, step=1, elem_id="tcg_end_step")
-            opts = [active, strength, f_margin, f_repl, theta, threshold, sharpness, selfguidance_scale, image_mask, start_step, end_step, clamp]
+            opts = [active, strength, f_margin, f_repl, theta, threshold, sharpness, selfguidance_scale, image_mask, start_step, end_step, clamp, region_exclusion]
             for opt in opts:
                 opt.do_not_save_to_config = True
 
@@ -98,7 +99,7 @@ class TCGExtensionScript(UIWrapper):
     def get_modules(self):
         return module_hooks.get_modules( module_name_filter='CrossAttention')
     
-    def before_process_batch(self, p, active, strength, f_margin, f_repl, theta, threshold, sharpness, selfguidance_scale, image_mask, start_step, end_step, clamp, *args, **kwargs):
+    def before_process_batch(self, p, active, strength, f_margin, f_repl, theta, threshold, sharpness, selfguidance_scale, image_mask, start_step, end_step, clamp, region_exclusion, *args, **kwargs):
         self.unhook_callbacks()
         active = getattr(p, 'tcg_active', active)
         if not active:
@@ -113,6 +114,7 @@ class TCGExtensionScript(UIWrapper):
         start_step = getattr(p, 'tcg_start_step', start_step)
         end_step = getattr(p, 'tcg_end_step', end_step)
         clamp = getattr(p, 'tcg_clamp', clamp)
+        region_exclusion = getattr(p, 'tcg_region_exclusion', region_exclusion)
         
         batch_size = p.batch_size
         height, width = p.height, p.width
@@ -156,23 +158,23 @@ class TCGExtensionScript(UIWrapper):
             # slice attn_scores into attn_map to operate on target tokens
             attn_map = attn_scores[..., tokens].detach().clone() # (..., K) where K is the subset of tokens
 
-            # threshold, also represents object shape in self-guidance
-            attn_map = soft_threshold(attn_map, threshold=threshold, sharpness=sharpness) # B H W C
-
             # mean over heads 
             attn_map = attn_map.view(B, heads, H, W, K).mean(dim=1) # (B, heads, H, W, C) -> (B, H, W, K)
 
+            # threshold, also represents object shape in self-guidance
+            attn_map = soft_threshold(attn_map, threshold=threshold, sharpness=sharpness) # B H W C
+
             # # self-guidance
             # inner_dims = attn_map.shape[1:-1]
-            # attn_map = attn_map.view(attn_map.size(0), -1, attn_map.size(-1))
-            # shape_sum = torch.sum(attn_map, dim=1, keepdim=True) # (B, HW)
+            # attn_map = attn_map.view(B, heads, HW, K) # (B, heads, H, W, K) -> (B, HW, K)
+            # shape_sum = torch.sum(attn_map, dim=2, keepdim=True) # (B, heads, 1, K)
             # obj_appearance = shape_sum * attn_map
             # obj_appearance /= shape_sum + torch.finfo(torch.float32).eps
-            # self_guidance = obj_appearance
-            # self_guidance_factor = attn_scores.detach().clone()
-            # self_guidance_factor = self_guidance_factor.view(B, -1, C)
-            # self_guidance_factor[..., module.tcg_token_indices] = self_guidance
-            # attn_map = attn_map.view(attn_map.size(0), *inner_dims, attn_map.size(-1))
+
+            # self_guidance = obj_appearance.detach().clone() # B HW K
+            # self_guidance = self_guidance.view(B*heads, H, W, K)
+            # attn_map = attn_map.view(B*heads, H, W, K)
+
 
             # region mask
             region_mask = module.tcg_region_mask
@@ -212,49 +214,43 @@ class TCGExtensionScript(UIWrapper):
                 displ_force
             ) # B H W C
 
-            # zero out area in region for all conflict tokens
-            modified_attn_map = modified_attn_map * (1 - region_mask)
+            # region exclusion: zero out area in region for all conflict tokens
+            #region_exclusion_mask = 1 - region_mask + (1 - region_exclusion)
+            #region_exclusion_mask = torch.clamp(region_exclusion_mask, 0, 1)
+            # region_exclusion_mask = region_exclusion_mask.repeat(1, 1, 1, K).view(1, -1, K) # (1, HW, K)
+            # region_exclusion_mask *= conflicts.max(dim=0, keepdim=True).values.view(1, 1, -1) # (1, HW, K) # only use mask for regions with conflicts
+            # region_exclusion_mask = region_exclusion_mask.view(1, H, W, K) # (1, H, W, K)
+
+            modified_attn_map = modified_attn_map * (1-region_mask)
+            #modified_attn_map = modified_attn_map * (1 - region_mask)
+            #modified_attn_map = modified_attn_map * (1 - region_mask) + (modified_attn_map * region_mask * (1-region_exclusion))
 
             attn_map = modified_attn_map
-            # output_attn_map = output_attn_map.view(B, -1, C) # B HW C
-            # output_attn_map = output_attn_map.view(B, -1, C) # B HW C
-
-            # output_attn_map = output_attn_map.permute(0, 2, 1) # B C HW
-            # orig_attn_map = attn_scores.view(B, -1, C) # B HW C
-            # orig_attn_map = orig_attn_map @ v_map
-
-            # output_attn_map = output_attn_map @ v_map
-            # self_guidance_factor = self_guidance_factor @ v_map
-
-            #loss = output_attn_map
-            #loss = output - output_attn_map
 
             # to output map
-            attn_map = attn_map.view(B*heads, H, W, K) # (B, heads, H, W, C) -> (B,heads, HW, C)
-            attn_scores[..., tokens] = attn_map
-            attn_scores = attn_scores.view(B, heads, H*W, C) # (B, heads, HW, C) -> (B*heads, HW, C)
-            hidden_states = attn_scores @ v_map
-            hidden_states = hidden_states.transpose(1, 2).reshape(batch_size, -1, heads * inner_dim) # B, HW, heads*C
-            hidden_states = module.to_out[0](hidden_states)
-            hidden_states = module.to_out[1](hidden_states)
+            tcg_attnmap = attn_scores.detach().clone()
+            tcg_attnmap[..., tokens] = attn_map
+            tcg_attnmap = tcg_attnmap.view(B, heads, HW, C) # (B, heads, H, W, C) -> (B*heads, HW, C)
 
-            loss = output - hidden_states
+            # attn_scores = attn_scores.view(B, heads, H*W, C) # (B, heads, HW, C) -> (B*heads, HW, C)
+            tcg_hidden_states = tcg_attnmap @ v_map
+            tcg_hidden_states = tcg_hidden_states.transpose(1, 2).reshape(batch_size, -1, heads * inner_dim) # B, HW, heads*C
+            tcg_hidden_states = module.to_out[0](tcg_hidden_states)
+            tcg_hidden_states = module.to_out[1](tcg_hidden_states)
+
+            # selfguidance_attnmap = attn_scores.detach().clone()
+            # selfguidance_attnmap[..., tokens] = self_guidance
+            # selfguidance_attnmap = selfguidance_attnmap.view(B, heads, HW, C)
+            # sg_hidden_states = selfguidance_attnmap @ v_map
+            # sg_hidden_states = sg_hidden_states.transpose(1, 2).reshape(batch_size, -1, heads * inner_dim) # B, HW, heads*C
+            # sg_hidden_states = module.to_out[0](sg_hidden_states)
+            # sg_hidden_states = module.to_out[1](sg_hidden_states)
+
+            loss = output - tcg_hidden_states
             loss = torch.norm(loss, dim=-1, keepdim=True) ** 2
-            # loss = torch.sum(loss, dim=(1,2), keepdim=True)
-            #loss /= loss.norm(dim=1, keepdim=True) + torch.finfo(loss.dtype).eps
             loss *= strength
-            #loss **= 2
 
-            return output + loss * hidden_states
-            #return hidden_states
-
-            hidden_states = normalize_map(hidden_states)
-            hidden_states **= 2
-            
-            output += strength * hidden_states
-            output += selfguidance_scale * self_guidance_factor
-
-            #output = output_attn_map
+            return output - loss * tcg_hidden_states
 
         def tcg_to_q_hook(module, input, kwargs, output):
                 setattr(module.tcg_parent_module[0], 'tcg_to_q_map', output)
