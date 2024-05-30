@@ -156,35 +156,23 @@ class TCGExtensionScript(UIWrapper):
             # slice attn_scores into attn_map to operate on target tokens
             attn_map = attn_scores[..., tokens].detach().clone() # (..., K) where K is the subset of tokens
 
-            # threshold, also represents object shape
+            # threshold, also represents object shape in self-guidance
             attn_map = soft_threshold(attn_map, threshold=threshold, sharpness=sharpness) # B H W C
 
-            # to output map
-            attn_map = attn_map.view(B*heads, H, W, K) # (B, heads, H, W, C) -> (B,heads, HW, C)
-            attn_scores[..., tokens] = attn_map
+            # mean over heads 
+            attn_map = attn_map.view(B, heads, H, W, K).mean(dim=1) # (B, heads, H, W, C) -> (B, H, W, K)
 
-            attn_scores = attn_scores.view(B, heads, H*W, C) # (B, heads, HW, C) -> (B*heads, HW, C)
-            hidden_states = attn_scores @ v_map
-            #hidden_states = attn_scores @ v_map
-            hidden_states = hidden_states.transpose(1, 2).reshape(batch_size, -1, heads * inner_dim)
-            hidden_states = module.to_out[0](hidden_states)
-            hidden_states = module.to_out[1](hidden_states)
-            return hidden_states
-
-            # self-guidance
-            inner_dims = attn_map.shape[1:-1]
-            attn_map = attn_map.view(attn_map.size(0), -1, attn_map.size(-1))
-
-            shape_sum = torch.sum(attn_map, dim=1, keepdim=True) # (B, HW)
-
-            obj_appearance = shape_sum * attn_map
-            obj_appearance /= shape_sum + torch.finfo(torch.float32).eps
-
-            self_guidance = obj_appearance
-            self_guidance_factor = attn_scores.detach().clone()
-            self_guidance_factor = self_guidance_factor.view(B, -1, C)
-            self_guidance_factor[..., module.tcg_token_indices] = self_guidance
-            attn_map = attn_map.view(attn_map.size(0), *inner_dims, attn_map.size(-1))
+            # # self-guidance
+            # inner_dims = attn_map.shape[1:-1]
+            # attn_map = attn_map.view(attn_map.size(0), -1, attn_map.size(-1))
+            # shape_sum = torch.sum(attn_map, dim=1, keepdim=True) # (B, HW)
+            # obj_appearance = shape_sum * attn_map
+            # obj_appearance /= shape_sum + torch.finfo(torch.float32).eps
+            # self_guidance = obj_appearance
+            # self_guidance_factor = attn_scores.detach().clone()
+            # self_guidance_factor = self_guidance_factor.view(B, -1, C)
+            # self_guidance_factor[..., module.tcg_token_indices] = self_guidance
+            # attn_map = attn_map.view(attn_map.size(0), *inner_dims, attn_map.size(-1))
 
             # region mask
             region_mask = module.tcg_region_mask
@@ -199,7 +187,7 @@ class TCGExtensionScript(UIWrapper):
             # detect conflicts and return if none
             conflicts = detect_conflict(attn_map, region_mask, theta) # (B, C)
             if not torch.any(conflicts > 0.01):
-                logger.debug("No conflicts detected")
+                # logger.debug("No conflicts detected")
                 return
 
             centroids = calculate_centroid(attn_map) # (B, C, 2)
@@ -209,12 +197,16 @@ class TCGExtensionScript(UIWrapper):
 
             # zero out displacement force
             displ_force = displ_force * conflicts.unsqueeze(-1)
-            logger.debug("Displacements: %s", displ_force)
+            # logger.debug("Displacements: %s", displ_force)
+
+            # stack along dim 0 for heads
+            displ_force = torch.stack([displ_force] * heads, dim=1).view(B*heads, K, -1) # B* heads, C, 2
+            centroids = torch.stack([centroids] * heads, dim=1).view(B*heads, K, -1) # B* heads, C, 2
 
             # apply displacements
-            output_attn_map = attn_scores.detach().clone() # B H W C
+            output_attn_map = attn_scores[..., tokens].detach().clone() # B H W C
             modified_attn_map, out_centroids = apply_displacements(
-                output_attn_map[..., module.tcg_token_indices],
+                output_attn_map,
                 #output_attn_map[..., module.tcg_token_indices],
                 centroids,
                 displ_force
@@ -223,24 +215,43 @@ class TCGExtensionScript(UIWrapper):
             # zero out area in region for all conflict tokens
             modified_attn_map = modified_attn_map * (1 - region_mask)
 
-            output_attn_map[..., module.tcg_token_indices] = modified_attn_map.squeeze(0)
-            output_attn_map = output_attn_map.view(B, -1, C) # B HW C
+            attn_map = modified_attn_map
+            # output_attn_map = output_attn_map.view(B, -1, C) # B HW C
+            # output_attn_map = output_attn_map.view(B, -1, C) # B HW C
 
             # output_attn_map = output_attn_map.permute(0, 2, 1) # B C HW
-            orig_attn_map = attn_scores.view(B, -1, C) # B HW C
-            orig_attn_map = orig_attn_map @ v_map
+            # orig_attn_map = attn_scores.view(B, -1, C) # B HW C
+            # orig_attn_map = orig_attn_map @ v_map
 
-            output_attn_map = output_attn_map @ v_map
-            self_guidance_factor = self_guidance_factor @ v_map
+            # output_attn_map = output_attn_map @ v_map
+            # self_guidance_factor = self_guidance_factor @ v_map
 
-            loss = output_attn_map
+            #loss = output_attn_map
             #loss = output - output_attn_map
-            return loss
 
-            loss = normalize_map(loss)
-            loss **= 2
+            # to output map
+            attn_map = attn_map.view(B*heads, H, W, K) # (B, heads, H, W, C) -> (B,heads, HW, C)
+            attn_scores[..., tokens] = attn_map
+            attn_scores = attn_scores.view(B, heads, H*W, C) # (B, heads, HW, C) -> (B*heads, HW, C)
+            hidden_states = attn_scores @ v_map
+            hidden_states = hidden_states.transpose(1, 2).reshape(batch_size, -1, heads * inner_dim) # B, HW, heads*C
+            hidden_states = module.to_out[0](hidden_states)
+            hidden_states = module.to_out[1](hidden_states)
+
+            loss = output - hidden_states
+            loss = torch.norm(loss, dim=-1, keepdim=True) ** 2
+            # loss = torch.sum(loss, dim=(1,2), keepdim=True)
+            #loss /= loss.norm(dim=1, keepdim=True) + torch.finfo(loss.dtype).eps
+            loss *= strength
+            #loss **= 2
+
+            return output + loss * hidden_states
+            #return hidden_states
+
+            hidden_states = normalize_map(hidden_states)
+            hidden_states **= 2
             
-            output += strength * loss
+            output += strength * hidden_states
             output += selfguidance_scale * self_guidance_factor
 
             #output = output_attn_map
@@ -354,7 +365,7 @@ def displacement_force(attention_map, verts, target_pos, f_rep_strength, f_margi
     f_rep = f_clamp(repulsive_force(f_rep_strength, verts, target_pos))
     f_margin = f_clamp(margin_force(f_margin_strength, H, W, verts))
 
-    logger.debug(f"Repulsive force: {debug_coord(f_rep)}, Margin force: {debug_coord(f_margin)}")
+    #logger.debug(f"Repulsive force: {debug_coord(f_rep)}, Margin force: {debug_coord(f_margin)}")
     return f_rep + f_margin
 
 
@@ -508,7 +519,8 @@ def warping_force(attention_map, verts, displacements, h, w):
     torch.clamp_max(s_y, 1.0, out=s_y)
     torch.clamp_max(s_x, 1.0, out=s_x)
     if torch.any(s_x < 0.99) or torch.any(s_y < 0.99):
-        logger.debug(f"Scaling factor: {s_x}, {s_y}")
+        #logger.debug(f"Scaling factor: {s_x}, {s_y}")
+        pass
 
     # displacements
     o_new = displacements - correction
