@@ -181,26 +181,38 @@ def combine_denoised_pass_conds_list(*args, **kwargs):
                 pag_x_out = None
                 pag_scale = None
                 run_pag = False
+                lerp_factor = 0.0
+                autoguidance = False
                 if pag_params is not None:
                         pag_active = pag_params.pag_active
                         pag_x_out = pag_params.pag_x_out
                         pag_scale = pag_params.pag_scale
+                        autoguidance = pag_params.autoguidance
+                        lerp_factor = pag_params.lerp_factor
+                        wanted_networks = pag_params.filtered_wanted_networks
 
                         if not pag_active:
                                 pass
-                        # Not within step interval? 
+                        # # Not within step interval? 
                         elif not pag_params.pag_start_step <= pag_params.step <= pag_params.pag_end_step:
-                                pass
+                                 pass
                         # Scale is zero?
-                        elif pag_scale <= 0:
+                        elif pag_scale <= 0 and not autoguidance and not len(wanted_networks) > 0:
                                 pass
                         else:
-                                run_pag = pag_active
+                                run_pag = pag_x_out is not None
+                                #run_pag = pag_x_out is not None
+
+                weight_uncond = 1.0
+                weight_reduced_capacity = 1.0
+                if autoguidance and pag_x_out is not None:
+                        weight_uncond = (1 - lerp_factor) * (cfg_scale - 1) + 1
+                        weight_reduced_capacity = (lerp_factor) * (cfg_scale - 1) + 1
 
                 # 3. Saliency Map
                 use_saliency_map = False
                 if pag_params is not None:
-                        use_saliency_map = True # temp for fair comparison
+                        use_saliency_map = pag_params.pag_sanf # temp for fair comparison
                         #use_saliency_map = pag_params.pag_sanf
                 
 
@@ -230,6 +242,8 @@ def combine_denoised_pass_conds_list(*args, **kwargs):
 
                                 # 1. Experimental formulation for S-CFG combined with CFG
                                 cfg_x = (model_delta) * rate * (weight * cfg_scale)
+                                if autoguidance:
+                                       cfg_x *= (weight_uncond - 1)
                                 if not use_saliency_map or not run_pag:
                                         denoised[i] += cfg_x
                                 del rate
@@ -242,8 +256,11 @@ def combine_denoised_pass_conds_list(*args, **kwargs):
                                         # do pag
                                         else:
                                                 try:
+                                                        pag_rate = 1.0
+                                                        if autoguidance:
+                                                               pag_rate *= (weight_reduced_capacity - 1)
                                                         pag_delta = x_out[cond_index] - pag_x_out[i]
-                                                        pag_x = pag_delta * (weight * pag_scale)
+                                                        pag_x = pag_delta * pag_rate * (weight * pag_scale)
 
                                                         if not use_saliency_map:
                                                                 denoised[i] += pag_x
