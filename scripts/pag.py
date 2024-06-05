@@ -163,16 +163,17 @@ class PAGStateParams:
                 self.autoguidance = False
                 self.wanted_networks = []
                 self.filtered_wanted_networks = []
+                self.current_networks = []
 
 class PAGExtensionScript(UIWrapper):
         def __init__(self):
                 self.cached_c = [None, None]
                 self.handles = []
 
-                # the networks we want to use for unconditional
+                # ALL networks including the bad ones
                 self.wanted_networks = None
 
-                # the networks we want to target
+                # ALL networks except for the bad ones
                 self.filtered_wanted_networks = None
 
         # Extension title in menu UI
@@ -259,17 +260,22 @@ class PAGExtensionScript(UIWrapper):
                         return
 
                 # regex filter to get text between !! and !!
+                target_networks = []
                 regex_filter = r'!!(.*?)!!'
                 matches = re.findall(regex_filter, p.prompt)
                 # remove !!
+                p.prompt = p.prompt.replace('!!', '')
                 for match in matches:
-                        p_prompt = p.prompt.replace('!!', '')
+                        regex_filter = r'<lora:(.*?):(.*?)>'
+                        filtered_match = re.findall(regex_filter, match)
+                        if not filtered_match:
+                                logger.warning(f"Invalid network name: {match}")
+                                continue
+                        target_networks.append(filtered_match[0])
                         #p.prompt = p.prompt.replace(f'!!{match}!!', '')
                 
                 # filter each match to get network name from <lora:network_name:multiplier>
-                regex_filter = r'<lora:(.*?):(.*?)>'
-                matches = re.findall(regex_filter, p.prompt)
-                target_networks = [x for x in matches]
+                #matches = re.findall(regex_filter, p.prompt)
                 setattr(p, 'pag_target_networks', target_networks)
 
         def process_batch(self, p: StableDiffusionProcessing, *args, **kwargs):
@@ -341,8 +347,9 @@ class PAGExtensionScript(UIWrapper):
                 pag_params.pag_target_networks = getattr(p, 'pag_target_networks', [])
                 if pag_params.pag_target_networks:
                         self.wanted_networks = networks.loaded_networks
-                        self.wanted_networks = [n for n in networks.loaded_networks if n.name not in [x[0] for x in pag_params.pag_target_networks]]
-                        self.filtered_wanted_networks = [n for n in networks.loaded_networks if n.name in [x[0] for x in pag_params.pag_target_networks]]
+                        self.filtered_wanted_networks = [n for n in networks.loaded_networks if n.name not in [x[0] for x in pag_params.pag_target_networks]]
+                        #self.filtered_wanted_networks = [n for n in networks.loaded_networks]
+                        # self.filtered_wanted_networks = [n for n in networks.loaded_networks if n.name in [x[0] for x in pag_params.pag_target_networks]]
                         pag_params.wanted_networks = self.wanted_networks
                         pag_params.filtered_wanted_networks = self.filtered_wanted_networks
 
@@ -387,9 +394,11 @@ class PAGExtensionScript(UIWrapper):
                 if not hasattr(p, 'incant_cfg_params'):
                        return
                 pag_params = p.incant_cfg_params['pag_params']
+                if pag_params is None:
+                       return
 
-                if pag_params.wanted_networks is not None:
-                        self.restore_networks(pag_params.wanted_networks)
+                if pag_params.wanted_networks is not None and pag_params.current_networks != pag_params.wanted_networks:
+                        pag_params.current_networks = self.restore_networks(pag_params.wanted_networks)
                         #self.wanted_networks = self.restore_networks(self.wanted_networks)
                 self.wanted_networks = []
 
@@ -442,6 +451,7 @@ class PAGExtensionScript(UIWrapper):
                         self.add_field_cross_attn_modules(module, 'pag_enable', False)
                         self.add_field_cross_attn_modules(module, 'pag_last_to_v', None)
                         self.add_field_cross_attn_modules(to_v, 'pag_parent_module', [module])
+                        self.add_field_cross_attn_modules(to_v, 'pag_enable', False)
                         # self.add_field_cross_attn_modules(to_out, 'pag_parent_module', [module])
 
                 def to_v_pre_hook(module, input, kwargs, output):
@@ -529,10 +539,19 @@ class PAGExtensionScript(UIWrapper):
 
                 self.unhook_callbacks(pag_params)
 
-                if pag_params.autoguidance:
-                        self.restore_networks(pag_params.filtered_wanted_networks)
-
                 pag_params.step = params.sampling_step
+
+                if pag_params.autoguidance:
+                        in_interval = pag_params.pag_start_step <= params.sampling_step <= pag_params.pag_end_step
+                        # if past step interval, restore filtered networks
+                        if not in_interval and pag_params.filtered_wanted_networks and pag_params.current_networks != pag_params.filtered_wanted_networks:
+                                self.unload_networks()
+                                pag_params.current_networks = self.restore_networks(pag_params.filtered_wanted_networks)
+                        # use unfiltered network
+                        elif in_interval and pag_params.filtered_wanted_networks and pag_params.current_networks != pag_params.wanted_networks:
+                                self.unload_networks()
+                                pag_params.current_networks = self.restore_networks(pag_params.wanted_networks)
+
 
                 # CFG Interval
                 # TODO: set rho based on sdxl or sd1.5
@@ -612,18 +631,21 @@ class PAGExtensionScript(UIWrapper):
                 if pag_params.pag_scale > 0:
                         for module in pag_params.crossattn_modules:
                                 setattr(module, 'pag_enable', True)
+                                if hasattr(module, 'to_v'):
+                                        setattr(module.to_v, 'pag_enable', True)
                 
                 # don't use targeted networks for pag prediction
-                if pag_params.autoguidance and pag_params.wanted_networks is not None:
-                        self.restore_networks(pag_params.filtered_wanted_networks)
+                if pag_params.autoguidance and pag_params.filtered_wanted_networks is not None and pag_params.current_networks != pag_params.filtered_wanted_networks:
+                        self.unload_networks()
+                        pag_params.current_networks = self.restore_networks(pag_params.filtered_wanted_networks)
 
                 # get the PAG guidance (is there a way to optimize this so we don't have to calculate it twice?)
                 pag_x_out = params.inner_model(x_in, sigma_in, cond=conds)
 
                 # unload and restore networks minus the target ones
-                if pag_params.autoguidance and len(pag_params.pag_target_networks) > 0:
+                if pag_params.autoguidance and pag_params.wanted_networks is not None and pag_params.current_networks != pag_params.wanted_networks:
                         self.unload_networks()
-                        self.restore_networks(pag_params.wanted_networks)
+                        pag_params.current_networks = self.restore_networks(pag_params.wanted_networks)
 
                 # update pag_x_out
                 pag_params.pag_x_out = pag_x_out
@@ -631,11 +653,15 @@ class PAGExtensionScript(UIWrapper):
                 # set pag_enable to False
                 for module in pag_params.crossattn_modules:
                         setattr(module, 'pag_enable', False)
+                        if hasattr(module, 'to_v'):
+                                setattr(module.to_v, 'pag_enable', False)
 
         def restore_networks(self, wanted_networks):
                 if wanted_networks is None:
                        wanted_networks = []
+                logger.debug(f"Restoring networks: {wanted_networks}")
                 networks.loaded_networks = wanted_networks
+                return wanted_networks
 
         def unload_networks(self):
             all_modules = self.get_network_modules()
