@@ -183,7 +183,10 @@ def combine_denoised_pass_conds_list(*args, **kwargs):
                 run_pag = False
                 lerp_factor = 0.0
                 autoguidance = False
+                in_interval = False
+                
                 if pag_params is not None:
+                        in_interval = pag_params.pag_start_step <= pag_params.step <= pag_params.pag_end_step
                         pag_active = pag_params.pag_active
                         pag_x_out = pag_params.pag_x_out
                         pag_scale = pag_params.pag_scale
@@ -206,8 +209,14 @@ def combine_denoised_pass_conds_list(*args, **kwargs):
                 weight_uncond = 1.0
                 weight_reduced_capacity = 1.0
                 if autoguidance and pag_x_out is not None:
-                        weight_uncond = (1 - lerp_factor) * (cfg_scale - 1) + 1
-                        weight_reduced_capacity = (lerp_factor) * (cfg_scale - 1) + 1
+                        if in_interval:
+                        #weight_uncond = (1 - lerp_factor) * (cfg_scale - 1) + 1
+                        #weight_reduced_capacity = (lerp_factor) * (cfg_scale - 1) + 1
+                                weight_uncond = (1 - lerp_factor) + 1
+                                weight_reduced_capacity = lerp_factor + 1
+                        else:
+                                weight_uncond = 2.0
+                                weight_reduced_capacity = 1.0 
 
                 # 3. Saliency Map
                 use_saliency_map = False
@@ -259,8 +268,12 @@ def combine_denoised_pass_conds_list(*args, **kwargs):
                                                         pag_rate = 1.0
                                                         if autoguidance:
                                                                pag_rate *= (weight_reduced_capacity - 1)
+
                                                         pag_delta = x_out[cond_index] - pag_x_out[i]
-                                                        pag_x = pag_delta * pag_rate * (weight * pag_scale)
+                                                        pag_x = pag_delta * pag_rate * (weight)
+
+                                                        if pag_scale > 0:
+                                                                pag_x *= pag_scale
 
                                                         if not use_saliency_map:
                                                                 denoised[i] += pag_x
