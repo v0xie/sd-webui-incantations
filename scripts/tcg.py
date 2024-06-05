@@ -223,7 +223,7 @@ class TCGExtensionScript(UIWrapper):
             # region_exclusion_mask *= conflicts.max(dim=0, keepdim=True).values.view(1, 1, -1) # (1, HW, K) # only use mask for regions with conflicts
             # region_exclusion_mask = region_exclusion_mask.view(1, H, W, K) # (1, H, W, K)
 
-            modified_attn_map = modified_attn_map * (1-region_mask)
+            modified_attn_map = region_exclusion * modified_attn_map + (1-region_exclusion) * modified_attn_map * (1-region_mask)
             #modified_attn_map = modified_attn_map * (1 - region_mask)
             #modified_attn_map = modified_attn_map * (1 - region_mask) + (modified_attn_map * region_mask * (1-region_exclusion))
 
@@ -250,9 +250,11 @@ class TCGExtensionScript(UIWrapper):
 
             loss = output - tcg_hidden_states
             loss = torch.norm(loss, dim=-1, keepdim=True) ** 2
-            loss *= strength
+            #loss *= strength
+            strength_factor = max(0, 1 - strength)
 
-            return output - loss * tcg_hidden_states
+            return (1-strength_factor) * output + (strength * tcg_hidden_states)
+            #return (1-strength_factor) * output + (strength * loss * tcg_hidden_states)
 
         def tcg_to_q_hook(module, input, kwargs, output):
                 setattr(module.tcg_parent_module[0], 'tcg_to_q_map', output)
