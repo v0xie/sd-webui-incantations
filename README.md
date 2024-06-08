@@ -41,12 +41,10 @@ To install the `sd-webui-incantations` extension, follow these steps:
 ## Compatibility Notice
 * Incompatible with **stable-diffusion-webui-forge**: Use this extension with Forge: https://github.com/pamparamm/sd-perturbed-attention
 * Reported incompatible with Adetailer: https://github.com/v0xie/sd-webui-incantations/issues/21
-* Reported incompatible with ControlNet Reference Only: https://github.com/v0xie/sd-webui-incantations/pull/47
 * Incompatible with some older webui versions: https://github.com/v0xie/sd-webui-incantations/issues/14
 * May conflict with other extensions which modify the CFGDenoiser
 
 ## News
-- 07-06-2024 🔥 - Saliency Adaptive Noise Fusion for PAG, and bug-fixes! https://github.com/v0xie/sd-webui-incantations/pull/52
 - 15-05-2024 🔥 - S-CFG, optimizations for PAG and T2I-Zero, and more! https://github.com/v0xie/sd-webui-incantations/pull/37
 - 29-04-2024 🔥 - The implementation of T2I-Zero is fixed and works much more stably now.
 
