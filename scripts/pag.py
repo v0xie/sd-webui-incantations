@@ -66,6 +66,16 @@ Include CFG schedulers from "Analysis of Classifier-Free Guidance Weight Schedul
       primaryClass={cs.CV}
 }
 
+Saliency-adaptive noise fusion from arXiv:2311.10329 "High-fidelity Person-centric Subject-to-Image Synthesis"
+@misc{wang2024highfidelity,
+      title={High-fidelity Person-centric Subject-to-Image Synthesis}, 
+      author={Yibin Wang and Weizhong Zhang and Jianwei Zheng and Cheng Jin},
+      year={2024},
+      eprint={2311.10329},
+      archivePrefix={arXiv},
+      primaryClass={cs.CV}
+}
+
 Author: v0xie
 GitHub URL: https://github.com/v0xie/sd-webui-incantations
 
@@ -99,6 +109,7 @@ SCHEDULES = [
 class PAGStateParams:
         def __init__(self):
                 self.pag_active: bool = False      # PAG guidance scale
+                self.pag_sanf: bool = False # saliency-adaptive noise fusion, handled in cfg_combiner
                 self.pag_scale: int = -1      # PAG guidance scale
                 self.pag_start_step: int = 0
                 self.pag_end_step: int = 150 
@@ -145,6 +156,7 @@ class PAGExtensionScript(UIWrapper):
         def setup_ui(self, is_img2img) -> list:
                 with gr.Accordion('Perturbed Attention Guidance', open=False):
                         active = gr.Checkbox(value=False, default=False, label="Active", elem_id='pag_active')
+                        pag_sanf = gr.Checkbox(value=False, default=False, label="Use Saliency-Adaptive Noise Fusion", elem_id='pag_sanf')
                         with gr.Row():
                                 pag_scale = gr.Slider(value = 0, minimum = 0, maximum = 20.0, step = 0.5, label="PAG Scale", elem_id = 'pag_scale', info="")
                         with gr.Row():
@@ -164,6 +176,7 @@ class PAGExtensionScript(UIWrapper):
                                 cfg_interval_high = gr.Slider(value = 100, minimum = 0, maximum = 100, step = 0.1, label="CFG Noise Interval High", elem_id = 'cfg_interval_high', info="")
                                 
                 active.do_not_save_to_config = True
+                pag_sanf.do_not_save_to_config = True
                 pag_scale.do_not_save_to_config = True
                 start_step.do_not_save_to_config = True
                 end_step.do_not_save_to_config = True
@@ -173,6 +186,7 @@ class PAGExtensionScript(UIWrapper):
                 cfg_interval_high.do_not_save_to_config = True
                 self.infotext_fields = [
                         (active, lambda d: gr.Checkbox.update(value='PAG Active' in d)),
+                        (pag_sanf, lambda d: gr.Checkbox.update(value='PAG SANF' in d)),
                         (pag_scale, 'PAG Scale'),
                         (start_step, 'PAG Start Step'),
                         (end_step, 'PAG End Step'),
@@ -183,6 +197,7 @@ class PAGExtensionScript(UIWrapper):
                 ]
                 self.paste_field_names = [
                         'pag_active',
+                        'pag_sanf',
                         'pag_scale',
                         'pag_start_step',
                         'pag_end_step',
@@ -191,17 +206,18 @@ class PAGExtensionScript(UIWrapper):
                         'cfg_interval_low',
                         'cfg_interval_high',
                 ]
-                return [active, pag_scale, start_step, end_step, cfg_interval_enable, cfg_schedule, cfg_interval_low, cfg_interval_high]
+                return [active, pag_scale, start_step, end_step, cfg_interval_enable, cfg_schedule, cfg_interval_low, cfg_interval_high, pag_sanf]
 
         def process_batch(self, p: StableDiffusionProcessing, *args, **kwargs):
                self.pag_process_batch(p, *args, **kwargs)
 
-        def pag_process_batch(self, p: StableDiffusionProcessing, active, pag_scale, start_step, end_step, cfg_interval_enable, cfg_schedule, cfg_interval_low, cfg_interval_high, *args, **kwargs):
+        def pag_process_batch(self, p: StableDiffusionProcessing, active, pag_scale, start_step, end_step, cfg_interval_enable, cfg_schedule, cfg_interval_low, cfg_interval_high, pag_sanf, *args, **kwargs):
                 # cleanup previous hooks always
                 script_callbacks.remove_current_script_callbacks()
                 self.remove_all_hooks()
 
                 active = getattr(p, "pag_active", active)
+                pag_sanf = getattr(p, "pag_sanf", pag_sanf)
                 cfg_interval_enable = getattr(p, "cfg_interval_enable", cfg_interval_enable)
                 if active is False and cfg_interval_enable is False:
                         return
@@ -216,6 +232,7 @@ class PAGExtensionScript(UIWrapper):
                 if active:
                         p.extra_generation_params.update({
                                 "PAG Active": active,
+                                "PAG SANF": pag_sanf,
                                 "PAG Scale": pag_scale,
                                 "PAG Start Step": start_step,
                                 "PAG End Step": end_step,
@@ -227,9 +244,9 @@ class PAGExtensionScript(UIWrapper):
                                 "CFG Interval Low": cfg_interval_low,
                                 "CFG Interval High": cfg_interval_high
                         })
-                self.create_hook(p, active, pag_scale, start_step, end_step, cfg_interval_enable, cfg_schedule, cfg_interval_low, cfg_interval_high)
+                self.create_hook(p, active, pag_scale, start_step, end_step, cfg_interval_enable, cfg_schedule, cfg_interval_low, cfg_interval_high, pag_sanf)
 
-        def create_hook(self, p: StableDiffusionProcessing, active, pag_scale, start_step, end_step, cfg_interval_enable, cfg_schedule, cfg_interval_low, cfg_interval_high, *args, **kwargs):
+        def create_hook(self, p: StableDiffusionProcessing, active, pag_scale, start_step, end_step, cfg_interval_enable, cfg_schedule, cfg_interval_low, cfg_interval_high, pag_sanf, *args, **kwargs):
                 # Create a list of parameters for each concept
                 pag_params = PAGStateParams()
 
@@ -239,6 +256,7 @@ class PAGExtensionScript(UIWrapper):
                 p.incant_cfg_params['pag_params'] = pag_params
                 
                 pag_params.pag_active = active 
+                pag_params.pag_sanf = pag_sanf 
                 pag_params.pag_scale = pag_scale
                 pag_params.pag_start_step = start_step
                 pag_params.pag_end_step = end_step
@@ -499,6 +517,7 @@ class PAGExtensionScript(UIWrapper):
                 xyz_grid = [x for x in scripts.scripts_data if x.script_class.__module__ in ("xyz_grid.py", "scripts.xyz_grid")][0].module
                 extra_axis_options = {
                         xyz_grid.AxisOption("[PAG] Active", str, pag_apply_override('pag_active', boolean=True), choices=xyz_grid.boolean_choice(reverse=True)),
+                        xyz_grid.AxisOption("[PAG] SANF", str, pag_apply_override('pag_sanf', boolean=True), choices=xyz_grid.boolean_choice(reverse=True)),
                         xyz_grid.AxisOption("[PAG] PAG Scale", float, pag_apply_field("pag_scale")),
                         xyz_grid.AxisOption("[PAG] PAG Start Step", int, pag_apply_field("pag_start_step")),
                         xyz_grid.AxisOption("[PAG] PAG End Step", int, pag_apply_field("pag_end_step")),

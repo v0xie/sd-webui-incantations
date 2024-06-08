@@ -1,6 +1,7 @@
 import gradio as gr
 import logging
 import torch
+import torchvision.transforms as F
 from modules import shared, scripts, devices, patches, script_callbacks
 from modules.script_callbacks import CFGDenoiserParams
 from modules.processing import StableDiffusionProcessing
@@ -179,10 +180,28 @@ def combine_denoised_pass_conds_list(*args, **kwargs):
                 # 2. PAG
                 pag_x_out = None
                 pag_scale = None
+                run_pag = False
                 if pag_params is not None:
                         pag_active = pag_params.pag_active
                         pag_x_out = pag_params.pag_x_out
                         pag_scale = pag_params.pag_scale
+
+                        if not pag_active:
+                                pass
+                        # Not within step interval? 
+                        elif not pag_params.pag_start_step <= pag_params.step <= pag_params.pag_end_step:
+                                pass
+                        # Scale is zero?
+                        elif pag_scale <= 0:
+                                pass
+                        else:
+                                run_pag = pag_active
+
+                # 3. Saliency Map
+                use_saliency_map = False
+                if pag_params is not None:
+                        use_saliency_map = pag_params.pag_sanf
+                
 
                 ### Combine Denoised
                 for i, conds in enumerate(conds_list):
@@ -209,24 +228,44 @@ def combine_denoised_pass_conds_list(*args, **kwargs):
                                                pass
 
                                 # 1. Experimental formulation for S-CFG combined with CFG
-                                denoised[i] += (model_delta) * rate * (weight * cfg_scale)
+                                cfg_x = (model_delta) * rate * (weight * cfg_scale)
+                                if not use_saliency_map or not run_pag:
+                                        denoised[i] += cfg_x
                                 del rate
 
                                 # 2. PAG
                                 # PAG is added like CFG
                                 if pag_params is not None:
-                                        if not pag_active:
-                                                pass
-                                        # Not within step interval? 
-                                        elif not pag_params.pag_start_step <= pag_params.step <= pag_params.pag_end_step:
-                                                pass
-                                        # Scale is zero?
-                                        elif pag_scale <= 0:
+                                        if not run_pag:
                                                 pass
                                         # do pag
                                         else:
                                                 try:
-                                                        denoised[i] += (x_out[cond_index] - pag_x_out[i]) * (weight * pag_scale)
+                                                        pag_delta = x_out[cond_index] - pag_x_out[i]
+                                                        pag_x = pag_delta * (weight * pag_scale)
+
+                                                        if not use_saliency_map:
+                                                                denoised[i] += pag_x
+
+                                                        # 3. Saliency Adaptive Noise Fusion arXiv.2311.10329v5
+                                                        # Smooth the saliency maps
+                                                        if use_saliency_map:
+                                                                blur = F.GaussianBlur(kernel_size=3, sigma=1).to(device=shared.device)
+                                                                omega_rt = blur(torch.abs(cfg_x))
+                                                                omega_rs = blur(torch.abs(pag_x))
+                                                                soft_rt = torch.softmax(omega_rt, dim=0)
+                                                                soft_rs = torch.softmax(omega_rs, dim=0)
+
+                                                                m = torch.stack([soft_rt, soft_rs], dim=0) # 2 c h w
+                                                                _, argmax_indices = torch.max(m, dim=0)
+
+                                                                # select from cfg_x or pag_x
+                                                                m1 = torch.where(argmax_indices == 0, 1, 0)
+
+                                                                # hadamard product
+                                                                sal_cfg = cfg_x * m1 + pag_x * (1 - m1)
+
+                                                                denoised[i] += sal_cfg
                                                 except Exception as e:
                                                         logger.exception("Exception in combine_denoised_pass_conds_list - %s", e)
 
