@@ -191,7 +191,7 @@ class PAGExtensionScript(UIWrapper):
                         pag_sanf = gr.Checkbox(value=False, default=False, label="Use Saliency-Adaptive Noise Fusion", elem_id='pag_sanf')
                         autoguidance = gr.Checkbox(value=False, default=False, label="Use Autoguidance", elem_id='pag_ag', info="Put networks in between !!<lora:network:1>!! in prompt")
                         with gr.Row():
-                                pag_scale = gr.Slider(value = 0, minimum = 0, maximum = 20.0, step = 0.5, label="PAG Scale", elem_id = 'pag_scale', info="")
+                                pag_scale = gr.Slider(value = 0, minimum = 0, maximum = 40.0, step = 0.5, label="PAG Scale", elem_id = 'pag_scale', info="")
                                 lerp_factor = gr.Slider(value = 1.0, minimum = 0, maximum = 1, step = 0.1, label="Lerp Factor", elem_id = 'pag_lerp_factor', info="")
                         with gr.Row():
                                 start_step = gr.Slider(value = 0, minimum = 0, maximum = 150, step = 1, label="Start Step", elem_id = 'pag_start_step', info="")
