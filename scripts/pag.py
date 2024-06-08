@@ -377,7 +377,7 @@ class PAGExtensionScript(UIWrapper):
                         batch_size, seq_len, inner_dim = output.shape
                         identity = torch.eye(seq_len, dtype=last_to_v.dtype, device=shared.device).expand(batch_size, -1, -1)
                         if last_to_v is not None:    
-                                new_output = torch.einsum('bij,bjk->bik', identity, last_to_v)
+                                new_output = torch.einsum('bij,bjk->bik', identity, last_to_v[:, :seq_len, :])
                                 return new_output
                         else:
                                 # this is bad
