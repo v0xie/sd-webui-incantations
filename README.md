@@ -41,10 +41,12 @@ To install the `sd-webui-incantations` extension, follow these steps:
 ## Compatibility Notice
 * Incompatible with **stable-diffusion-webui-forge**: Use this extension with Forge: https://github.com/pamparamm/sd-perturbed-attention
 * Reported incompatible with Adetailer: https://github.com/v0xie/sd-webui-incantations/issues/21
+* Reported incompatible with ControlNet Reference Only: https://github.com/v0xie/sd-webui-incantations/pull/47
 * Incompatible with some older webui versions: https://github.com/v0xie/sd-webui-incantations/issues/14
 * May conflict with other extensions which modify the CFGDenoiser
 
 ## News
+- 07-06-2024 🔥 - Saliency Adaptive Noise Fusion for PAG, and bug-fixes! https://github.com/v0xie/sd-webui-incantations/pull/52
 - 15-05-2024 🔥 - S-CFG, optimizations for PAG and T2I-Zero, and more! https://github.com/v0xie/sd-webui-incantations/pull/37
 - 29-04-2024 🔥 - The implementation of T2I-Zero is fixed and works much more stably now.
 
@@ -79,7 +81,15 @@ Prompt: "A cute puppy on the moon", Min Rate: 0.5, Max Rate: 10.0
 https://arxiv.org/abs/2403.17377  
 An alternative/complementary method to CFG (Classifier-Free Guidance) that increases sampling quality.
 
+# Update: 20-05-2024
+Implemented a new feature called "Saliency-Adaptive Noise Fusion" derived from ["High-fidelity Person-centric Subject-to-Image Synthesis"](https://arxiv.org/abs/2311.10329).  
+
+This feature combines the guidance from PAG and CFG in an adaptive way that improves image quality especially at higher guidance scales.  
+
+Check out the paper authors' project repository here: https://github.com/CodeGoat24/Face-diffuser  
+
 #### Controls
+* **Use Saliency-Adaptive Noise Fusion**: Use improved method of combining CFG + PAG.
 * **PAG Scale**: Controls the intensity of effect of PAG on the generated image.  
 * **PAG Start Step**: Step to start using PAG.
 * **PAG End Step**: Step to stop using PAG. 
@@ -285,6 +295,15 @@ SD XL
        eprint={2404.05384},
        archivePrefix={arXiv},
        primaryClass={cs.CV}
+      }
+    
+      @misc{wang2024highfidelity,
+        title={High-fidelity Person-centric Subject-to-Image Synthesis}, 
+        author={Yibin Wang and Weizhong Zhang and Jianwei Zheng and Cheng Jin},
+        year={2024},
+        eprint={2311.10329},
+        archivePrefix={arXiv},
+        primaryClass={cs.CV}
       }
 
 
