@@ -1,5 +1,6 @@
 import logging
 from os import environ
+import re
 import modules.scripts as scripts
 import gradio as gr
 import scipy.stats as stats
@@ -15,6 +16,15 @@ from modules.processing import StableDiffusionProcessing
 from modules.sd_samplers_cfg_denoiser import catenate_conds
 from modules.sd_samplers_cfg_denoiser import CFGDenoiser
 from modules import shared
+
+import sys, importlib
+from pathlib import Path
+# from https://github.com/cheald/sd-webui-loractl/blob/master/loractl/lib/lora_ctl_network.py
+lora_path = str(Path(__file__).parent.parent.parent.parent.parent / "extensions-builtin" / "Lora")
+sys.path.insert(0, lora_path)
+import network, networks, network_lora, extra_networks_lora
+sys.path.remove(lora_path)
+
 
 import math
 import torch
@@ -72,6 +82,16 @@ Saliency-adaptive noise fusion from arXiv:2311.10329 "High-fidelity Person-centr
       author={Yibin Wang and Weizhong Zhang and Jianwei Zheng and Cheng Jin},
       year={2024},
       eprint={2311.10329},
+      archivePrefix={arXiv},
+      primaryClass={cs.CV}
+}
+
+Test impl of autoguidance from
+@misc{karras2024guiding,
+      title={Guiding a Diffusion Model with a Bad Version of Itself}, 
+      author={Tero Karras and Miika Aittala and Tuomas Kynkäänniemi and Jaakko Lehtinen and Timo Aila and Samuli Laine},
+      year={2024},
+      eprint={2406.02507},
       archivePrefix={arXiv},
       primaryClass={cs.CV}
 }
@@ -138,11 +158,23 @@ class PAGStateParams:
                 self.conds_list = None
                 self.uncond_shape_0 = None
 
+                self.pag_target_networks = []
+                self.lerp_factor = 0.0 # 0 is original, 1.0 is PAG only
+                self.autoguidance = False
+                self.wanted_networks = []
+                self.filtered_wanted_networks = []
+                self.current_networks = []
 
 class PAGExtensionScript(UIWrapper):
         def __init__(self):
                 self.cached_c = [None, None]
                 self.handles = []
+
+                # ALL networks including the bad ones
+                self.wanted_networks = None
+
+                # ALL networks except for the bad ones
+                self.filtered_wanted_networks = None
 
         # Extension title in menu UI
         def title(self) -> str:
@@ -157,8 +189,10 @@ class PAGExtensionScript(UIWrapper):
                 with gr.Accordion('Perturbed Attention Guidance', open=False):
                         active = gr.Checkbox(value=False, default=False, label="Active", elem_id='pag_active')
                         pag_sanf = gr.Checkbox(value=False, default=False, label="Use Saliency-Adaptive Noise Fusion", elem_id='pag_sanf')
+                        autoguidance = gr.Checkbox(value=False, default=False, label="Use Autoguidance", elem_id='pag_ag', info="Put networks in between !!<lora:network:1>!! in prompt")
                         with gr.Row():
-                                pag_scale = gr.Slider(value = 0, minimum = 0, maximum = 20.0, step = 0.5, label="PAG Scale", elem_id = 'pag_scale', info="")
+                                pag_scale = gr.Slider(value = 0, minimum = 0, maximum = 40.0, step = 0.5, label="PAG Scale", elem_id = 'pag_scale', info="")
+                                lerp_factor = gr.Slider(value = 1.0, minimum = 0, maximum = 1, step = 0.1, label="Lerp Factor", elem_id = 'pag_lerp_factor', info="")
                         with gr.Row():
                                 start_step = gr.Slider(value = 0, minimum = 0, maximum = 150, step = 1, label="Start Step", elem_id = 'pag_start_step', info="")
                                 end_step = gr.Slider(value = 150, minimum = 0, maximum = 150, step = 1, label="End Step", elem_id = 'pag_end_step', info="")
@@ -177,6 +211,7 @@ class PAGExtensionScript(UIWrapper):
                                 
                 active.do_not_save_to_config = True
                 pag_sanf.do_not_save_to_config = True
+                autoguidance.do_not_save_to_config = True
                 pag_scale.do_not_save_to_config = True
                 start_step.do_not_save_to_config = True
                 end_step.do_not_save_to_config = True
@@ -184,10 +219,14 @@ class PAGExtensionScript(UIWrapper):
                 cfg_schedule.do_not_save_to_config = True
                 cfg_interval_low.do_not_save_to_config = True
                 cfg_interval_high.do_not_save_to_config = True
+                lerp_factor.do_not_save_to_config = True
+
                 self.infotext_fields = [
                         (active, lambda d: gr.Checkbox.update(value='PAG Active' in d)),
                         (pag_sanf, lambda d: gr.Checkbox.update(value='PAG SANF' in d)),
+                        (autoguidance, lambda d: gr.Checkbox.update(value='PAG Autoguidance' in d)),
                         (pag_scale, 'PAG Scale'),
+                        (lerp_factor, 'PAG Lerp Factor'),
                         (start_step, 'PAG Start Step'),
                         (end_step, 'PAG End Step'),
                         (cfg_interval_enable, 'CFG Interval Enable'),
@@ -198,7 +237,9 @@ class PAGExtensionScript(UIWrapper):
                 self.paste_field_names = [
                         'pag_active',
                         'pag_sanf',
+                        'pag_ag',
                         'pag_scale',
+                        'pag_lerp_factor',
                         'pag_start_step',
                         'pag_end_step',
                         'cfg_interval_enable',
@@ -206,22 +247,53 @@ class PAGExtensionScript(UIWrapper):
                         'cfg_interval_low',
                         'cfg_interval_high',
                 ]
-                return [active, pag_scale, start_step, end_step, cfg_interval_enable, cfg_schedule, cfg_interval_low, cfg_interval_high, pag_sanf]
+                return [active, pag_scale, lerp_factor, start_step, end_step, cfg_interval_enable, cfg_schedule, cfg_interval_low, cfg_interval_high, pag_sanf, autoguidance]
+
+        def before_process_batch(self, p: StableDiffusionProcessing, *args, **kwargs):
+                self.pag_before_process_batch(p, *args, **kwargs)
+
+        def pag_before_process_batch(self, p: StableDiffusionProcessing, active, pag_scale, lerp_factor, start_step, end_step, cfg_interval_enable, cfg_schedule, cfg_interval_low, cfg_interval_high, pag_sanf, autoguidance, *args, **kwargs):
+                active = getattr(p, "pag_active", active)
+                pag_sanf = getattr(p, "pag_sanf", pag_sanf)
+                cfg_interval_enable = getattr(p, "cfg_interval_enable", cfg_interval_enable)
+                if active is False and cfg_interval_enable is False:
+                        return
+
+                # regex filter to get text between !! and !!
+                target_networks = []
+                regex_filter = r'!!(.*?)!!'
+                matches = re.findall(regex_filter, p.prompt)
+                # remove !!
+                p.prompt = p.prompt.replace('!!', '')
+                for match in matches:
+                        regex_filter = r'<lora:(.*?):(.*?)>'
+                        filtered_match = re.findall(regex_filter, match)
+                        if not filtered_match:
+                                logger.warning(f"Invalid network name: {match}")
+                                continue
+                        target_networks.append(filtered_match[0])
+                        #p.prompt = p.prompt.replace(f'!!{match}!!', '')
+                
+                # filter each match to get network name from <lora:network_name:multiplier>
+                #matches = re.findall(regex_filter, p.prompt)
+                setattr(p, 'pag_target_networks', target_networks)
 
         def process_batch(self, p: StableDiffusionProcessing, *args, **kwargs):
                self.pag_process_batch(p, *args, **kwargs)
 
-        def pag_process_batch(self, p: StableDiffusionProcessing, active, pag_scale, start_step, end_step, cfg_interval_enable, cfg_schedule, cfg_interval_low, cfg_interval_high, pag_sanf, *args, **kwargs):
+        def pag_process_batch(self, p: StableDiffusionProcessing, active, pag_scale, lerp_factor, start_step, end_step, cfg_interval_enable, cfg_schedule, cfg_interval_low, cfg_interval_high, pag_sanf, autoguidance, *args, **kwargs):
                 # cleanup previous hooks always
                 script_callbacks.remove_current_script_callbacks()
                 self.remove_all_hooks()
 
                 active = getattr(p, "pag_active", active)
                 pag_sanf = getattr(p, "pag_sanf", pag_sanf)
+                autoguidance = getattr(p, "pag_ag", autoguidance)
                 cfg_interval_enable = getattr(p, "cfg_interval_enable", cfg_interval_enable)
                 if active is False and cfg_interval_enable is False:
                         return
                 pag_scale = getattr(p, "pag_scale", pag_scale)
+                lerp_factor = getattr(p, "pag_lerp_factor", lerp_factor)
                 start_step = getattr(p, "pag_start_step", start_step)
                 end_step = getattr(p, "pag_end_step", end_step)
 
@@ -233,7 +305,9 @@ class PAGExtensionScript(UIWrapper):
                         p.extra_generation_params.update({
                                 "PAG Active": active,
                                 "PAG SANF": pag_sanf,
+                                "PAG Autoguidance": autoguidance,
                                 "PAG Scale": pag_scale,
+                                "PAG Lerp Factor": lerp_factor,
                                 "PAG Start Step": start_step,
                                 "PAG End Step": end_step,
                         })
@@ -244,9 +318,9 @@ class PAGExtensionScript(UIWrapper):
                                 "CFG Interval Low": cfg_interval_low,
                                 "CFG Interval High": cfg_interval_high
                         })
-                self.create_hook(p, active, pag_scale, start_step, end_step, cfg_interval_enable, cfg_schedule, cfg_interval_low, cfg_interval_high, pag_sanf)
+                self.create_hook(p, active, pag_scale, lerp_factor, start_step, end_step, cfg_interval_enable, cfg_schedule, cfg_interval_low, cfg_interval_high, pag_sanf, autoguidance)
 
-        def create_hook(self, p: StableDiffusionProcessing, active, pag_scale, start_step, end_step, cfg_interval_enable, cfg_schedule, cfg_interval_low, cfg_interval_high, pag_sanf, *args, **kwargs):
+        def create_hook(self, p: StableDiffusionProcessing, active, pag_scale, lerp_factor, start_step, end_step, cfg_interval_enable, cfg_schedule, cfg_interval_low, cfg_interval_high, pag_sanf, autoguidance, *args, **kwargs):
                 # Create a list of parameters for each concept
                 pag_params = PAGStateParams()
 
@@ -257,6 +331,7 @@ class PAGExtensionScript(UIWrapper):
                 
                 pag_params.pag_active = active 
                 pag_params.pag_sanf = pag_sanf 
+                pag_params.autoguidance = autoguidance 
                 pag_params.pag_scale = pag_scale
                 pag_params.pag_start_step = start_step
                 pag_params.pag_end_step = end_step
@@ -267,6 +342,16 @@ class PAGExtensionScript(UIWrapper):
                 pag_params.batch_size = p.batch_size
                 pag_params.denoiser = None
                 pag_params.cfg_interval_scheduled_value = p.cfg_scale
+                pag_params.lerp_factor = lerp_factor
+
+                pag_params.pag_target_networks = getattr(p, 'pag_target_networks', [])
+                if pag_params.pag_target_networks:
+                        self.wanted_networks = networks.loaded_networks
+                        self.filtered_wanted_networks = [n for n in networks.loaded_networks if n.name not in [x[0] for x in pag_params.pag_target_networks]]
+                        #self.filtered_wanted_networks = [n for n in networks.loaded_networks]
+                        # self.filtered_wanted_networks = [n for n in networks.loaded_networks if n.name in [x[0] for x in pag_params.pag_target_networks]]
+                        pag_params.wanted_networks = self.wanted_networks
+                        pag_params.filtered_wanted_networks = self.filtered_wanted_networks
 
                 if pag_params.cfg_interval_enable:
                        # Refer to 3.1 Practice in the paper
@@ -306,6 +391,16 @@ class PAGExtensionScript(UIWrapper):
 
         def pag_postprocess_batch(self, p, active, *args, **kwargs):
                 script_callbacks.remove_current_script_callbacks()
+                if not hasattr(p, 'incant_cfg_params'):
+                       return
+                pag_params = p.incant_cfg_params['pag_params']
+                if pag_params is None:
+                       return
+
+                if pag_params.wanted_networks is not None and pag_params.current_networks != pag_params.wanted_networks:
+                        pag_params.current_networks = self.restore_networks(pag_params.wanted_networks)
+                        #self.wanted_networks = self.restore_networks(self.wanted_networks)
+                self.wanted_networks = []
 
                 logger.debug('Removed script callbacks')
                 active = getattr(p, "pag_active", active)
@@ -356,6 +451,7 @@ class PAGExtensionScript(UIWrapper):
                         self.add_field_cross_attn_modules(module, 'pag_enable', False)
                         self.add_field_cross_attn_modules(module, 'pag_last_to_v', None)
                         self.add_field_cross_attn_modules(to_v, 'pag_parent_module', [module])
+                        self.add_field_cross_attn_modules(to_v, 'pag_enable', False)
                         # self.add_field_cross_attn_modules(to_out, 'pag_parent_module', [module])
 
                 def to_v_pre_hook(module, input, kwargs, output):
@@ -406,6 +502,24 @@ class PAGExtensionScript(UIWrapper):
                         logger.exception("Exception in get_middle_block_modules", stack_info=True)
                         return []
 
+        def get_network_modules(self):
+                """ Get all attention modules from the middle block 
+                Refere to page 22 of the PAG paper, Appendix A.2
+                
+                """
+                try:
+                        m = shared.sd_model
+                        nlm = m.network_layer_mapping
+                        module_classes = [ torch.nn.Linear, torch.nn.Conv2d, torch.nn.GroupNorm, torch.nn.LayerNorm, torch.nn.MultiheadAttention ]
+                        modules = [m for m in nlm.values() if m.__class__ in module_classes]
+                        return modules 
+                except AttributeError:
+                        logger.exception("AttributeError in get_middle_block_modules", stack_info=True)
+                        return []
+                except Exception:
+                        logger.exception("Exception in get_middle_block_modules", stack_info=True)
+                        return []
+
         def get_cross_attn_modules(self):
                 """ Get all cross attention modules """
                 return self.get_middle_block_modules()
@@ -422,9 +536,22 @@ class PAGExtensionScript(UIWrapper):
 
         def on_cfg_denoiser_callback(self, params: CFGDenoiserParams, pag_params: PAGStateParams):
                 # always unhook
+
                 self.unhook_callbacks(pag_params)
 
                 pag_params.step = params.sampling_step
+
+                if pag_params.autoguidance:
+                        in_interval = pag_params.pag_start_step <= params.sampling_step <= pag_params.pag_end_step
+                        # if past step interval, restore filtered networks
+                        if not in_interval and pag_params.filtered_wanted_networks and pag_params.current_networks != pag_params.filtered_wanted_networks:
+                                self.unload_networks()
+                                pag_params.current_networks = self.restore_networks(pag_params.filtered_wanted_networks)
+                        # use unfiltered network
+                        elif in_interval and pag_params.filtered_wanted_networks and pag_params.current_networks != pag_params.wanted_networks:
+                                self.unload_networks()
+                                pag_params.current_networks = self.restore_networks(pag_params.wanted_networks)
+
 
                 # CFG Interval
                 # TODO: set rho based on sdxl or sd1.5
@@ -446,9 +573,11 @@ class PAGExtensionScript(UIWrapper):
                                 pag_params.cfg_interval_scheduled_value = scheduled_cfg_scale if begin_range <= pag_params.current_noise_level <= end_range else 1.0
 
                 # Run PAG only if active and within interval
-                if not pag_params.pag_active or pag_params.pag_scale <= 0:
+                if not pag_params.pag_active:
                         return
-                if not pag_params.pag_start_step <= params.sampling_step <= pag_params.pag_end_step or pag_params.pag_scale <= 0:
+                if pag_params.pag_scale <= 0 and not pag_params.autoguidance and len(pag_params.pag_target_networks) <= 0:
+                        return
+                if not pag_params.pag_start_step <= params.sampling_step <= pag_params.pag_end_step:
                         return
 
                 if isinstance(params.text_cond, dict):
@@ -475,12 +604,15 @@ class PAGExtensionScript(UIWrapper):
                 Refer to pg.22 A.2 of the PAG paper for how CFG and PAG combine
                 
                 """
-                # Run only within interval
-                # Run PAG only if active and within interval
-                if not pag_params.pag_active or pag_params.pag_scale <= 0:
+                # Run PAG only if active, 
+                if not pag_params.pag_active:
                         return
-                if not pag_params.pag_start_step <= params.sampling_step <= pag_params.pag_end_step or pag_params.pag_scale <= 0:
+                if pag_params.pag_scale <= 0 and not pag_params.autoguidance and len(pag_params.pag_target_networks) <= 0:
                         return
+                if not pag_params.pag_start_step <= params.sampling_step <= pag_params.pag_end_step:
+                        return
+                # if params.sampling_step <= pag_params.pag_end_step and self.wanted_networks is None:
+                #         self.wanted_networks = self.unload_networks()
 
                 # passed from on_cfg_denoiser_callback
                 x_in = pag_params.x_in
@@ -496,11 +628,24 @@ class PAGExtensionScript(UIWrapper):
                 conds = make_condition_dict(cond_in, image_cond_in)
                 
                 # set pag_enable to True for the hooked cross attention modules
-                for module in pag_params.crossattn_modules:
-                        setattr(module, 'pag_enable', True)
+                if pag_params.pag_scale > 0:
+                        for module in pag_params.crossattn_modules:
+                                setattr(module, 'pag_enable', True)
+                                if hasattr(module, 'to_v'):
+                                        setattr(module.to_v, 'pag_enable', True)
+                
+                # don't use targeted networks for pag prediction
+                if pag_params.autoguidance and pag_params.filtered_wanted_networks is not None and pag_params.current_networks != pag_params.filtered_wanted_networks:
+                        self.unload_networks()
+                        pag_params.current_networks = self.restore_networks(pag_params.filtered_wanted_networks)
 
                 # get the PAG guidance (is there a way to optimize this so we don't have to calculate it twice?)
                 pag_x_out = params.inner_model(x_in, sigma_in, cond=conds)
+
+                # unload and restore networks minus the target ones
+                if pag_params.autoguidance and pag_params.wanted_networks is not None and pag_params.current_networks != pag_params.wanted_networks:
+                        self.unload_networks()
+                        pag_params.current_networks = self.restore_networks(pag_params.wanted_networks)
 
                 # update pag_x_out
                 pag_params.pag_x_out = pag_x_out
@@ -508,6 +653,28 @@ class PAGExtensionScript(UIWrapper):
                 # set pag_enable to False
                 for module in pag_params.crossattn_modules:
                         setattr(module, 'pag_enable', False)
+                        if hasattr(module, 'to_v'):
+                                setattr(module.to_v, 'pag_enable', False)
+
+        def restore_networks(self, wanted_networks):
+                if wanted_networks is None:
+                       wanted_networks = []
+                logger.debug(f"Restoring networks: {wanted_networks}")
+                networks.loaded_networks = wanted_networks
+                return wanted_networks
+
+        def unload_networks(self):
+            all_modules = self.get_network_modules()
+            module_networks_backup = {}
+            wanted_networks = networks.loaded_networks
+            for module in all_modules:
+                    module_name = module.network_layer_name
+                    loaded_networks = module.network_current_names
+                    module_networks_backup[module_name] = loaded_networks
+                    networks.network_restore_weights_from_backup(module)
+                    networks.network_reset_cached_weight(module)
+            networks.loaded_networks = []
+            return wanted_networks
         
         def cfg_after_cfg_callback(self, params: AfterCFGCallbackParams, pag_params: PAGStateParams):
                 #self.unhook_callbacks(pag_params)
@@ -519,6 +686,7 @@ class PAGExtensionScript(UIWrapper):
                         xyz_grid.AxisOption("[PAG] Active", str, pag_apply_override('pag_active', boolean=True), choices=xyz_grid.boolean_choice(reverse=True)),
                         xyz_grid.AxisOption("[PAG] SANF", str, pag_apply_override('pag_sanf', boolean=True), choices=xyz_grid.boolean_choice(reverse=True)),
                         xyz_grid.AxisOption("[PAG] PAG Scale", float, pag_apply_field("pag_scale")),
+                        xyz_grid.AxisOption("[PAG] PAG Lerp Factor", float, pag_apply_field("pag_lerp_factor")),
                         xyz_grid.AxisOption("[PAG] PAG Start Step", int, pag_apply_field("pag_start_step")),
                         xyz_grid.AxisOption("[PAG] PAG End Step", int, pag_apply_field("pag_end_step")),
                         xyz_grid.AxisOption("[PAG] Enable CFG Scheduler", str, pag_apply_override('cfg_interval_enable', boolean=True), choices=xyz_grid.boolean_choice(reverse=True)),
