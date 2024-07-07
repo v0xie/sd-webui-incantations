@@ -75,11 +75,15 @@ class ICGExtensionScript(UIWrapper):
 
         def cfg_denoiser_callback(params: CFGDenoiserParams, icg_params: ICGStateParams):
             # replace uncond with random conditioning vector
-            #if icg_params.uncond is None:
-            #    uncond = rng.randn_local(p.seed, params.text_uncond.shape)
-            #    icg_params.uncond = uncond
-            new_uncond = rng.randn_like(params.text_uncond) * params.text_uncond.std()
-            params.text_uncond = new_uncond
+            if isinstance(params.text_uncond, dict): # SD XL
+                new_uncond = {}
+                # text_uncond = params.text_uncond
+                keys = ['crossattn']
+                for key in [k for k in params.text_uncond.keys() if k in keys]:
+                    params.text_uncond[key] = rng.randn_like(params.text_uncond[key]) * params.text_uncond[key].std()
+            else: # SD 1.5
+                new_uncond = rng.randn_like(params.text_uncond) * params.text_uncond.std()
+                params.text_uncond = new_uncond
             #params.text_uncond = icg_params.uncond
 
         on_cfg_denoiser(lambda params: cfg_denoiser_callback(params, icg_params))
