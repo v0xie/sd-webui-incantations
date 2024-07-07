@@ -99,6 +99,10 @@ class IncantBaseExtensionScript(scripts.Script):
         def before_process_batch(self, p: StableDiffusionProcessing, *args, **kwargs):
                 for m in submodules:
                         m.module.before_process_batch(p, *self.m_args(m, *args), **kwargs)
+
+        def process_before_every_sampling(self, p: StableDiffusionProcessing, **kwargs):
+                for m in submodules:
+                        m.module.process_before_every_sampling(p, **kwargs)
         
         def process_batch(self, p: StableDiffusionProcessing, *args, **kwargs):
                 for m in submodules:
