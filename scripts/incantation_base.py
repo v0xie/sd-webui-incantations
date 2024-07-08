@@ -14,6 +14,7 @@ from scripts.scfg import SCFGExtensionScript
 from scripts.pag import PAGExtensionScript
 from scripts.save_attn_maps import SaveAttentionMapsScript
 from scripts.cfg_combiner import CFGCombinerScript
+from scripts.cfg_icg import ICGExtensionScript
 
 logger = logging.getLogger(__name__)
 logger.setLevel(environ.get("SD_WEBUI_LOG_LEVEL", logging.INFO))
@@ -34,6 +35,7 @@ class SubmoduleInfo:
 
 # main scripts
 submodules: list[SubmoduleInfo] = [
+        SubmoduleInfo(module=ICGExtensionScript()),
         SubmoduleInfo(module=SCFGExtensionScript()),
         SubmoduleInfo(module=PAGExtensionScript()),
         SubmoduleInfo(module=T2I0ExtensionScript()),
