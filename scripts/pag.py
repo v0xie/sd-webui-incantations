@@ -521,7 +521,10 @@ class PAGExtensionScript(UIWrapper):
                         m = shared.sd_model
                         nlm = m.network_layer_mapping
                         time_embed_modules = [m for m in nlm.values() if 'timestep' in m.__class__.__name__.lower()]
+
+                        limit = min(limit, len(time_embed_modules)-1) # pertubring the very last layer is not useful
                         time_embed_modules = time_embed_modules[:limit]
+
                         return time_embed_modules
                 except AttributeError:
                         logger.exception("AttributeError in get_timestep_modules", stack_info=True)
