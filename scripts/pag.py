@@ -125,6 +125,8 @@ class PAGStateParams:
                 self.pag_scale: int = -1      # PAG guidance scale
                 self.tcg_scale: float = -1      # TCG guidance scale
                 self.tcg_alpha: float = -1      # TCG guidance scale
+                self.tcg_std_scale: bool = True
+                self.tcg_layers: int = 10
                 self.pag_start_step: int = 0
                 self.pag_end_step: int = 150 
                 self.cfg_interval_enable: bool = False
@@ -180,6 +182,8 @@ class PAGExtensionScript(UIWrapper):
                         with gr.Row():
                                 tcg_scale = gr.Slider(value = 0, minimum = 0, maximum = 5.0, step = 0.01, label="TCG Scale", elem_id = 'tcg_scale', info="")
                                 tcg_alpha = gr.Slider(value = 0, minimum = 0, maximum = 5.0, step = 0.01, label="TCG Alpha", elem_id = 'tcg_alpha', info="")
+                                tcg_max_layer_index = gr.Slider(value = 10, minimum = 1, maximum = 100, step = 1, label="TCG Max Layer Index", elem_id = 'tcg_max_layer_index', info="")
+                                tcg_std_scale = gr.Checkbox(value=True, default=True, label="TCG Std Scale", elem_id='tcg_std_scale', info="If enabled, applies TCG with standard deviation scaling")
 
                 with gr.Accordion('CFG Scheduler', open=False):
                         cfg_interval_enable = gr.Checkbox(value=False, default=False, label="Enable CFG Scheduler", elem_id='cfg_interval_enable', info="If enabled, applies CFG only within noise interval with the selected schedule type. PAG must be enabled (scale can be 0). SDXL recommend CFG=15; CFG interval (0.28, 5.42]")
@@ -198,6 +202,8 @@ class PAGExtensionScript(UIWrapper):
                 pag_scale.do_not_save_to_config = True
                 tcg_scale.do_not_save_to_config = True
                 tcg_alpha.do_not_save_to_config = True
+                tcg_max_layer_index.do_not_save_to_config = True
+                tcg_std_scale.do_not_save_to_config = True
                 start_step.do_not_save_to_config = True
                 end_step.do_not_save_to_config = True
                 cfg_interval_enable.do_not_save_to_config = True
@@ -216,6 +222,8 @@ class PAGExtensionScript(UIWrapper):
                         (cfg_interval_high, 'CFG Interval High'),
                         (tcg_scale, 'TCG Scale'),
                         (tcg_alpha, 'TCG Alpha'),
+                        (tcg_max_layer_index, 'TCG Max Layer Index'),
+                        (tcg_std_scale, lambda d: gr.Checkbox.update(value='TCG Std Scale' in d)),
                 ]
                 self.paste_field_names = [
                         'pag_active',
@@ -229,13 +237,15 @@ class PAGExtensionScript(UIWrapper):
                         'cfg_interval_high',
                         'tcg_scale',
                         'tcg_alpha',
+                        'tcg_max_layer_index',
+                        'tcg_std_scale',
                 ]
-                return [active, pag_scale, start_step, end_step, cfg_interval_enable, cfg_schedule, cfg_interval_low, cfg_interval_high, pag_sanf, tcg_scale, tcg_alpha]
+                return [active, pag_scale, start_step, end_step, cfg_interval_enable, cfg_schedule, cfg_interval_low, cfg_interval_high, pag_sanf, tcg_scale, tcg_alpha, tcg_std_scale, tcg_max_layer_index]
 
         def process_batch(self, p: StableDiffusionProcessing, *args, **kwargs):
                self.pag_process_batch(p, *args, **kwargs)
 
-        def pag_process_batch(self, p: StableDiffusionProcessing, active, pag_scale, start_step, end_step, cfg_interval_enable, cfg_schedule, cfg_interval_low, cfg_interval_high, pag_sanf, tcg_scale, tcg_alpha, *args, **kwargs):
+        def pag_process_batch(self, p: StableDiffusionProcessing, active, pag_scale, start_step, end_step, cfg_interval_enable, cfg_schedule, cfg_interval_low, cfg_interval_high, pag_sanf, tcg_scale, tcg_alpha, tcg_std_scale, tcg_max_layer_index, *args, **kwargs):
                 # cleanup previous hooks always
                 script_callbacks.remove_current_script_callbacks()
                 self.remove_all_hooks()
@@ -250,6 +260,8 @@ class PAGExtensionScript(UIWrapper):
                 end_step = getattr(p, "pag_end_step", end_step)
                 tcg_scale = getattr(p, "tcg_scale", tcg_scale)
                 tcg_alpha = getattr(p, "tcg_alpha", tcg_alpha)
+                tcg_std_scale = getattr(p, "tcg_std_scale", tcg_std_scale)
+                tcg_max_layer_index = getattr(p, "tcg_max_layer_index", tcg_max_layer_index)
 
                 cfg_schedule = getattr(p, "cfg_interval_schedule", cfg_schedule)
                 cfg_interval_low = getattr(p, "cfg_interval_low", cfg_interval_low)
@@ -264,6 +276,8 @@ class PAGExtensionScript(UIWrapper):
                                 "PAG End Step": end_step,
                                 "TCG Scale": tcg_scale,
                                 "TCG Alpha": tcg_alpha,
+                                "TCG Std Scale": tcg_std_scale,
+                                "TCG Max Layer Index": tcg_max_layer_index,
                         })
                 if cfg_interval_enable:
                         p.extra_generation_params.update({
@@ -272,9 +286,9 @@ class PAGExtensionScript(UIWrapper):
                                 "CFG Interval Low": cfg_interval_low,
                                 "CFG Interval High": cfg_interval_high
                         })
-                self.create_hook(p, active, pag_scale, start_step, end_step, cfg_interval_enable, cfg_schedule, cfg_interval_low, cfg_interval_high, pag_sanf, tcg_scale, tcg_alpha)
+                self.create_hook(p, active, pag_scale, start_step, end_step, cfg_interval_enable, cfg_schedule, cfg_interval_low, cfg_interval_high, pag_sanf, tcg_scale, tcg_alpha, tcg_std_scale, tcg_max_layer_index)
 
-        def create_hook(self, p: StableDiffusionProcessing, active, pag_scale, start_step, end_step, cfg_interval_enable, cfg_schedule, cfg_interval_low, cfg_interval_high, pag_sanf, tcg_scale, tcg_alpha, *args, **kwargs):
+        def create_hook(self, p: StableDiffusionProcessing, active, pag_scale, start_step, end_step, cfg_interval_enable, cfg_schedule, cfg_interval_low, cfg_interval_high, pag_sanf, tcg_scale, tcg_alpha, tcg_std_scale, tcg_max_layer_index, *args, **kwargs):
                 # Create a list of parameters for each concept
                 pag_params = PAGStateParams()
 
@@ -292,6 +306,7 @@ class PAGExtensionScript(UIWrapper):
                 pag_params.cfg_interval_schedule = cfg_schedule
                 pag_params.tcg_scale = tcg_scale
                 pag_params.tcg_alpha = tcg_alpha
+                pag_params.tcg_std_scale = tcg_std_scale
                 pag_params.max_sampling_step = p.steps
                 pag_params.guidance_scale = p.cfg_scale
                 pag_params.batch_size = p.batch_size
@@ -314,7 +329,7 @@ class PAGExtensionScript(UIWrapper):
                         return
                 pag_params.crossattn_modules = [m for m in cross_attn_modules if 'CrossAttention' in m.__class__.__name__]
 
-                time_embed_modules = self.get_time_embed_modules()
+                time_embed_modules = self.get_time_embed_modules(limit=tcg_max_layer_index)
                 pag_params.time_embed_modules = time_embed_modules
 
                 # Use lambda to call the callback function with the parameters to avoid global variables
@@ -327,7 +342,7 @@ class PAGExtensionScript(UIWrapper):
                         self.ready_hijack_forward(pag_params.crossattn_modules, pag_scale)
 
                 if pag_params.tcg_scale > 0:
-                        self.timestep_hijack_forward(pag_params.time_embed_modules, tcg_scale, tcg_alpha)
+                        self.timestep_hijack_forward(pag_params.time_embed_modules, tcg_scale, tcg_alpha, tcg_std_scale)
 
                 logger.debug('Hooked callbacks')
                 script_callbacks.on_cfg_denoiser(cfg_denoise_lambda)
@@ -357,7 +372,7 @@ class PAGExtensionScript(UIWrapper):
                         self.remove_field_cross_attn_modules(to_v, 'pag_parent_module')
                         _remove_all_forward_hooks(module, 'pag_pre_hook')
                         _remove_all_forward_hooks(to_v, 'to_v_pre_hook')
-                time_embed_modules = self.get_time_embed_modules()
+                time_embed_modules = self.get_time_embed_modules(limit=999)
                 for module in time_embed_modules:
                         self.remove_field_cross_attn_modules(module, 'tcg_enable')
                         self.remove_field_cross_attn_modules(module, 'tcg_scale')
@@ -389,7 +404,7 @@ class PAGExtensionScript(UIWrapper):
                                 pass
                         pag_params.denoiser = None
 
-        def timestep_hijack_forward(self, time_embed_modules, tcg_scale, tcg_alpha):
+        def timestep_hijack_forward(self, time_embed_modules, tcg_scale, tcg_alpha, tcg_std_scale):
                 """ Create hooks in the forward pass of the cross attention modules
                 Copies the output of the to_v module to the parent module
                 Then applies the PAG perturbation to the output of the cross attention module (multiplication by identity)
@@ -400,10 +415,10 @@ class PAGExtensionScript(UIWrapper):
                         self.add_field_cross_attn_modules(module, 'tcg_enable', False)
                         self.add_field_cross_attn_modules(module, 'tcg_scale', tcg_scale)
                         self.add_field_cross_attn_modules(module, 'tcg_alpha', tcg_alpha)
+                        self.add_field_cross_attn_modules(module, 'tcg_std_scale', tcg_std_scale)
                         self.add_field_cross_attn_modules(module, 'tcg_timestep', 1000)
                         self.add_field_cross_attn_modules(module, 'tcg_timestep_max', 1000)
                         self.add_field_cross_attn_modules(module, 'tcg_timestep_min', 400)
-                        self.add_field_cross_attn_modules(module, 'tcg_std_scale', True)
                         # self.add_field_cross_attn_modules(to_out, 'pag_parent_module', [module])
 
                 def tcg_hook(module, input, kwargs, output):
@@ -506,8 +521,7 @@ class PAGExtensionScript(UIWrapper):
                         m = shared.sd_model
                         nlm = m.network_layer_mapping
                         time_embed_modules = [m for m in nlm.values() if 'timestep' in m.__class__.__name__.lower()]
-                        if limit:
-                                time_embed_modules = time_embed_modules[:limit]
+                        time_embed_modules = time_embed_modules[:limit]
                         return time_embed_modules
                 except AttributeError:
                         logger.exception("AttributeError in get_timestep_modules", stack_info=True)
@@ -645,8 +659,10 @@ class PAGExtensionScript(UIWrapper):
                         xyz_grid.AxisOption("[PAG] PAG Scale", float, pag_apply_field("pag_scale")),
                         xyz_grid.AxisOption("[PAG] PAG Start Step", int, pag_apply_field("pag_start_step")),
                         xyz_grid.AxisOption("[PAG] PAG End Step", int, pag_apply_field("pag_end_step")),
-                        xyz_grid.AxisOption("[PAG] TCG Scale", float, pag_apply_field("tcg_scale")),
-                        xyz_grid.AxisOption("[PAG] TCG Alpha", float, pag_apply_field("tcg_alpha")),
+                        xyz_grid.AxisOption("[TCG] Scale", float, pag_apply_field("tcg_scale")),
+                        xyz_grid.AxisOption("[TCG] Alpha", float, pag_apply_field("tcg_alpha")),
+                        xyz_grid.AxisOption("[TCG] Std Scale", str, pag_apply_override('tcg_std_scale', boolean=True), choices=xyz_grid.boolean_choice(reverse=True)),
+                        xyz_grid.AxisOption("[TCG] Max Layer Index", int, pag_apply_field("tcg_max_layer_index")),
                         xyz_grid.AxisOption("[PAG] Enable CFG Scheduler", str, pag_apply_override('cfg_interval_enable', boolean=True), choices=xyz_grid.boolean_choice(reverse=True)),
                         xyz_grid.AxisOption("[PAG] CFG Noise Interval Low", float, pag_apply_field("cfg_interval_low")),
                         xyz_grid.AxisOption("[PAG] CFG Noise Interval High", float, pag_apply_field("cfg_interval_high")),
