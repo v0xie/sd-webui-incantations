@@ -1,5 +1,7 @@
 import logging
 from os import environ
+from einops import rearrange
+
 import modules.scripts as scripts
 import gradio as gr
 import scipy.stats as stats
@@ -16,7 +18,6 @@ from modules.sd_samplers_cfg_denoiser import catenate_conds
 from modules.sd_samplers_cfg_denoiser import CFGDenoiser
 from modules import shared
 
-import math
 import torch
 from torch.nn import functional as F
 from torchvision.transforms import GaussianBlur
@@ -53,7 +54,6 @@ global_scale = 1
 class SEGStateParams:
         def __init__(self):
                 self.seg_active: bool = False      # SEG guidance scale
-                self.seg_sanf: bool = False # saliency-adaptive noise fusion, handled in cfg_combiner
                 self.seg_scale: int = -1      # SEG guidance scale
                 self.seg_blur_sigma: float = 1.0
                 self.seg_blur_threshold: float = 15.0 # 2^13 ~= 8192
@@ -83,6 +83,8 @@ class SEGStateParams:
 class SEGExtensionScript(UIWrapper):
         def __init__(self):
                 self.cached_c = [None, None]
+                self.paste_field_names = []
+                self.infotext_fields = []
                 self.handles = []
 
         # Extension title in menu UI
@@ -97,7 +99,6 @@ class SEGExtensionScript(UIWrapper):
         def setup_ui(self, is_img2img) -> list:
                 with gr.Accordion('Smoothed Energy Guidance', open=False):
                         active = gr.Checkbox(value=False, default=False, label="Active", elem_id='seg_active')
-                        seg_sanf = gr.Checkbox(value=False, default=False, label="Use Saliency-Adaptive Noise Fusion", elem_id='seg_sanf')
                         with gr.Row():
                                 seg_scale = gr.Slider(value = 0, minimum = 0, maximum = 20.0, step = 0.5, label="SEG Scale", elem_id = 'seg_scale', info="")
                         with gr.Row():
@@ -107,11 +108,10 @@ class SEGExtensionScript(UIWrapper):
                                 start_step = gr.Slider(value = 0, minimum = 0, maximum = 150, step = 1, label="Start Step", elem_id = 'seg_start_step', info="")
                                 end_step = gr.Slider(value = 150, minimum = 0, maximum = 150, step = 1, label="End Step", elem_id = 'seg_end_step', info="")
 
-                params = [active, seg_sanf, seg_scale, seg_blur_sigma, seg_blur_threshold, start_step, end_step]
+                params = [active, seg_scale, seg_blur_sigma, seg_blur_threshold, start_step, end_step]
                                 
                 self.infotext_fields = [
                         (active, lambda d: gr.Checkbox.update(value='SEG Active' in d)),
-                        (seg_sanf, lambda d: gr.Checkbox.update(value='SEG SANF' in d)),
                         (seg_scale, 'SEG Scale'),
                         (seg_blur_sigma, 'SEG Blur Sigma'),
                         (seg_blur_threshold, 'SEG Blur Threshold'),
@@ -127,13 +127,12 @@ class SEGExtensionScript(UIWrapper):
         def process_batch(self, p: StableDiffusionProcessing, *args, **kwargs):
                self.seg_process_batch(p, *args, **kwargs)
 
-        def seg_process_batch(self, p: StableDiffusionProcessing, active, seg_scale, seg_blur_sigma, seg_blur_threshold, start_step, end_step, seg_sanf, *args, **kwargs):
+        def seg_process_batch(self, p: StableDiffusionProcessing, active, seg_scale, seg_blur_sigma, seg_blur_threshold, start_step, end_step, *args, **kwargs):
                 # cleanup previous hooks always
                 script_callbacks.remove_current_script_callbacks()
                 self.remove_all_hooks()
 
                 active = getattr(p, "seg_active", active)
-                seg_sanf = getattr(p, "seg_sanf", seg_sanf)
                 if active is False:
                         return
                 seg_scale = getattr(p, "seg_scale", seg_scale)
@@ -145,16 +144,15 @@ class SEGExtensionScript(UIWrapper):
                 if active:
                         p.extra_generation_params.update({
                                 "SEG Active": active,
-                                "SEG SANF": seg_sanf,
                                 "SEG Scale": seg_scale,
                                 "SEG Blur Sigma": seg_blur_sigma,
                                 "SEG Blur Threshold": seg_blur_threshold,
                                 "SEG Start Step": start_step,
                                 "SEG End Step": end_step,
                         })
-                self.create_hook(p, active, seg_scale, seg_blur_sigma, seg_blur_threshold, start_step, end_step, seg_sanf)
+                self.create_hook(p, active, seg_scale, seg_blur_sigma, seg_blur_threshold, start_step, end_step)
 
-        def create_hook(self, p: StableDiffusionProcessing, active, seg_scale, seg_blur_sigma, seg_blur_threshold, start_step, end_step, seg_sanf, *args, **kwargs):
+        def create_hook(self, p: StableDiffusionProcessing, active, seg_scale, seg_blur_sigma, seg_blur_threshold, start_step, end_step, *args, **kwargs):
                 # Create a list of parameters for each concept
                 seg_params = SEGStateParams()
 
@@ -164,7 +162,6 @@ class SEGExtensionScript(UIWrapper):
                 p.incant_cfg_params['seg_params'] = seg_params
                 
                 seg_params.seg_active = active 
-                seg_params.seg_sanf = seg_sanf 
                 seg_params.seg_scale = seg_scale
                 seg_params.seg_blur_sigma = seg_blur_sigma
                 seg_params.seg_blur_threshold = seg_blur_threshold
@@ -175,34 +172,33 @@ class SEGExtensionScript(UIWrapper):
                 seg_params.guidance_scale = p.cfg_scale
                 seg_params.batch_size = p.batch_size
                 seg_params.denoiser = None
-                seg_params.cfg_interval_scheduled_value = p.cfg_scale
 
                 # Get all the qv modules
-                cross_attn_modules = self.get_cross_attn_modules()
-                if len(cross_attn_modules) == 0:
-                        logger.error("No cross attention modules found, cannot proceed with SEG")
+                self_attn_modules = self.get_cross_attn_modules()
+                if len(self_attn_modules) == 0:
+                        logger.error("No self attention modules found, cannot proceed with SEG")
                         return
-                seg_params.crossattn_modules = [m for m in cross_attn_modules if 'CrossAttention' in m.__class__.__name__]
+                seg_params.crossattn_modules = self_attn_modules
+                #seg_params.crossattn_modules = [m for m in cross_attn_modules if 'CrossAttention' in m.__class__.__name__]
+
 
                 # Use lambda to call the callback function with the parameters to avoid global variables
                 cfg_denoise_lambda = lambda callback_params: self.on_cfg_denoiser_callback(callback_params, seg_params)
-                cfg_denoised_lambda = lambda callback_params: self.on_cfg_denoised_callback(callback_params, seg_params)
-                #after_cfg_lambda = lambda x: self.cfg_after_cfg_callback(x, params)
+                # cfg_denoised_lambda = lambda callback_params: self.on_cfg_denoised_callback(callback_params, seg_params)
                 unhook_lambda = lambda _: self.unhook_callbacks(seg_params)
 
                 if seg_params.seg_active:
-                        self.ready_hijack_forward(seg_params.crossattn_modules, seg_scale)
+                        self.ready_hijack_forward(seg_params.crossattn_modules, seg_scale, seg_blur_sigma, seg_blur_threshold)
 
                 logger.debug('Hooked callbacks')
                 script_callbacks.on_cfg_denoiser(cfg_denoise_lambda)
-                script_callbacks.on_cfg_denoised(cfg_denoised_lambda)
-                #script_callbacks.on_cfg_after_cfg(after_cfg_lambda)
+                # script_callbacks.on_cfg_denoised(cfg_denoised_lambda)
                 script_callbacks.on_script_unloaded(unhook_lambda)
 
         def postprocess_batch(self, p, *args, **kwargs):
                 self.seg_postprocess_batch(p, *args, **kwargs)
 
-        def seg_postprocess_batch(self, p, active, *args, **kwargs):
+        def seg_postprocess_batch(self, p, active, seg_scale, seg_blur_sigma, seg_blur_threshold, start_step, end_step, *args, **kwargs):
                 script_callbacks.remove_current_script_callbacks()
 
                 logger.debug('Removed script callbacks')
@@ -211,64 +207,82 @@ class SEGExtensionScript(UIWrapper):
                         return
 
         def remove_all_hooks(self):
-                cross_attn_modules = self.get_cross_attn_modules()
-                for module in cross_attn_modules:
-                        to_v = getattr(module, 'to_v', None)
-                        self.remove_field_cross_attn_modules(module, 'seg_enable')
-                        self.remove_field_cross_attn_modules(module, 'seg_last_to_v')
-                        self.remove_field_cross_attn_modules(to_v, 'seg_parent_module')
-                        _remove_all_forward_hooks(module, 'seg_pre_hook')
-                        _remove_all_forward_hooks(to_v, 'to_v_pre_hook')
+                self_attn_modules = self.get_cross_attn_modules()
+                for module in self_attn_modules:
+                        self.remove_field_cross_attn_modules(module.to_q, 'seg_parent_module')
+                        self.remove_field_cross_attn_modules(module.to_q, 'seg_enable')
+                        _remove_all_forward_hooks(module, 'seg_self_attn_hook')
+                        _remove_all_forward_hooks(module.to_q, 'seg_to_q_hook')
 
         def unhook_callbacks(self, seg_params: SEGStateParams):
                 global handles
                 return
 
+        def ready_hijack_forward(self, selfattn_modules, seg_scale, seg_blur_sigma, seg_blur_threshold):
+                for module in selfattn_modules:
+                        self.add_field_cross_attn_modules(module.to_q, 'seg_parent_module', [module])
+                        self.add_field_cross_attn_modules(module.to_q, 'seg_enable', False)
 
-        def ready_hijack_forward(self, crossattn_modules, seg_scale):
-                """ Create hooks in the forward pass of the cross attention modules
-                Copies the output of the to_v module to the parent module
-                Then applies the SEG perturbation to the output of the cross attention module (multiplication by identity)
-                """
+                def seg_to_q_hook(module, input, kwargs, output):
+                        batch_size, seq_len, inner_dim = input[0].shape
+                        h = module.seg_parent_module[0].heads
+                        head_dim = inner_dim // h
 
-                # add field for last_to_v
-                for module in crossattn_modules:
-                        to_v = getattr(module, 'to_v', None)
-                        self.add_field_cross_attn_modules(module, 'seg_enable', False)
-                        self.add_field_cross_attn_modules(module, 'seg_last_to_v', None)
-                        self.add_field_cross_attn_modules(to_v, 'seg_parent_module', [module])
-                        # self.add_field_cross_attn_modules(to_out, 'seg_parent_module', [module])
+                        q = output.view(batch_size, -1, h, head_dim).transpose(1, 2) # (batch, num_heads, seq_len, head_dim)
+                        # blur 
+                        q[:] = q.mean(dim=(-2, -1), keepdim=True)
+                        q = q.transpose(1, 2).reshape(batch_size, seq_len, inner_dim)
 
-                def to_v_pre_hook(module, input, kwargs, output):
-                        """ Copy the output of the to_v module to the parent module """
-                        parent_module = getattr(module, 'seg_parent_module', None)
-                        # copy the output of the to_v module to the parent module
-                        setattr(parent_module[0], 'seg_last_to_v', output.detach().clone())
+                        return q
 
-                def seg_pre_hook(module, input, kwargs, output):
-                        if hasattr(module, 'seg_enable') and getattr(module, 'seg_enable', False) is False:
-                                return
-                        if not hasattr(module, 'seg_last_to_v'):
-                                # oops we forgot to unhook
-                                return
+                def seg_self_attn_hook(module, input, kwargs, output):
+                        x = input[0]
+                        batch_size, sequence_length, inner_dim = input[0].shape
 
-                        # get the last to_v output and save it
-                        last_to_v = getattr(module, 'seg_last_to_v', None)
+                        mask = None
+                        if kwargs.get('mask', None):
+                                mask = kwargs['mask']
+                                mask = module.prepare_attention_mask(mask, sequence_length, batch_size)
+                                mask = mask.view(batch_size, self.heads, -1, mask.shape[-1])
 
-                        batch_size, seq_len, inner_dim = output.shape
-                        identity = torch.eye(seq_len, dtype=last_to_v.dtype, device=shared.device).expand(batch_size, -1, -1)
-                        if last_to_v is not None:    
-                                new_output = torch.einsum('bij,bjk->bik', identity, last_to_v[:, :seq_len, :])
-                                return new_output
-                        else:
-                                # this is bad
-                                return output
+                        h = module.heads
+                        q_in = module.to_q(x)
+                        context = kwargs.get('context', None)
+                        context = context if context is not None else x
+
+                        context_k, context_v = hypernetwork.apply_hypernetworks(shared.loaded_hypernetworks, context)
+                        k_in = module.to_k(context_k)
+                        v_in = module.to_v(context_v)
+
+                        head_dim = inner_dim // h
+                        q = q_in.view(batch_size, -1, h, head_dim).transpose(1, 2)
+                        k = k_in.view(batch_size, -1, h, head_dim).transpose(1, 2)
+                        v = v_in.view(batch_size, -1, h, head_dim).transpose(1, 2)
+
+                        del q_in, k_in, v_in
+
+                        dtype = q.dtype
+                        if shared.opts.upcast_attn:
+                                q, k, v = q.float(), k.float(), v.float()
+
+                        # the output of sdp = (batch, num_heads, seq_len, head_dim)
+                        hidden_states = torch.nn.functional.scaled_dot_product_attention(
+                                q, k, v, attn_mask=mask, dropout_p=0.0, is_causal=False
+                        )
+
+                        hidden_states = hidden_states.transpose(1, 2).reshape(batch_size, -1, h * head_dim)
+                        hidden_states = hidden_states.to(dtype)
+
+                        # linear proj
+                        hidden_states = module.to_out[0](hidden_states)
+                        # dropout
+                        hidden_states = module.to_out[1](hidden_states)
+                        return hidden_states
 
                 # Create hooks 
-                for module in crossattn_modules:
-                        handle_parent = module.register_forward_hook(seg_pre_hook, with_kwargs=True)
-                        to_v = getattr(module, 'to_v', None)
-                        handle_to_v = to_v.register_forward_hook(to_v_pre_hook, with_kwargs=True)
+                for module in selfattn_modules:
+                        handle_to_q = module.to_q.register_forward_hook(seg_to_q_hook, with_kwargs=True)
+                        handle_to_v = module.register_forward_hook(seg_self_attn_hook, with_kwargs=True)
 
         def get_middle_block_modules(self):
                 """ Get all attention modules from the middle block 
@@ -278,7 +292,11 @@ class SEGExtensionScript(UIWrapper):
                 try:
                         m = shared.sd_model
                         nlm = m.network_layer_mapping
-                        middle_block_modules = [m for m in nlm.values() if 'middle_block_1_transformer_blocks_0_attn1' in m.network_layer_name and 'CrossAttention' in m.__class__.__name__]
+                        middle_block_modules = [m for m in nlm.values() if 
+                                                        'middle_block' in m.network_layer_name and \
+                                                        'attn2' in m.network_layer_name and \
+                                                        'CrossAttention' in m.__class__.__name__
+                                                ]
                         return middle_block_modules
                 except AttributeError:
                         logger.exception("AttributeError in get_middle_block_modules", stack_info=True)
@@ -313,64 +331,24 @@ class SEGExtensionScript(UIWrapper):
                 if not seg_params.seg_start_step <= params.sampling_step <= seg_params.seg_end_step or seg_params.seg_scale <= 0:
                         return
 
-                if isinstance(params.text_cond, dict):
-                        text_cond = params.text_cond['crossattn'] # SD XL
-                        seg_params.text_cond = {}
-                        seg_params.text_uncond = {}
-                        for key, value in params.text_cond.items():
-                                seg_params.text_cond[key] = value.clone().detach()
-                                seg_params.text_uncond[key] = value.clone().detach()
-                else:
-                        text_cond = params.text_cond # SD 1.5
-                        seg_params.text_cond = text_cond.clone().detach()
-                        seg_params.text_uncond = text_cond.clone().detach()
+                # if isinstance(params.text_cond, dict):
+                #         text_cond = params.text_cond['crossattn'] # SD XL
+                #         seg_params.text_cond = {}
+                #         seg_params.text_uncond = {}
+                #         for key, value in params.text_cond.items():
+                #                 seg_params.text_cond[key] = value.clone().detach()
+                #                 seg_params.text_uncond[key] = value.clone().detach()
+                # else:
+                #         text_cond = params.text_cond # SD 1.5
+                #         seg_params.text_cond = text_cond.clone().detach()
+                #         seg_params.text_uncond = text_cond.clone().detach()
 
-                seg_params.x_in = params.x.clone().detach()
-                seg_params.sigma = params.sigma.clone().detach()
-                seg_params.image_cond = params.image_cond.clone().detach()
-                seg_params.denoiser = params.denoiser
-                seg_params.make_condition_dict = get_make_condition_dict_fn(params.text_uncond)
+                # seg_params.x_in = params.x.clone().detach()
+                # seg_params.sigma = params.sigma.clone().detach()
+                # seg_params.image_cond = params.image_cond.clone().detach()
+                # seg_params.denoiser = params.denoiser
+                # seg_params.make_condition_dict = get_make_condition_dict_fn(params.text_uncond)
 
-
-        def on_cfg_denoised_callback(self, params: CFGDenoisedParams, seg_params: SEGStateParams):
-                """ Callback function for the CFGDenoisedParams 
-                Refer to pg.22 A.2 of the SEG paper for how CFG and SEG combine
-                
-                """
-                # Run only within interval
-                # Run SEG only if active and within interval
-                if not seg_params.seg_active or seg_params.seg_scale <= 0:
-                        return
-                if not seg_params.seg_start_step <= params.sampling_step <= seg_params.seg_end_step or seg_params.seg_scale <= 0:
-                        return
-
-                # passed from on_cfg_denoiser_callback
-                x_in = seg_params.x_in
-                tensor = seg_params.text_cond
-                uncond = seg_params.text_uncond
-                image_cond_in = seg_params.image_cond
-                sigma_in = seg_params.sigma
-                
-                # concatenate the conditions 
-                # "modules/sd_samplers_cfg_denoiser.py:237"
-                cond_in = catenate_conds([tensor, uncond])
-                make_condition_dict = get_make_condition_dict_fn(uncond)
-                conds = make_condition_dict(cond_in, image_cond_in)
-                
-                # set seg_enable to True for the hooked cross attention modules
-                for module in seg_params.crossattn_modules:
-                        setattr(module, 'seg_enable', True)
-
-                # get the SEG guidance (is there a way to optimize this so we don't have to calculate it twice?)
-                seg_x_out = params.inner_model(x_in, sigma_in, cond=conds)
-
-                # update seg_x_out
-                seg_params.seg_x_out = seg_x_out
-
-                # set seg_enable to False
-                for module in seg_params.crossattn_modules:
-                        setattr(module, 'seg_enable', False)
-        
         def cfg_after_cfg_callback(self, params: AfterCFGCallbackParams, seg_params: SEGStateParams):
                 #self.unhook_callbacks(seg_params)
                 pass
@@ -379,74 +357,13 @@ class SEGExtensionScript(UIWrapper):
                 xyz_grid = [x for x in scripts.scripts_data if x.script_class.__module__ in ("xyz_grid.py", "scripts.xyz_grid")][0].module
                 extra_axis_options = {
                         xyz_grid.AxisOption("[SEG] Active", str, seg_apply_override('seg_active', boolean=True), choices=xyz_grid.boolean_choice(reverse=True)),
-                        xyz_grid.AxisOption("[SEG] SANF", str, seg_apply_override('seg_sanf', boolean=True), choices=xyz_grid.boolean_choice(reverse=True)),
                         xyz_grid.AxisOption("[SEG] SEG Scale", float, seg_apply_field("seg_scale")),
+                        xyz_grid.AxisOption("[SEG] SEG Blur Sigma", float, seg_apply_field("seg_blur_sigma")),
+                        xyz_grid.AxisOption("[SEG] SEG Blur Threshold", float, seg_apply_field("seg_blur_threshold")),
                         xyz_grid.AxisOption("[SEG] SEG Start Step", int, seg_apply_field("seg_start_step")),
                         xyz_grid.AxisOption("[SEG] SEG End Step", int, seg_apply_field("seg_end_step")),
                 }
                 return extra_axis_options
-
-
-def combine_denoised_pass_conds_list(*args, **kwargs):
-        """ Hijacked function for combine_denoised in CFGDenoiser """
-        original_func = kwargs.get('original_func', None)
-        new_params = kwargs.get('seg_params', None)
-
-        if new_params is None:
-                logger.error("new_params is None")
-                return original_func(*args)
-
-        def new_combine_denoised(x_out, conds_list, uncond, cond_scale):
-                denoised_uncond = x_out[-uncond.shape[0]:]
-                denoised = torch.clone(denoised_uncond)
-
-                noise_level = calculate_noise_level(new_params.step, new_params.max_sampling_step)
-
-                # Calculate CFG Scale
-                cfg_scale = cond_scale
-                new_params.cfg_interval_scheduled_value = cfg_scale
-
-                if new_params.cfg_interval_enable:
-                        if new_params.cfg_interval_schedule != 'Constant':
-                                # Calculate noise interval
-                                start = new_params.cfg_interval_low
-                                end = new_params.cfg_interval_high
-                                begin_range = start if start <= end else end
-                                end_range = end if start <= end else start
-                                # Scheduled CFG Value
-                                scheduled_cfg_scale = cfg_scheduler(new_params.cfg_interval_schedule, new_params.step, new_params.max_sampling_step, cond_scale)
-                                # Only apply CFG in the interval
-                                cfg_scale = scheduled_cfg_scale if begin_range <= noise_level <= end_range else 1.0
-                                new_params.cfg_interval_scheduled_value = scheduled_cfg_scale
-
-                # This may be temporarily necessary for compatibility with scfg
-                # if not new_params.seg_start_step <= new_params.step <= new_params.seg_end_step:
-                #        return original_func(*args)
-
-                # This may be temporarily necessary for compatibility with scfg
-                # if not new_params.seg_start_step <= new_params.step <= new_params.seg_end_step:
-                #        return original_func(*args)
-
-                if incantations_debug:
-                        logger.debug(f"Schedule: {new_params.cfg_interval_schedule}, CFG Scale: {cfg_scale}, Noise_level: {round(noise_level,3)}")
-
-                for i, conds in enumerate(conds_list):
-                        for cond_index, weight in conds:
-                                denoised[i] += (x_out[cond_index] - denoised_uncond[i]) * (weight * cfg_scale)
-
-                                # Apply SEG guidance only within interval
-                                if not new_params.seg_start_step <= new_params.step <= new_params.seg_end_step or new_params.seg_scale <= 0:
-                                        continue
-                                else:
-                                        try:
-                                                denoised[i] += (x_out[cond_index] - new_params.seg_x_out[i]) * (weight * new_params.seg_scale)
-                                        except TypeError:
-                                                logger.exception("TypeError in combine_denoised_pass_conds_list")
-                                        except IndexError:
-                                                logger.exception("IndexError in combine_denoised_pass_conds_list")
-                                        #logger.debug(f"added SEG guidance to denoised - seg_scale:{global_scale}")
-                return denoised
-        return new_combine_denoised(*args)
 
 
 # from modules/sd_samplers_cfg_denoiser.py:187-195
@@ -534,3 +451,72 @@ def _remove_all_forward_hooks(
 
     # Remove hooks from the target module
     _remove_hooks(module, hook_fn_name)
+
+
+# based on diffusers/models/attention_processor.py Attention head_to_batch_dim
+def head_to_batch_dim(x, heads, out_dim=3):
+        head_size = heads
+        if x.ndim == 3:
+
+                batch_size, seq_len, dim = x.shape
+                extra_dim = 1
+        else:
+               batch_size, extra_dim, seq_len, dim = x.shape
+        x = x.reshape(batch_size, seq_len * extra_dim, head_size, dim // head_size)
+        x = x.permute(0, 2, 1, 3)
+        if out_dim == 3:
+               x = x.reshape(batch_size * head_size, seq_len * extra_dim, dim // head_size)
+        return x
+
+
+# based on diffusers/models/attention_processor.py Attention batch_to_head_dim
+def batch_to_head_dim(x, heads):
+        head_size = heads
+        batch_size, seq_len, dim = x.shape
+        x = x.reshape(batch_size // head_size, head_size, seq_len, dim)
+        x = x.permute(0, 2, 1, 3).reshape(batch_size // head_size, seq_len, dim * head_size)
+        return x
+
+
+def average_over_head_dim(x, heads):
+        x = rearrange(x, '(b h) s t -> b h s t', h=heads).mean(1)
+        return x
+
+
+def prepare_attn_map(to_k_map, heads):
+    to_k_map = head_to_batch_dim(to_k_map, heads)
+    to_k_map = average_over_head_dim(to_k_map, heads)
+    to_k_map = torch.stack([to_k_map[0], to_k_map[0]], dim=0)
+    return to_k_map
+
+
+def get_attention_scores(to_q_map, to_k_map, dtype):
+        """ Calculate the attention scores for the given query and key maps
+        Arguments:
+                to_q_map: torch.Tensor - query map
+                to_k_map: torch.Tensor - key map
+                dtype: torch.dtype - data type of the tensor
+        Returns:
+                torch.Tensor - attention scores 
+        """
+        # based on diffusers models/attention.py "get_attention_scores"
+        # use in place operations vs. softmax to save memory: https://stackoverflow.com/questions/53732209/torch-in-place-operations-to-save-memory-softmax
+        # 512x: 2.65G -> 2.47G
+        # attn_probs = attn_scores.softmax(dim=-1).to(device=shared.device, dtype=to_q_map.dtype)
+
+        # if inf blur
+        to_q_map[:] = to_q_map.mean(dim=(-2, -1), keepdim=True)
+
+        attn_probs = to_q_map @ to_k_map.transpose(-1, -2)
+
+        # avoid nan by converting to float32 and subtracting max 
+        attn_probs = attn_probs.to(dtype=torch.float32) #
+        attn_probs -= torch.max(attn_probs)
+
+        torch.exp(attn_probs, out = attn_probs)
+        summed = attn_probs.sum(dim=-1, keepdim=True, dtype=torch.float32)
+        attn_probs /= summed
+
+        attn_probs = attn_probs.to(dtype=dtype)
+
+        return attn_probs
