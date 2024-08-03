@@ -103,7 +103,7 @@ class SEGExtensionScript(UIWrapper):
         # Setup menu ui detail
         def setup_ui(self, is_img2img) -> list:
                 with gr.Accordion('Smoothed Energy Guidance', open=False):
-                        active = gr.Checkbox(value=False, default=False, label="Active", elem_id='seg_active')
+                        active = gr.Checkbox(value=False, default=False, label="Active", elem_id='seg_active', info="Recommended to keep CFG Scale fixed at 3.0, use Sigma and Threshold to adjust.")
                         with gr.Row():
                                 seg_scale = gr.Slider(value = 0, minimum = 0, maximum = 20.0, step = 0.5, label="SEG Scale", elem_id = 'seg_scale', info="", visible=False)
                         with gr.Row():
