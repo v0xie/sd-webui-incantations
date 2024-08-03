@@ -103,23 +103,18 @@ class SEGExtensionScript(UIWrapper):
         # Setup menu ui detail
         def setup_ui(self, is_img2img) -> list:
                 with gr.Accordion('Smoothed Energy Guidance', open=False):
-                        active = gr.Checkbox(value=False, default=False, label="Active", elem_id='seg_active', info="Recommended to keep CFG Scale fixed at 3.0, use Sigma and Threshold to adjust.")
+                        active = gr.Checkbox(value=False, default=False, label="Active", elem_id='seg_active', info="Recommended to keep CFG Scale fixed at 3.0, use Sigma to adjust.")
                         with gr.Row():
-                                seg_scale = gr.Slider(value = 0, minimum = 0, maximum = 20.0, step = 0.5, label="SEG Scale", elem_id = 'seg_scale', info="", visible=False)
-                        with gr.Row():
-                                seg_blur_sigma = gr.Slider(value = 1.0, minimum = 0.0, maximum = 6.0, step = 0.5, label="SEG Blur Sigma", elem_id = 'seg_blur_sigma', info="")
-                                seg_blur_threshold = gr.Slider(value = 14.0, minimum = 0, maximum = 14.0, step = 0.5, label="SEG Blur Threshold", elem_id = 'seg_blur_threshold', info="Values >= 14 are infinite blur")
+                                seg_blur_sigma = gr.Slider(value = 10.0, minimum = 0.0, maximum = 10.0, step = 0.5, label="SEG Blur Sigma", elem_id = 'seg_blur_sigma', info="Exponential (2^n). Values >= 10 are infinite blur")
                         with gr.Row():
                                 start_step = gr.Slider(value = 0, minimum = 0, maximum = 150, step = 1, label="Start Step", elem_id = 'seg_start_step', info="")
                                 end_step = gr.Slider(value = 150, minimum = 0, maximum = 150, step = 1, label="End Step", elem_id = 'seg_end_step', info="")
 
-                params = [active, seg_scale, seg_blur_sigma, seg_blur_threshold, start_step, end_step]
+                params = [active, seg_blur_sigma, start_step, end_step]
                                 
                 self.infotext_fields = [
                         (active, lambda d: gr.Checkbox.update(value='SEG Active' in d)),
-                        # (seg_scale, 'SEG Scale'),
                         (seg_blur_sigma, 'SEG Blur Sigma'),
-                        (seg_blur_threshold, 'SEG Blur Threshold'),
                         (start_step, 'SEG Start Step'),
                         (end_step, 'SEG End Step'),
                 ]
@@ -132,7 +127,7 @@ class SEGExtensionScript(UIWrapper):
         def process_batch(self, p: StableDiffusionProcessing, *args, **kwargs):
                self.seg_process_batch(p, *args, **kwargs)
 
-        def seg_process_batch(self, p: StableDiffusionProcessing, active, seg_scale, seg_blur_sigma, seg_blur_threshold, start_step, end_step, *args, **kwargs):
+        def seg_process_batch(self, p: StableDiffusionProcessing, active, seg_blur_sigma, start_step, end_step, *args, **kwargs):
                 # cleanup previous hooks always
                 script_callbacks.remove_current_script_callbacks()
                 self.remove_all_hooks()
@@ -140,24 +135,24 @@ class SEGExtensionScript(UIWrapper):
                 active = getattr(p, "seg_active", active)
                 if active is False:
                         return
-                seg_scale = getattr(p, "seg_scale", seg_scale)
                 seg_blur_sigma = getattr(p, "seg_blur_sigma", seg_blur_sigma)
-                seg_blur_threshold = getattr(p, "seg_blur_threshold", seg_blur_threshold)
+                if seg_blur_sigma == 0.0:
+                        logger.info("SEG Blur Sigma is 0, skipping SEG")
+                        return
+                seg_blur_sigma = 2 ** seg_blur_sigma
                 start_step = getattr(p, "seg_start_step", start_step)
                 end_step = getattr(p, "seg_end_step", end_step)
 
                 if active:
                         p.extra_generation_params.update({
                                 "SEG Active": active,
-                                # "SEG Scale": seg_scale,
                                 "SEG Blur Sigma": seg_blur_sigma,
-                                "SEG Blur Threshold": seg_blur_threshold,
                                 "SEG Start Step": start_step,
                                 "SEG End Step": end_step,
                         })
-                self.create_hook(p, active, seg_scale, seg_blur_sigma, seg_blur_threshold, start_step, end_step)
+                self.create_hook(p, active, seg_blur_sigma, start_step, end_step)
 
-        def create_hook(self, p: StableDiffusionProcessing, active, seg_scale, seg_blur_sigma, seg_blur_threshold, start_step, end_step, *args, **kwargs):
+        def create_hook(self, p: StableDiffusionProcessing, active, seg_blur_sigma, start_step, end_step, *args, **kwargs):
                 # Create a list of parameters for each concept
                 seg_params = SEGStateParams()
 
@@ -167,16 +162,10 @@ class SEGExtensionScript(UIWrapper):
                 p.incant_cfg_params['seg_params'] = seg_params
                 
                 seg_params.seg_active = active 
-                seg_params.seg_scale = seg_scale
                 seg_params.seg_blur_sigma = seg_blur_sigma
-                seg_params.seg_blur_threshold = seg_blur_threshold
+                seg_params.seg_blur_threshold = 9.9
                 seg_params.seg_start_step = start_step
                 seg_params.seg_end_step = end_step
-
-                seg_params.max_sampling_step = p.steps
-                seg_params.guidance_scale = p.cfg_scale
-                seg_params.batch_size = p.batch_size
-                seg_params.denoiser = None
 
                 # Get all the qv modules
                 self_attn_modules = self.get_cross_attn_modules()
@@ -189,7 +178,7 @@ class SEGExtensionScript(UIWrapper):
                 unhook_lambda = lambda _: self.unhook_callbacks(seg_params)
 
                 if seg_params.seg_active:
-                        self.ready_hijack_forward(seg_params.crossattn_modules, seg_scale, seg_blur_sigma, seg_blur_threshold, p.height, p.width)
+                        self.ready_hijack_forward(seg_params.crossattn_modules, seg_blur_sigma, seg_params.seg_blur_threshold, p.height, p.width)
 
                 logger.debug('Hooked callbacks')
                 script_callbacks.on_cfg_denoiser(cfg_denoise_lambda)
@@ -198,7 +187,7 @@ class SEGExtensionScript(UIWrapper):
         def postprocess_batch(self, p, *args, **kwargs):
                 self.seg_postprocess_batch(p, *args, **kwargs)
 
-        def seg_postprocess_batch(self, p, active, seg_scale, seg_blur_sigma, seg_blur_threshold, start_step, end_step, *args, **kwargs):
+        def seg_postprocess_batch(self, p, active, seg_blur_sigma, start_step, end_step, *args, **kwargs):
                 script_callbacks.remove_current_script_callbacks()
 
                 logger.debug('Removed script callbacks')
@@ -217,7 +206,7 @@ class SEGExtensionScript(UIWrapper):
                 global handles
                 return
 
-        def ready_hijack_forward(self, selfattn_modules, seg_scale, seg_blur_sigma, seg_blur_threshold, height, width):
+        def ready_hijack_forward(self, selfattn_modules, seg_blur_sigma, seg_blur_threshold, height, width):
 
                 for module in selfattn_modules:
                         self.add_field_cross_attn_modules(module.to_q, 'seg_enable', False)
@@ -238,11 +227,9 @@ class SEGExtensionScript(UIWrapper):
 
                         # blur 
                         kernel_size = math.ceil(6 * seg_blur_sigma) + 1 - math.ceil(6 * seg_blur_sigma) % 2
-                        if seg_blur_threshold < 14:
+                        if seg_blur_sigma < seg_blur_threshold:
                                 q = output.transpose(1, 2).view(batch_size, -1, downscale_h, downscale_w) # (batch, inner_dim, height, width)
-                                #q = q.view(q.shape[0] * q.shape[1], -1)
                                 q = gaussian_blur_2d(q, kernel_size, seg_blur_sigma)
-                                #q = q.view(q.shape[0], q.shape[1], -1)
                                 q = output.view(batch_size, -1, downscale_h * downscale_w).transpose(1, 2) # (batch, inner_dim, seq_len)
                         else:
                                 q = output.view(batch_size, -1, h, head_dim).transpose(1, 2) # (batch, num_heads, seq_len, head_dim)
@@ -308,9 +295,7 @@ class SEGExtensionScript(UIWrapper):
                 xyz_grid = [x for x in scripts.scripts_data if x.script_class.__module__ in ("xyz_grid.py", "scripts.xyz_grid")][0].module
                 extra_axis_options = {
                         xyz_grid.AxisOption("[SEG] Active", str, seg_apply_override('seg_active', boolean=True), choices=xyz_grid.boolean_choice(reverse=True)),
-                        xyz_grid.AxisOption("[SEG] SEG Scale", float, seg_apply_field("seg_scale")),
                         xyz_grid.AxisOption("[SEG] SEG Blur Sigma", float, seg_apply_field("seg_blur_sigma")),
-                        xyz_grid.AxisOption("[SEG] SEG Blur Threshold", float, seg_apply_field("seg_blur_threshold")),
                         xyz_grid.AxisOption("[SEG] SEG Start Step", int, seg_apply_field("seg_start_step")),
                         xyz_grid.AxisOption("[SEG] SEG End Step", int, seg_apply_field("seg_end_step")),
                 }
@@ -402,75 +387,6 @@ def _remove_all_forward_hooks(
 
     # Remove hooks from the target module
     _remove_hooks(module, hook_fn_name)
-
-
-# based on diffusers/models/attention_processor.py Attention head_to_batch_dim
-def head_to_batch_dim(x, heads, out_dim=3):
-        head_size = heads
-        if x.ndim == 3:
-
-                batch_size, seq_len, dim = x.shape
-                extra_dim = 1
-        else:
-               batch_size, extra_dim, seq_len, dim = x.shape
-        x = x.reshape(batch_size, seq_len * extra_dim, head_size, dim // head_size)
-        x = x.permute(0, 2, 1, 3)
-        if out_dim == 3:
-               x = x.reshape(batch_size * head_size, seq_len * extra_dim, dim // head_size)
-        return x
-
-
-# based on diffusers/models/attention_processor.py Attention batch_to_head_dim
-def batch_to_head_dim(x, heads):
-        head_size = heads
-        batch_size, seq_len, dim = x.shape
-        x = x.reshape(batch_size // head_size, head_size, seq_len, dim)
-        x = x.permute(0, 2, 1, 3).reshape(batch_size // head_size, seq_len, dim * head_size)
-        return x
-
-
-def average_over_head_dim(x, heads):
-        x = rearrange(x, '(b h) s t -> b h s t', h=heads).mean(1)
-        return x
-
-
-def prepare_attn_map(to_k_map, heads):
-    to_k_map = head_to_batch_dim(to_k_map, heads)
-    to_k_map = average_over_head_dim(to_k_map, heads)
-    to_k_map = torch.stack([to_k_map[0], to_k_map[0]], dim=0)
-    return to_k_map
-
-
-def get_attention_scores(to_q_map, to_k_map, dtype):
-        """ Calculate the attention scores for the given query and key maps
-        Arguments:
-                to_q_map: torch.Tensor - query map
-                to_k_map: torch.Tensor - key map
-                dtype: torch.dtype - data type of the tensor
-        Returns:
-                torch.Tensor - attention scores 
-        """
-        # based on diffusers models/attention.py "get_attention_scores"
-        # use in place operations vs. softmax to save memory: https://stackoverflow.com/questions/53732209/torch-in-place-operations-to-save-memory-softmax
-        # 512x: 2.65G -> 2.47G
-        # attn_probs = attn_scores.softmax(dim=-1).to(device=shared.device, dtype=to_q_map.dtype)
-
-        # if inf blur
-        to_q_map[:] = to_q_map.mean(dim=(-2, -1), keepdim=True)
-
-        attn_probs = to_q_map @ to_k_map.transpose(-1, -2)
-
-        # avoid nan by converting to float32 and subtracting max 
-        attn_probs = attn_probs.to(dtype=torch.float32) #
-        attn_probs -= torch.max(attn_probs)
-
-        torch.exp(attn_probs, out = attn_probs)
-        summed = attn_probs.sum(dim=-1, keepdim=True, dtype=torch.float32)
-        attn_probs /= summed
-
-        attn_probs = attn_probs.to(dtype=dtype)
-
-        return attn_probs
 
 
 # Gaussian blur
