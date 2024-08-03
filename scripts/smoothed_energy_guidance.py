@@ -189,7 +189,7 @@ class SEGExtensionScript(UIWrapper):
                 unhook_lambda = lambda _: self.unhook_callbacks(seg_params)
 
                 if seg_params.seg_active:
-                        self.ready_hijack_forward(seg_params.crossattn_modules, seg_scale, seg_blur_sigma, seg_blur_threshold)
+                        self.ready_hijack_forward(seg_params.crossattn_modules, seg_scale, seg_blur_sigma, seg_blur_threshold, p.height, p.width)
 
                 logger.debug('Hooked callbacks')
                 script_callbacks.on_cfg_denoiser(cfg_denoise_lambda)
@@ -217,7 +217,7 @@ class SEGExtensionScript(UIWrapper):
                 global handles
                 return
 
-        def ready_hijack_forward(self, selfattn_modules, seg_scale, seg_blur_sigma, seg_blur_threshold):
+        def ready_hijack_forward(self, selfattn_modules, seg_scale, seg_blur_sigma, seg_blur_threshold, height, width):
 
                 for module in selfattn_modules:
                         self.add_field_cross_attn_modules(module.to_q, 'seg_enable', False)
@@ -232,16 +232,22 @@ class SEGExtensionScript(UIWrapper):
                         h = module.seg_parent_module[0].heads
                         head_dim = inner_dim // h
 
-                        q = output.view(batch_size, -1, h, head_dim).transpose(1, 2) # (batch, num_heads, seq_len, head_dim)
+                        module_attn_size = seq_len
+                        downscale_h = int((module_attn_size * (height / width)) ** 0.5)
+                        downscale_w = module_attn_size // downscale_h
 
                         # blur 
-                        kernel_size = math.ceil(6 * seg_blur_sigma) + 1 - (math.ceil(6 * seg_blur_sigma) + 1) % 2
+                        kernel_size = math.ceil(6 * seg_blur_sigma) + 1 - math.ceil(6 * seg_blur_sigma) % 2
                         if seg_blur_threshold < 14:
+                                q = output.transpose(1, 2).view(batch_size, -1, downscale_h, downscale_w) # (batch, inner_dim, height, width)
+                                #q = q.view(q.shape[0] * q.shape[1], -1)
                                 q = gaussian_blur_2d(q, kernel_size, seg_blur_sigma)
+                                #q = q.view(q.shape[0], q.shape[1], -1)
+                                q = output.view(batch_size, -1, downscale_h * downscale_w).transpose(1, 2) # (batch, inner_dim, seq_len)
                         else:
+                                q = output.view(batch_size, -1, h, head_dim).transpose(1, 2) # (batch, num_heads, seq_len, head_dim)
                                 q = gaussian_blur_inf(q, 1.0, seg_blur_sigma)
-
-                        q = q.transpose(1, 2).reshape(batch_size, seq_len, inner_dim) # (batch, seq_len, inner_dim)
+                                q = q.transpose(1, 2).reshape(batch_size, seq_len, inner_dim) # (batch, seq_len, inner_dim)
 
                         return q
 
@@ -287,7 +293,7 @@ class SEGExtensionScript(UIWrapper):
         def on_cfg_denoiser_callback(self, params: CFGDenoiserParams, seg_params: SEGStateParams):
                 # always unhook
                 self.unhook_callbacks(seg_params)
-                if not seg_params.seg_active or seg_params.seg_scale <= 0:
+                if not seg_params.seg_active:
                         return
 
                 in_interval = seg_params.seg_start_step <= params.sampling_step <= seg_params.seg_end_step
@@ -492,7 +498,6 @@ def gaussian_blur_2d(img, kernel_size, sigma):
         return img
 
 def gaussian_blur_inf(img, kernel_size, sigma):
-        img = gaussian_blur_2d(img, kernel_size, sigma)
         img[:] = img.mean(dim=(-2, -1), keepdim=True)
 
         return img
