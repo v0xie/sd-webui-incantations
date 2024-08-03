@@ -55,13 +55,10 @@ class SEGStateParams:
                 self.seg_active: bool = False      # SEG guidance scale
                 self.seg_sanf: bool = False # saliency-adaptive noise fusion, handled in cfg_combiner
                 self.seg_scale: int = -1      # SEG guidance scale
+                self.seg_blur_sigma: float = 1.0
+                self.seg_blur_threshold: float = 15.0 # 2^13 ~= 8192
                 self.seg_start_step: int = 0
                 self.seg_end_step: int = 150 
-                self.cfg_interval_enable: bool = False
-                self.cfg_interval_schedule: str = 'Constant'
-                self.cfg_interval_low: float = 0
-                self.cfg_interval_high: float = 50.0
-                self.cfg_interval_scheduled_value: float = 7.0
                 self.step : int = 0 
                 self.max_sampling_step : int = 1 
                 self.guidance_scale: int = -1 # CFG
@@ -104,34 +101,33 @@ class SEGExtensionScript(UIWrapper):
                         with gr.Row():
                                 seg_scale = gr.Slider(value = 0, minimum = 0, maximum = 20.0, step = 0.5, label="SEG Scale", elem_id = 'seg_scale', info="")
                         with gr.Row():
+                                seg_blur_sigma = gr.Slider(value = 1.0, minimum = 0.0, maximum = 6.0, step = 0.5, label="SEG Blur Sigma", elem_id = 'seg_blur_sigma', info="")
+                                seg_blur_threshold = gr.Slider(value = 14.0, minimum = 0, maximum = 14.0, step = 0.5, label="SEG Blur Threshold", elem_id = 'seg_blur_threshold', info="Values >= 14 are infinite blur")
+                        with gr.Row():
                                 start_step = gr.Slider(value = 0, minimum = 0, maximum = 150, step = 1, label="Start Step", elem_id = 'seg_start_step', info="")
                                 end_step = gr.Slider(value = 150, minimum = 0, maximum = 150, step = 1, label="End Step", elem_id = 'seg_end_step', info="")
+
+                params = [active, seg_sanf, seg_scale, seg_blur_sigma, seg_blur_threshold, start_step, end_step]
                                 
-                active.do_not_save_to_config = True
-                seg_sanf.do_not_save_to_config = True
-                seg_scale.do_not_save_to_config = True
-                start_step.do_not_save_to_config = True
-                end_step.do_not_save_to_config = True
                 self.infotext_fields = [
                         (active, lambda d: gr.Checkbox.update(value='SEG Active' in d)),
                         (seg_sanf, lambda d: gr.Checkbox.update(value='SEG SANF' in d)),
                         (seg_scale, 'SEG Scale'),
+                        (seg_blur_sigma, 'SEG Blur Sigma'),
+                        (seg_blur_threshold, 'SEG Blur Threshold'),
                         (start_step, 'SEG Start Step'),
                         (end_step, 'SEG End Step'),
                 ]
-                self.paste_field_names = [
-                        'seg_active',
-                        'seg_sanf',
-                        'seg_scale',
-                        'seg_start_step',
-                        'seg_end_step',
-                ]
-                return [active, seg_scale, start_step, end_step, seg_sanf]
+                for p in params:
+                        p.do_not_save_to_config = True
+                        self.paste_field_names.append(p.elem_id)
+
+                return params
 
         def process_batch(self, p: StableDiffusionProcessing, *args, **kwargs):
                self.seg_process_batch(p, *args, **kwargs)
 
-        def seg_process_batch(self, p: StableDiffusionProcessing, active, seg_scale, start_step, end_step, seg_sanf, *args, **kwargs):
+        def seg_process_batch(self, p: StableDiffusionProcessing, active, seg_scale, seg_blur_sigma, seg_blur_threshold, start_step, end_step, seg_sanf, *args, **kwargs):
                 # cleanup previous hooks always
                 script_callbacks.remove_current_script_callbacks()
                 self.remove_all_hooks()
@@ -141,6 +137,8 @@ class SEGExtensionScript(UIWrapper):
                 if active is False:
                         return
                 seg_scale = getattr(p, "seg_scale", seg_scale)
+                seg_blur_sigma = getattr(p, "seg_blur_sigma", seg_blur_sigma)
+                seg_blur_threshold = getattr(p, "seg_blur_threshold", seg_blur_threshold)
                 start_step = getattr(p, "seg_start_step", start_step)
                 end_step = getattr(p, "seg_end_step", end_step)
 
@@ -149,12 +147,14 @@ class SEGExtensionScript(UIWrapper):
                                 "SEG Active": active,
                                 "SEG SANF": seg_sanf,
                                 "SEG Scale": seg_scale,
+                                "SEG Blur Sigma": seg_blur_sigma,
+                                "SEG Blur Threshold": seg_blur_threshold,
                                 "SEG Start Step": start_step,
                                 "SEG End Step": end_step,
                         })
-                self.create_hook(p, active, seg_scale, start_step, end_step, seg_sanf)
+                self.create_hook(p, active, seg_scale, seg_blur_sigma, seg_blur_threshold, start_step, end_step, seg_sanf)
 
-        def create_hook(self, p: StableDiffusionProcessing, active, seg_scale, start_step, end_step, seg_sanf, *args, **kwargs):
+        def create_hook(self, p: StableDiffusionProcessing, active, seg_scale, seg_blur_sigma, seg_blur_threshold, start_step, end_step, seg_sanf, *args, **kwargs):
                 # Create a list of parameters for each concept
                 seg_params = SEGStateParams()
 
@@ -166,8 +166,11 @@ class SEGExtensionScript(UIWrapper):
                 seg_params.seg_active = active 
                 seg_params.seg_sanf = seg_sanf 
                 seg_params.seg_scale = seg_scale
+                seg_params.seg_blur_sigma = seg_blur_sigma
+                seg_params.seg_blur_threshold = seg_blur_threshold
                 seg_params.seg_start_step = start_step
                 seg_params.seg_end_step = end_step
+
                 seg_params.max_sampling_step = p.steps
                 seg_params.guidance_scale = p.cfg_scale
                 seg_params.batch_size = p.batch_size
@@ -195,8 +198,6 @@ class SEGExtensionScript(UIWrapper):
                 script_callbacks.on_cfg_denoised(cfg_denoised_lambda)
                 #script_callbacks.on_cfg_after_cfg(after_cfg_lambda)
                 script_callbacks.on_script_unloaded(unhook_lambda)
-
-
 
         def postprocess_batch(self, p, *args, **kwargs):
                 self.seg_postprocess_batch(p, *args, **kwargs)
