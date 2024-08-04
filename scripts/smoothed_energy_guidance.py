@@ -105,7 +105,7 @@ class SEGExtensionScript(UIWrapper):
                 with gr.Accordion('Smoothed Energy Guidance', open=False):
                         active = gr.Checkbox(value=False, default=False, label="Active", elem_id='seg_active', info="Recommended to keep CFG Scale fixed at 3.0, use Sigma to adjust.")
                         with gr.Row():
-                                seg_blur_sigma = gr.Slider(value = 10.0, minimum = 0.0, maximum = 10.0, step = 0.5, label="SEG Blur Sigma", elem_id = 'seg_blur_sigma', info="Exponential (2^n). Values >= 10 are infinite blur")
+                                seg_blur_sigma = gr.Slider(value = 11.0, minimum = 0.0, maximum = 11.0, step = 0.5, label="SEG Blur Sigma", elem_id = 'seg_blur_sigma', info="Exponential (2^n). Values >= 11 are infinite blur")
                         with gr.Row():
                                 start_step = gr.Slider(value = 0, minimum = 0, maximum = 150, step = 1, label="Start Step", elem_id = 'seg_start_step', info="")
                                 end_step = gr.Slider(value = 150, minimum = 0, maximum = 150, step = 1, label="End Step", elem_id = 'seg_end_step', info="")
@@ -139,7 +139,6 @@ class SEGExtensionScript(UIWrapper):
                 if seg_blur_sigma == 0.0:
                         logger.info("SEG Blur Sigma is 0, skipping SEG")
                         return
-                seg_blur_sigma = 2 ** seg_blur_sigma
                 start_step = getattr(p, "seg_start_step", start_step)
                 end_step = getattr(p, "seg_end_step", end_step)
 
@@ -163,7 +162,7 @@ class SEGExtensionScript(UIWrapper):
                 
                 seg_params.seg_active = active 
                 seg_params.seg_blur_sigma = seg_blur_sigma
-                seg_params.seg_blur_threshold = 9.9
+                seg_params.seg_blur_threshold = 10.5
                 seg_params.seg_start_step = start_step
                 seg_params.seg_end_step = end_step
 
@@ -207,7 +206,6 @@ class SEGExtensionScript(UIWrapper):
                 return
 
         def ready_hijack_forward(self, selfattn_modules, seg_blur_sigma, seg_blur_threshold, height, width):
-
                 for module in selfattn_modules:
                         self.add_field_cross_attn_modules(module.to_q, 'seg_enable', False)
                         self.add_field_cross_attn_modules(module.to_q, 'seg_parent_module', [module])
@@ -226,15 +224,21 @@ class SEGExtensionScript(UIWrapper):
                         downscale_w = module_attn_size // downscale_h
 
                         # blur 
-                        kernel_size = math.ceil(6 * seg_blur_sigma) + 1 - math.ceil(6 * seg_blur_sigma) % 2
-                        if seg_blur_sigma < seg_blur_threshold:
-                                q = output.transpose(1, 2).view(batch_size, -1, downscale_h, downscale_w) # (batch, inner_dim, height, width)
-                                q = gaussian_blur_2d(q, kernel_size, seg_blur_sigma)
-                                q = output.view(batch_size, -1, downscale_h * downscale_w).transpose(1, 2) # (batch, inner_dim, seq_len)
+                        is_inf_blur = seg_blur_sigma > seg_blur_threshold
+                        blur_sigma_exp = 2 ** seg_blur_sigma
+                        kernel_size = math.ceil(6 * blur_sigma_exp) + 1 - math.ceil(6 * blur_sigma_exp) % 2
+
+                        q = output.view(batch_size, -1, h, head_dim).transpose(1, 2) # (batch, num_heads, seq_len, head_dim)
+                        q = q.permute(0, 1, 3, 2).reshape(batch_size*h, head_dim, downscale_h, downscale_w) # (batch * num_heads, head_dim, height, width)
+
+                        if is_inf_blur:
+                                q = gaussian_blur_inf(q, 1.0, blur_sigma_exp)
                         else:
-                                q = output.view(batch_size, -1, h, head_dim).transpose(1, 2) # (batch, num_heads, seq_len, head_dim)
-                                q = gaussian_blur_inf(q, 1.0, seg_blur_sigma)
-                                q = q.transpose(1, 2).reshape(batch_size, seq_len, inner_dim) # (batch, seq_len, inner_dim)
+                                q = gaussian_blur_2d(q, kernel_size, blur_sigma_exp)
+
+                        q = q.reshape(batch_size, h, head_dim, downscale_h * downscale_w) # (batch, num_heads, head_dim, seq_len)
+                        q = q.view(batch_size, h*head_dim, seq_len).transpose(1, 2) # (batch, inner_dim, seq_len)
+                        #q = q.view(batch_size, -1, downscale_h * downscale_w).transpose(1, 2) # (batch, inner_dim, seq_len)
 
                         return q
 
@@ -250,9 +254,11 @@ class SEGExtensionScript(UIWrapper):
                 try:
                         m = shared.sd_model
                         nlm = m.network_layer_mapping
+                        #middle_block_modules = [m for m in nlm.values() if 'middle_block_1_transformer_blocks_0_attn1' in m.network_layer_name and 'CrossAttention' in m.__class__.__name__]
                         middle_block_modules = [m for m in nlm.values() if 
-                                                        'middle_block' in m.network_layer_name and \
+                                                        'middle_block_' in m.network_layer_name and \
                                                         'attn1' in m.network_layer_name and \
+                                                        #'attn1' in m.network_layer_name and \
                                                         'CrossAttention' in m.__class__.__name__
                                                 ]
                         return middle_block_modules
