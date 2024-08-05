@@ -196,16 +196,18 @@ class SEGExtensionScript(UIWrapper):
                         blur_sigma_exp = 2 ** seg_blur_sigma
                         kernel_size = math.ceil(6 * blur_sigma_exp) + 1 - math.ceil(6 * blur_sigma_exp) % 2
 
-                        q = output.view(batch_size, -1, h, head_dim).transpose(1, 2) # (batch, num_heads, seq_len, head_dim)
-                        q = q.permute(0, 1, 3, 2).reshape(batch_size*h, head_dim, downscale_h, downscale_w) # (batch * num_heads, head_dim, height, width)
+                        q_uncond, q= output.chunk(2, dim=0) 
+                        q = q.view(batch_size//2, -1, h, head_dim).transpose(1, 2) # (batch, num_heads, seq_len, head_dim)
+                        q = q.permute(0, 1, 3, 2).reshape(batch_size//2 * h, head_dim, downscale_h, downscale_w) # (batch * num_heads, head_dim, height, width)
 
                         if is_inf_blur:
                                 q = gaussian_blur_inf(q, 1.0, blur_sigma_exp)
                         else:
                                 q = gaussian_blur_2d(q, kernel_size, blur_sigma_exp)
 
-                        q = q.reshape(batch_size, h, head_dim, downscale_h * downscale_w) # (batch, num_heads, head_dim, seq_len)
-                        q = q.view(batch_size, h * head_dim, seq_len).transpose(1, 2) # (batch, inner_dim, seq_len)
+                        q = q.reshape(batch_size // 2, h, head_dim, downscale_h * downscale_w) # (batch, num_heads, head_dim, seq_len)
+                        q = q.view(batch_size // 2, h * head_dim, seq_len).transpose(1, 2) # (batch, inner_dim, seq_len)
+                        q = torch.cat((q_uncond, q), dim=0)
 
                         return q
 
