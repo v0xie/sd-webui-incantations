@@ -70,7 +70,7 @@ SD XL
 * Unconditional
 ![image](./images/xyz_grid-0463-3.jpg)
 
-- Prompt: "an insect robot preparing a delicious meal, anime style"
+- Prompt: "a family of teddy bears having a barbecue in their backyard"
 ![image](./images/xyz_grid-0469-4.jpg)
 
 #### Also check out the paper authors' official project repository:
