@@ -1,32 +1,20 @@
 import logging
 from os import environ
-from einops import rearrange
 import math
 
 import modules.scripts as scripts
 import gradio as gr
-import scipy.stats as stats
 
-from scripts.ui_wrapper import UIWrapper, arg
-from modules import script_callbacks, patches
-from modules.hypernetworks import hypernetwork
-#import modules.sd_hijack_optimizations
-from modules.script_callbacks import CFGDenoiserParams, CFGDenoisedParams, AfterCFGCallbackParams
-from modules.prompt_parser import reconstruct_multicond_batch
+from modules import script_callbacks
+from modules.script_callbacks import CFGDenoiserParams, AfterCFGCallbackParams
 from modules.processing import StableDiffusionProcessing
-#from modules.shared import sd_model, opts
-from modules.sd_samplers_cfg_denoiser import catenate_conds
-from modules.sd_samplers_cfg_denoiser import CFGDenoiser
 from modules import shared
+
+from scripts.ui_wrapper import UIWrapper
+from scripts.incant_utils import module_hooks
 
 import torch
 from torch.nn import functional as F
-from torchvision.transforms import GaussianBlur
-
-from warnings import warn
-from typing import Callable, Dict, Optional
-from collections import OrderedDict
-import torch
 
 logger = logging.getLogger(__name__)
 logger.setLevel(environ.get("SD_WEBUI_LOG_LEVEL", logging.INFO))
@@ -62,27 +50,7 @@ class SEGStateParams:
                 self.seg_blur_threshold: float = 15.0 # 2^13 ~= 8192
                 self.seg_start_step: int = 0
                 self.seg_end_step: int = 150 
-                self.step : int = 0 
-                self.max_sampling_step : int = 1 
                 self.crossattn_modules = [] # callable lambda
-                self.guidance_scale: int = -1 # CFG
-                self.current_noise_level: float = 100.0
-                self.x_in = None
-                self.text_cond = None
-                self.image_cond = None
-                self.sigma = None
-                self.text_uncond = None
-                self.make_condition_dict = None # callable lambda
-                self.to_v_modules = []
-                self.to_out_modules = []
-                self.seg_x_out = None
-                self.batch_size = -1      # Batch size
-                self.denoiser = None # CFGDenoiser
-                self.patched_combine_denoised = None
-                self.conds_list = None
-                self.uncond_shape_0 = None
-                
-
 
 
 class SEGExtensionScript(UIWrapper):
@@ -197,9 +165,9 @@ class SEGExtensionScript(UIWrapper):
         def remove_all_hooks(self):
                 self_attn_modules = self.get_cross_attn_modules()
                 for module in self_attn_modules:
-                        self.remove_field_cross_attn_modules(module.to_q, 'seg_enable')
-                        self.remove_field_cross_attn_modules(module.to_q, 'seg_parent_module')
-                        _remove_all_forward_hooks(module.to_q, 'seg_to_q_hook')
+                        module_hooks.modules_remove_field(module.to_q, 'seg_enable')
+                        module_hooks.modules_remove_field(module.to_q, 'seg_parent_module')
+                        module_hooks.remove_module_forward_hook(module.to_q, 'seg_to_q_hook')
 
         def unhook_callbacks(self, seg_params: SEGStateParams):
                 global handles
@@ -207,8 +175,8 @@ class SEGExtensionScript(UIWrapper):
 
         def ready_hijack_forward(self, selfattn_modules, seg_blur_sigma, seg_blur_threshold, height, width):
                 for module in selfattn_modules:
-                        self.add_field_cross_attn_modules(module.to_q, 'seg_enable', False)
-                        self.add_field_cross_attn_modules(module.to_q, 'seg_parent_module', [module])
+                        module_hooks.modules_add_field(module.to_q, 'seg_enable', False)
+                        module_hooks.modules_add_field(module.to_q, 'seg_parent_module', [module])
 
                 def seg_to_q_hook(module, input, kwargs, output):
                         if not hasattr(module, 'seg_enable'):
@@ -223,7 +191,7 @@ class SEGExtensionScript(UIWrapper):
                         downscale_h = int((module_attn_size * (height / width)) ** 0.5)
                         downscale_w = module_attn_size // downscale_h
 
-                        # blur 
+                        # actual sigma value is calculated as 2 ^ sigma
                         is_inf_blur = seg_blur_sigma > seg_blur_threshold
                         blur_sigma_exp = 2 ** seg_blur_sigma
                         kernel_size = math.ceil(6 * blur_sigma_exp) + 1 - math.ceil(6 * blur_sigma_exp) % 2
@@ -237,51 +205,29 @@ class SEGExtensionScript(UIWrapper):
                                 q = gaussian_blur_2d(q, kernel_size, blur_sigma_exp)
 
                         q = q.reshape(batch_size, h, head_dim, downscale_h * downscale_w) # (batch, num_heads, head_dim, seq_len)
-                        q = q.view(batch_size, h*head_dim, seq_len).transpose(1, 2) # (batch, inner_dim, seq_len)
-                        #q = q.view(batch_size, -1, downscale_h * downscale_w).transpose(1, 2) # (batch, inner_dim, seq_len)
+                        q = q.view(batch_size, h * head_dim, seq_len).transpose(1, 2) # (batch, inner_dim, seq_len)
 
                         return q
 
                 # Create hooks 
                 for module in selfattn_modules:
-                        handle_to_q = module.to_q.register_forward_hook(seg_to_q_hook, with_kwargs=True)
+                        module_hooks.module_add_forward_hook(module.to_q, seg_to_q_hook, hook_type="forward", with_kwargs=True)
 
         def get_middle_block_modules(self):
                 """ Get all attention modules from the middle block 
                 Refere to page 22 of the SEG paper, Appendix A.2
                 
                 """
-                try:
-                        m = shared.sd_model
-                        nlm = m.network_layer_mapping
-                        #middle_block_modules = [m for m in nlm.values() if 'middle_block_1_transformer_blocks_0_attn1' in m.network_layer_name and 'CrossAttention' in m.__class__.__name__]
-                        middle_block_modules = [m for m in nlm.values() if 
-                                                        'middle_block_' in m.network_layer_name and \
-                                                        'attn1' in m.network_layer_name and \
-                                                        #'attn1' in m.network_layer_name and \
-                                                        'CrossAttention' in m.__class__.__name__
-                                                ]
-                        return middle_block_modules
-                except AttributeError:
-                        logger.exception("AttributeError in get_middle_block_modules", stack_info=True)
-                        return []
-                except Exception:
-                        logger.exception("Exception in get_middle_block_modules", stack_info=True)
-                        return []
+                middle_block_modules = module_hooks.get_modules(
+                        network_layer_name_filter = 'middle_block_',
+                        module_name_filter = 'CrossAttention'
+                )
+                middle_block_modules = [m for m in middle_block_modules if 'attn1' in m.network_layer_name]
+                return middle_block_modules
 
         def get_cross_attn_modules(self):
                 """ Get all cross attention modules """
                 return self.get_middle_block_modules()
-
-        def add_field_cross_attn_modules(self, module, field, value):
-                """ Add a field to a module if it doesn't exist """
-                if not hasattr(module, field):
-                        setattr(module, field, value)
-        
-        def remove_field_cross_attn_modules(self, module, field):
-                """ Remove a field from a module if it exists """
-                if hasattr(module, field):
-                        delattr(module, field)
 
         def on_cfg_denoiser_callback(self, params: CFGDenoiserParams, seg_params: SEGStateParams):
                 # always unhook
@@ -342,59 +288,6 @@ def seg_apply_field(field):
     return fun
 
 
-# thanks torch; removing hooks DOESN'T WORK
-# thank you to @ProGamerGov for this https://github.com/pytorch/pytorch/issues/70455
-def _remove_all_forward_hooks(
-    module: torch.nn.Module, hook_fn_name: Optional[str] = None
-) -> None:
-    """
-    This function removes all forward hooks in the specified module, without requiring
-    any hook handles. This lets us clean up & remove any hooks that weren't property
-    deleted.
-
-    Warning: Various PyTorch modules and systems make use of hooks, and thus extreme
-    caution should be exercised when removing all hooks. Users are recommended to give
-    their hook function a unique name that can be used to safely identify and remove
-    the target forward hooks.
-
-    Args:
-
-        module (nn.Module): The module instance to remove forward hooks from.
-        hook_fn_name (str, optional): Optionally only remove specific forward hooks
-            based on their function's __name__ attribute.
-            Default: None
-    """
-
-    if hook_fn_name is None:
-        warn("Removing all active hooks can break some PyTorch modules & systems.")
-
-
-    def _remove_hooks(m: torch.nn.Module, name: Optional[str] = None) -> None:
-        if hasattr(module, "_forward_hooks"):
-            if m._forward_hooks != OrderedDict():
-                if name is not None:
-                    dict_items = list(m._forward_hooks.items())
-                    m._forward_hooks = OrderedDict(
-                        [(i, fn) for i, fn in dict_items if fn.__name__ != name]
-                    )
-                else:
-                    m._forward_hooks: Dict[int, Callable] = OrderedDict()
-
-    def _remove_child_hooks(
-        target_module: torch.nn.Module, hook_name: Optional[str] = None
-    ) -> None:
-        for name, child in target_module._modules.items():
-            if child is not None:
-                _remove_hooks(child, hook_name)
-                _remove_child_hooks(child, hook_name)
-
-    # Remove hooks from target submodules
-    _remove_child_hooks(module, hook_fn_name)
-
-    # Remove hooks from the target module
-    _remove_hooks(module, hook_fn_name)
-
-
 # Gaussian blur
 # taken from https://github.com/SusungHong/SEG-SDXL/blob/master/pipeline_seg.py
 def gaussian_blur_2d(img, kernel_size, sigma):
@@ -418,6 +311,7 @@ def gaussian_blur_2d(img, kernel_size, sigma):
         img = F.conv2d(img, kernel2d, groups=img.shape[-3])
 
         return img
+
 
 def gaussian_blur_inf(img, kernel_size, sigma):
         img[:] = img.mean(dim=(-2, -1), keepdim=True)
