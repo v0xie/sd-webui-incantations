@@ -53,6 +53,7 @@ class APGStateParams:
                 self.eta: float = 0.
                 self.norm_threshold: float = 0.
                 self.apg_scale: int = -1      # APG guidance scale
+                self.apg_parallel_scale: float = 1.0      # APG scale for paralllel guidance
                 self.apg_momentum: float = 1.0
                 self.apg_blur_threshold: float = 15.0 # 2^13 ~= 8192
                 self.apg_start_step: int = 0
@@ -69,7 +70,7 @@ class APGExtensionScript(UIWrapper):
 
         # Extension title in menu UI
         def title(self) -> str:
-                return "Smoothed Energy Guidance"
+                return "Adaptive Projected Guidance"
 
         # Decide to show menu in txt2img or img2img
         def show(self, is_img2img):
@@ -78,18 +79,22 @@ class APGExtensionScript(UIWrapper):
         # Setup menu ui detail
         def setup_ui(self, is_img2img) -> list:
                 with gr.Accordion('Adaptive Projected Guidance', open=False):
-                        active = gr.Checkbox(value=False, default=False, label="Active", elem_id='apg_active', info="Recommended to keep CFG Scale fixed at 3.0, use Sigma to adjust.")
+                        active = gr.Checkbox(value=False, default=False, label="Active", elem_id='apg_active', info="")
                         with gr.Row():
-                                apg_momentum = gr.Slider(value = -0.75, minimum = -1.0, maximum = 1.0, step = 0.1, label="APG Momentum", elem_id = 'apg_momentum', info="")
+                                apg_momentum = gr.Slider(value = -0.5, minimum = -1.5, maximum = 1.5, step = 0.05, label="APG Momentum", elem_id = 'apg_momentum', info="Recommended between [-0.75, -0.25]")
+                                apg_norm_threshold = gr.Slider(value = 15.0, minimum = 0.0, maximum = 20.0, step = 0.05, label="APG Norm Threshold", elem_id = 'apg_norm_threshold', info="Rescaling factor, recommended values between (0.25, 10), 0 is \u221E")
+                                apg_parallel_scale = gr.Slider(value = 0.0, minimum = 0.0, maximum = 1.0, step = 0.05, label="APG Parallel Scale", elem_id = 'apg_parallel_scale', info="Scale of parallel CFG, 1.0 is equivalent to CFG")
                         with gr.Row():
                                 start_step = gr.Slider(value = 0, minimum = 0, maximum = 150, step = 1, label="Start Step", elem_id = 'apg_start_step', info="")
                                 end_step = gr.Slider(value = 150, minimum = 0, maximum = 150, step = 1, label="End Step", elem_id = 'apg_end_step', info="")
 
-                params = [active, apg_momentum, start_step, end_step]
+                params = [active, apg_momentum, apg_norm_threshold, apg_parallel_scale, start_step, end_step]
                                 
                 self.infotext_fields = [
                         (active, lambda d: gr.Checkbox.update(value='APG Active' in d)),
                         (apg_momentum, 'APG Momentum'),
+                        (apg_norm_threshold, 'APG Norm Threshold'),
+                        (apg_parallel_scale, 'APG Parallel Scale'),
                         (start_step, 'APG Start Step'),
                         (end_step, 'APG End Step'),
                 ]
@@ -102,7 +107,7 @@ class APGExtensionScript(UIWrapper):
         def process_batch(self, p: StableDiffusionProcessing, *args, **kwargs):
                self.apg_process_batch(p, *args, **kwargs)
 
-        def apg_process_batch(self, p: StableDiffusionProcessing, active, apg_momentum, start_step, end_step, *args, **kwargs):
+        def apg_process_batch(self, p: StableDiffusionProcessing, active, apg_momentum, apg_norm_threshold, apg_parallel_scale, start_step, end_step, *args, **kwargs):
                 # cleanup previous hooks always
                 script_callbacks.remove_current_script_callbacks()
                 self.remove_all_hooks()
@@ -111,6 +116,8 @@ class APGExtensionScript(UIWrapper):
                 if active is False:
                         return
                 apg_momentum = getattr(p, "apg_momentum", apg_momentum)
+                apg_norm_threshold = getattr(p, "apg_norm_threshold", apg_norm_threshold)
+                apg_parallel_scale = getattr(p, "apg_parallel_scale", apg_parallel_scale)
                 start_step = getattr(p, "apg_start_step", start_step)
                 end_step = getattr(p, "apg_end_step", end_step)
 
@@ -118,12 +125,13 @@ class APGExtensionScript(UIWrapper):
                         p.extra_generation_params.update({
                                 "APG Active": active,
                                 "APG Momentum": apg_momentum,
+                                "APG Norm Threshold": apg_norm_threshold,
                                 "APG Start Step": start_step,
                                 "APG End Step": end_step,
                         })
-                self.create_hook(p, active, apg_momentum, start_step, end_step)
+                self.create_hook(p, active, apg_momentum, apg_norm_threshold, apg_parallel_scale, start_step, end_step)
 
-        def create_hook(self, p: StableDiffusionProcessing, active, apg_momentum, start_step, end_step, *args, **kwargs):
+        def create_hook(self, p: StableDiffusionProcessing, active, apg_momentum, apg_norm_threshold,apg_parallel_scale, start_step, end_step, *args, **kwargs):
                 # Create a list of parameters for each concept
                 apg_params = APGStateParams()
 
@@ -134,13 +142,14 @@ class APGExtensionScript(UIWrapper):
                 
                 apg_params.apg_active = active 
                 apg_params.apg_momentum = apg_momentum
+                apg_params.norm_threshold = apg_norm_threshold
+                apg_params.apg_parallel_scale = apg_parallel_scale
                 apg_params.apg_blur_threshold = 10.5
                 apg_params.apg_start_step = start_step
                 apg_params.apg_end_step = end_step
 
                 apg_params.momentum_buffer = MomentumBuffer(apg_momentum) 
                 apg_params.eta = p.eta
-                apg_params.norm_threshold = 0.
 
 
                 logger.debug('Hooked callbacks')
@@ -148,7 +157,7 @@ class APGExtensionScript(UIWrapper):
         def postprocess_batch(self, p, *args, **kwargs):
                 self.apg_postprocess_batch(p, *args, **kwargs)
 
-        def apg_postprocess_batch(self, p, active, apg_momentum, start_step, end_step, *args, **kwargs):
+        def apg_postprocess_batch(self, p, active, apg_momentum, apg_norm_threshold,apg_parallel_scale, start_step, end_step, *args, **kwargs):
                 script_callbacks.remove_current_script_callbacks()
 
                 logger.debug('Removed script callbacks')
@@ -157,87 +166,11 @@ class APGExtensionScript(UIWrapper):
                         return
 
         def remove_all_hooks(self):
-                self_attn_modules = self.get_cross_attn_modules()
-                for module in self_attn_modules:
-                        module_hooks.modules_remove_field(module.to_q, 'apg_enable')
-                        module_hooks.modules_remove_field(module.to_q, 'apg_parent_module')
-                        module_hooks.remove_module_forward_hook(module.to_q, 'apg_to_q_hook')
+                return
 
         def unhook_callbacks(self, apg_params: APGStateParams):
                 global handles
                 return
-
-        def ready_hijack_forward(self, selfattn_modules, apg_momentum, apg_blur_threshold, height, width):
-                for module in selfattn_modules:
-                        module_hooks.modules_add_field(module.to_q, 'apg_enable', False)
-                        module_hooks.modules_add_field(module.to_q, 'apg_parent_module', [module])
-
-                def apg_to_q_hook(module, input, kwargs, output):
-                        if not hasattr(module, 'apg_enable'):
-                                return
-                        if not module.apg_enable:
-                                return
-                        batch_size, seq_len, inner_dim = input[0].shape
-                        h = module.apg_parent_module[0].heads
-                        head_dim = inner_dim // h
-
-                        module_attn_size = seq_len
-                        downscale_h = int((module_attn_size * (height / width)) ** 0.5)
-                        downscale_w = module_attn_size // downscale_h
-
-                        # actual sigma value is calculated as 2 ^ sigma
-                        is_inf_blur = apg_momentum > apg_blur_threshold
-                        momentum_exp = 2 ** apg_momentum
-                        kernel_size = math.ceil(6 * momentum_exp) + 1 - math.ceil(6 * momentum_exp) % 2
-
-                        q_uncond, q= output.chunk(2, dim=0) 
-                        q = q.view(batch_size//2, -1, h, head_dim).transpose(1, 2) # (batch, num_heads, seq_len, head_dim)
-                        q = q.permute(0, 1, 3, 2).reshape(batch_size//2 * h, head_dim, downscale_h, downscale_w) # (batch * num_heads, head_dim, height, width)
-
-                        if is_inf_blur:
-                                q = gaussian_blur_inf(q, 1.0, momentum_exp)
-                        else:
-                                q = gaussian_blur_2d(q, kernel_size, momentum_exp)
-
-                        q = q.reshape(batch_size // 2, h, head_dim, downscale_h * downscale_w) # (batch, num_heads, head_dim, seq_len)
-                        q = q.view(batch_size // 2, h * head_dim, seq_len).transpose(1, 2) # (batch, inner_dim, seq_len)
-                        q = torch.cat((q_uncond, q), dim=0)
-
-                        return q
-
-                # Create hooks 
-                for module in selfattn_modules:
-                        module_hooks.module_add_forward_hook(module.to_q, apg_to_q_hook, hook_type="forward", with_kwargs=True)
-
-        def get_middle_block_modules(self):
-                """ Get all attention modules from the middle block 
-                Refere to page 22 of the APG paper, Appendix A.2
-                
-                """
-                middle_block_modules = module_hooks.get_modules(
-                        network_layer_name_filter = 'middle_block_',
-                        module_name_filter = 'CrossAttention'
-                )
-                middle_block_modules = [m for m in middle_block_modules if 'attn1' in m.network_layer_name]
-                return middle_block_modules
-
-        def get_cross_attn_modules(self):
-                """ Get all cross attention modules """
-                return self.get_middle_block_modules()
-
-        def on_cfg_denoiser_callback(self, params: CFGDenoiserParams, apg_params: APGStateParams):
-                # always unhook
-                self.unhook_callbacks(apg_params)
-                if not apg_params.apg_active:
-                        return
-
-                in_interval = apg_params.apg_start_step <= params.sampling_step <= apg_params.apg_end_step
-                for module in apg_params.crossattn_modules:
-                        if hasattr(module.to_q, 'apg_enable'):
-                                module.to_q.apg_enable = in_interval
-
-        def cfg_after_cfg_callback(self, params: AfterCFGCallbackParams, apg_params: APGStateParams):
-                pass
 
         def get_xyz_axis_options(self) -> dict:
                 xyz_grid = [x for x in scripts.scripts_data if x.script_class.__module__ in ("xyz_grid.py", "scripts.xyz_grid")][0].module
@@ -248,18 +181,6 @@ class APGExtensionScript(UIWrapper):
                         xyz_grid.AxisOption("[APG] APG End Step", int, apg_apply_field("apg_end_step")),
                 }
                 return extra_axis_options
-
-
-# from modules/sd_samplers_cfg_denoiser.py:187-195
-def get_make_condition_dict_fn(text_uncond):
-        if shared.sd_model.model.conditioning_key == "crossattn-adm":
-                make_condition_dict = lambda c_crossattn, c_adm: {"c_crossattn": [c_crossattn], "c_adm": c_adm}
-        else:
-                if isinstance(text_uncond, dict):
-                        make_condition_dict = lambda c_crossattn, c_concat: {**c_crossattn, "c_concat": [c_concat]}
-                else:
-                        make_condition_dict = lambda c_crossattn, c_concat: {"c_crossattn": [c_crossattn], "c_concat": [c_concat]}
-        return make_condition_dict
 
 
 # XYZ Plot
@@ -283,36 +204,6 @@ def apg_apply_field(field):
         setattr(p, field, x)
     return fun
 
-
-# Gaussian blur
-# taken from https://github.com/SusungHong/APG-SDXL/blob/master/pipeline_seg.py
-def gaussian_blur_2d(img, kernel_size, sigma):
-        height = img.shape[-1]
-        kernel_size = min(kernel_size, height - (height % 2 - 1))
-        ksize_half = (kernel_size - 1) * 0.5
-
-        x = torch.linspace(-ksize_half, ksize_half, steps=kernel_size)
-
-        pdf = torch.exp(-0.5 * (x / sigma).pow(2))
-
-        x_kernel = pdf / pdf.sum()
-        x_kernel = x_kernel.to(device=img.device, dtype=img.dtype)
-
-        kernel2d = torch.mm(x_kernel[:, None], x_kernel[None, :])
-        kernel2d = kernel2d.expand(img.shape[-3], 1, kernel2d.shape[0], kernel2d.shape[1])
-
-        padding = [kernel_size // 2, kernel_size // 2, kernel_size // 2, kernel_size // 2]
-
-        img = F.pad(img, padding, mode="reflect")
-        img = F.conv2d(img, kernel2d, groups=img.shape[-3])
-
-        return img
-
-
-def gaussian_blur_inf(img, kernel_size, sigma):
-        img[:] = img.mean(dim=(-2, -1), keepdim=True)
-
-        return img
 
 # taken directly from the paper
 class MomentumBuffer:
@@ -343,7 +234,7 @@ def project(
 def normalized_guidance(
         pred_cond: torch.Tensor, # [B, C, H, W]
         pred_uncond: torch.Tensor, # [B, C, H, W]
-        diff: torch.Tensor, # [B, C, H, W],
+        #diff: torch.Tensor, # [B, C, H, W],
         guidance_scale: float,
         momentum_buffer: MomentumBuffer = None,
         eta: float = 1.0,
@@ -351,9 +242,8 @@ def normalized_guidance(
         ):
         pred_cond = pred_cond.unsqueeze(0)
         pred_uncond = pred_uncond.unsqueeze(0)
-        diff = diff.unsqueeze(0)
-        eta = eta or 1.0
-        # diff = pred_cond - pred_uncond
+        #diff = diff.unsqueeze(0)
+        diff = pred_cond - pred_uncond
         if momentum_buffer is not None:
                 momentum_buffer.update(diff)
                 diff = momentum_buffer.running_average
@@ -362,10 +252,11 @@ def normalized_guidance(
                 diff_norm = diff.norm(p=2, dim=[-1, -2, -3], keepdim=True)
                 scale_factor = torch.minimum(ones, norm_threshold / diff_norm)
                 diff = diff * scale_factor
-        diff_parallel, diff_orthogonal = project(diff, pred_cond)
+        diff_parallel, diff_orthogonal = project(diff, pred_uncond)
         normalized_update = diff_orthogonal + eta * diff_parallel
-        #return normalized_update.squeeze(0)
-        pred_guided = pred_cond + (guidance_scale - 1) * normalized_update
+        return normalized_update.squeeze(0)
+        #pred_guided = pred_cond + (guidance_scale - 1) * normalized_update
+        #pred_guided = pred_cond + (guidance_scale - 1) * normalized_update
         #pred_cond = pred_cond.squeeze(0)
         #pred_uncond = pred_uncond.squeeze(0)
         return pred_guided.squeeze(0)

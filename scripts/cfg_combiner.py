@@ -3,6 +3,7 @@ import logging
 import torch
 import torchvision.transforms as F
 from modules import shared, scripts, devices, patches, script_callbacks
+from modules.devices import NansException
 from modules.script_callbacks import CFGDenoiserParams
 from modules.processing import StableDiffusionProcessing
 from scripts.incantation_base import UIWrapper
@@ -238,19 +239,21 @@ def combine_denoised_pass_conds_list(*args, **kwargs):
                                 # d_cfg = d0(z,t,null) + w(dt)
 
 
-                                cfg_x = (model_delta) * rate * (weight * cfg_scale)
 
                                 if apg_params is not None:
                                         normalized_cond = normalized_guidance(
                                                pred_cond=x_out[cond_index],
                                                pred_uncond=denoised_uncond[i],
-                                               diff = cfg_x,
+                                               #diff = cfg_x,
                                                guidance_scale = cfg_scale,
                                                momentum_buffer = apg_params.momentum_buffer,
-                                               eta = apg_params.eta,
+                                               eta = apg_params.apg_parallel_scale,
                                                norm_threshold = apg_params.norm_threshold,
                                         )
-                                        cfg_x = normalized_cond
+                                        cfg_x = normalized_cond * rate * (weight * (cfg_scale - 1))
+                                else:
+                                        cfg_x = (model_delta) * rate * (weight * cfg_scale)
+
                                 if not use_saliency_map or not run_pag:
                                         denoised[i] += cfg_x
                                 del rate
