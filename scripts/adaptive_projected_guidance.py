@@ -55,10 +55,8 @@ class APGStateParams:
                 self.apg_scale: int = -1      # APG guidance scale
                 self.apg_parallel_scale: float = 1.0      # APG scale for paralllel guidance
                 self.apg_momentum: float = 1.0
-                self.apg_blur_threshold: float = 15.0 # 2^13 ~= 8192
                 self.apg_start_step: int = 0
                 self.apg_end_step: int = 150 
-                self.crossattn_modules = [] # callable lambda
 
 
 class APGExtensionScript(UIWrapper):
@@ -177,6 +175,8 @@ class APGExtensionScript(UIWrapper):
                 extra_axis_options = {
                         xyz_grid.AxisOption("[APG] Active", str, apg_apply_override('apg_active', boolean=True), choices=xyz_grid.boolean_choice(reverse=True)),
                         xyz_grid.AxisOption("[APG] APG Momentum", float, apg_apply_field("apg_momentum")),
+                        xyz_grid.AxisOption("[APG] APG Norm Threshold", float, apg_apply_field("apg_norm_threshold")),
+                        xyz_grid.AxisOption("[APG] APG Parallel Scale", float, apg_apply_field("apg_parallel_scale")),
                         xyz_grid.AxisOption("[APG] APG Start Step", int, apg_apply_field("apg_start_step")),
                         xyz_grid.AxisOption("[APG] APG End Step", int, apg_apply_field("apg_end_step")),
                 }
