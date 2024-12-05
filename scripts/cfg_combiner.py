@@ -7,6 +7,7 @@ from modules.script_callbacks import CFGDenoiserParams
 from modules.processing import StableDiffusionProcessing
 from scripts.incantation_base import UIWrapper
 from scripts.scfg import scfg_combine_denoised
+from scripts.adaptive_projected_guidance import normalized_guidance
 
 logger = logging.getLogger(__name__)
 
@@ -58,11 +59,13 @@ class CFGCombinerScript(UIWrapper):
             pag_active = p.extra_generation_params.get('PAG Active', False)
             cfg_active = p.extra_generation_params.get('CFG Interval Enable', False)
             scfg_active = p.extra_generation_params.get('SCFG Active', False)
+            apg_active = p.extra_generation_params.get('APG Active', False)
 
             if not any([
                         pag_active,
                         cfg_active,
-                        scfg_active
+                        scfg_active,
+                        apg_active
                     ]):
                 return
 
@@ -112,7 +115,8 @@ class CFGCombinerScript(UIWrapper):
                                     **kwargs,
                                     original_func = denoiser.combine_denoised_original,
                                     pag_params = cfg_dict['pag_params'],
-                                    scfg_params = cfg_dict['scfg_params']
+                                    scfg_params = cfg_dict['scfg_params'],
+                                    apg_params = cfg_dict['apg_params']
                                 )
                             patched_combine_denoised = patches.patch(__name__, denoiser, "combine_denoised", pass_conds_func)
                             setattr(denoiser, 'combine_denoised_patched', True)
@@ -158,8 +162,9 @@ def combine_denoised_pass_conds_list(*args, **kwargs):
         original_func = kwargs.get('original_func', None)
         pag_params = kwargs.get('pag_params', None)
         scfg_params = kwargs.get('scfg_params', None)
+        apg_params = kwargs.get('apg_params', None)
 
-        if pag_params is None and scfg_params is None:
+        if pag_params is None and scfg_params is None and apg_params is None:
                 logger.warning("No reason to hijack combine_denoised")
                 return original_func(*args)
 
@@ -228,7 +233,24 @@ def combine_denoised_pass_conds_list(*args, **kwargs):
                                                pass
 
                                 # 1. Experimental formulation for S-CFG combined with CFG
+                                # dt = d0(z,t,y) - d0(z,t,null)
+                                # d_cfg = d0(z,t,null) + w(d0(z,t,y) - d0(z,t,null))
+                                # d_cfg = d0(z,t,null) + w(dt)
+
+
                                 cfg_x = (model_delta) * rate * (weight * cfg_scale)
+
+                                if apg_params is not None:
+                                        normalized_cond = normalized_guidance(
+                                               pred_cond=x_out[cond_index],
+                                               pred_uncond=denoised_uncond[i],
+                                               diff = cfg_x,
+                                               guidance_scale = cfg_scale,
+                                               momentum_buffer = apg_params.momentum_buffer,
+                                               eta = apg_params.eta,
+                                               norm_threshold = apg_params.norm_threshold,
+                                        )
+                                        cfg_x = normalized_cond
                                 if not use_saliency_map or not run_pag:
                                         denoised[i] += cfg_x
                                 del rate

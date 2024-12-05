@@ -49,8 +49,11 @@ global_scale = 1
 class APGStateParams:
         def __init__(self):
                 self.apg_active: bool = False      # APG guidance scale
+                self.momentum_buffer: MomentumBuffer = None
+                self.eta: float = 0.
+                self.norm_threshold: float = 0.
                 self.apg_scale: int = -1      # APG guidance scale
-                self.apg_blur_sigma: float = 1.0
+                self.apg_momentum: float = 1.0
                 self.apg_blur_threshold: float = 15.0 # 2^13 ~= 8192
                 self.apg_start_step: int = 0
                 self.apg_end_step: int = 150 
@@ -77,16 +80,16 @@ class APGExtensionScript(UIWrapper):
                 with gr.Accordion('Adaptive Projected Guidance', open=False):
                         active = gr.Checkbox(value=False, default=False, label="Active", elem_id='apg_active', info="Recommended to keep CFG Scale fixed at 3.0, use Sigma to adjust.")
                         with gr.Row():
-                                apg_blur_sigma = gr.Slider(value = 11.0, minimum = 0.0, maximum = 11.0, step = 0.5, label="APG Blur Sigma", elem_id = 'apg_blur_sigma', info="Exponential (2^n). Values >= 11 are infinite blur")
+                                apg_momentum = gr.Slider(value = -0.75, minimum = -1.0, maximum = 1.0, step = 0.1, label="APG Momentum", elem_id = 'apg_momentum', info="")
                         with gr.Row():
                                 start_step = gr.Slider(value = 0, minimum = 0, maximum = 150, step = 1, label="Start Step", elem_id = 'apg_start_step', info="")
                                 end_step = gr.Slider(value = 150, minimum = 0, maximum = 150, step = 1, label="End Step", elem_id = 'apg_end_step', info="")
 
-                params = [active, apg_blur_sigma, start_step, end_step]
+                params = [active, apg_momentum, start_step, end_step]
                                 
                 self.infotext_fields = [
                         (active, lambda d: gr.Checkbox.update(value='APG Active' in d)),
-                        (apg_blur_sigma, 'APG Blur Sigma'),
+                        (apg_momentum, 'APG Momentum'),
                         (start_step, 'APG Start Step'),
                         (end_step, 'APG End Step'),
                 ]
@@ -99,7 +102,7 @@ class APGExtensionScript(UIWrapper):
         def process_batch(self, p: StableDiffusionProcessing, *args, **kwargs):
                self.apg_process_batch(p, *args, **kwargs)
 
-        def apg_process_batch(self, p: StableDiffusionProcessing, active, apg_blur_sigma, start_step, end_step, *args, **kwargs):
+        def apg_process_batch(self, p: StableDiffusionProcessing, active, apg_momentum, start_step, end_step, *args, **kwargs):
                 # cleanup previous hooks always
                 script_callbacks.remove_current_script_callbacks()
                 self.remove_all_hooks()
@@ -107,23 +110,20 @@ class APGExtensionScript(UIWrapper):
                 active = getattr(p, "apg_active", active)
                 if active is False:
                         return
-                apg_blur_sigma = getattr(p, "apg_blur_sigma", apg_blur_sigma)
-                if apg_blur_sigma == 0.0:
-                        logger.info("APG Blur Sigma is 0, skipping APG")
-                        return
+                apg_momentum = getattr(p, "apg_momentum", apg_momentum)
                 start_step = getattr(p, "apg_start_step", start_step)
                 end_step = getattr(p, "apg_end_step", end_step)
 
                 if active:
                         p.extra_generation_params.update({
                                 "APG Active": active,
-                                "APG Blur Sigma": apg_blur_sigma,
+                                "APG Momentum": apg_momentum,
                                 "APG Start Step": start_step,
                                 "APG End Step": end_step,
                         })
-                self.create_hook(p, active, apg_blur_sigma, start_step, end_step)
+                self.create_hook(p, active, apg_momentum, start_step, end_step)
 
-        def create_hook(self, p: StableDiffusionProcessing, active, apg_blur_sigma, start_step, end_step, *args, **kwargs):
+        def create_hook(self, p: StableDiffusionProcessing, active, apg_momentum, start_step, end_step, *args, **kwargs):
                 # Create a list of parameters for each concept
                 apg_params = APGStateParams()
 
@@ -133,32 +133,22 @@ class APGExtensionScript(UIWrapper):
                 p.incant_cfg_params['apg_params'] = apg_params
                 
                 apg_params.apg_active = active 
-                apg_params.apg_blur_sigma = apg_blur_sigma
+                apg_params.apg_momentum = apg_momentum
                 apg_params.apg_blur_threshold = 10.5
                 apg_params.apg_start_step = start_step
                 apg_params.apg_end_step = end_step
 
-                # Get all the qv modules
-                self_attn_modules = self.get_cross_attn_modules()
-                if len(self_attn_modules) == 0:
-                        logger.error("No self attention modules found, cannot proceed with APG")
-                        return
-                apg_params.crossattn_modules = self_attn_modules
+                apg_params.momentum_buffer = MomentumBuffer(apg_momentum) 
+                apg_params.eta = p.eta
+                apg_params.norm_threshold = 0.
 
-                cfg_denoise_lambda = lambda callback_params: self.on_cfg_denoiser_callback(callback_params, apg_params)
-                unhook_lambda = lambda _: self.unhook_callbacks(apg_params)
-
-                if apg_params.apg_active:
-                        self.ready_hijack_forward(apg_params.crossattn_modules, apg_blur_sigma, apg_params.apg_blur_threshold, p.height, p.width)
 
                 logger.debug('Hooked callbacks')
-                script_callbacks.on_cfg_denoiser(cfg_denoise_lambda)
-                script_callbacks.on_script_unloaded(unhook_lambda)
 
         def postprocess_batch(self, p, *args, **kwargs):
                 self.apg_postprocess_batch(p, *args, **kwargs)
 
-        def apg_postprocess_batch(self, p, active, apg_blur_sigma, start_step, end_step, *args, **kwargs):
+        def apg_postprocess_batch(self, p, active, apg_momentum, start_step, end_step, *args, **kwargs):
                 script_callbacks.remove_current_script_callbacks()
 
                 logger.debug('Removed script callbacks')
@@ -177,7 +167,7 @@ class APGExtensionScript(UIWrapper):
                 global handles
                 return
 
-        def ready_hijack_forward(self, selfattn_modules, apg_blur_sigma, apg_blur_threshold, height, width):
+        def ready_hijack_forward(self, selfattn_modules, apg_momentum, apg_blur_threshold, height, width):
                 for module in selfattn_modules:
                         module_hooks.modules_add_field(module.to_q, 'apg_enable', False)
                         module_hooks.modules_add_field(module.to_q, 'apg_parent_module', [module])
@@ -196,18 +186,18 @@ class APGExtensionScript(UIWrapper):
                         downscale_w = module_attn_size // downscale_h
 
                         # actual sigma value is calculated as 2 ^ sigma
-                        is_inf_blur = apg_blur_sigma > apg_blur_threshold
-                        blur_sigma_exp = 2 ** apg_blur_sigma
-                        kernel_size = math.ceil(6 * blur_sigma_exp) + 1 - math.ceil(6 * blur_sigma_exp) % 2
+                        is_inf_blur = apg_momentum > apg_blur_threshold
+                        momentum_exp = 2 ** apg_momentum
+                        kernel_size = math.ceil(6 * momentum_exp) + 1 - math.ceil(6 * momentum_exp) % 2
 
                         q_uncond, q= output.chunk(2, dim=0) 
                         q = q.view(batch_size//2, -1, h, head_dim).transpose(1, 2) # (batch, num_heads, seq_len, head_dim)
                         q = q.permute(0, 1, 3, 2).reshape(batch_size//2 * h, head_dim, downscale_h, downscale_w) # (batch * num_heads, head_dim, height, width)
 
                         if is_inf_blur:
-                                q = gaussian_blur_inf(q, 1.0, blur_sigma_exp)
+                                q = gaussian_blur_inf(q, 1.0, momentum_exp)
                         else:
-                                q = gaussian_blur_2d(q, kernel_size, blur_sigma_exp)
+                                q = gaussian_blur_2d(q, kernel_size, momentum_exp)
 
                         q = q.reshape(batch_size // 2, h, head_dim, downscale_h * downscale_w) # (batch, num_heads, head_dim, seq_len)
                         q = q.view(batch_size // 2, h * head_dim, seq_len).transpose(1, 2) # (batch, inner_dim, seq_len)
@@ -253,7 +243,7 @@ class APGExtensionScript(UIWrapper):
                 xyz_grid = [x for x in scripts.scripts_data if x.script_class.__module__ in ("xyz_grid.py", "scripts.xyz_grid")][0].module
                 extra_axis_options = {
                         xyz_grid.AxisOption("[APG] Active", str, apg_apply_override('apg_active', boolean=True), choices=xyz_grid.boolean_choice(reverse=True)),
-                        xyz_grid.AxisOption("[APG] APG Blur Sigma", float, apg_apply_field("apg_blur_sigma")),
+                        xyz_grid.AxisOption("[APG] APG Momentum", float, apg_apply_field("apg_momentum")),
                         xyz_grid.AxisOption("[APG] APG Start Step", int, apg_apply_field("apg_start_step")),
                         xyz_grid.AxisOption("[APG] APG End Step", int, apg_apply_field("apg_end_step")),
                 }
@@ -328,8 +318,10 @@ def gaussian_blur_inf(img, kernel_size, sigma):
 class MomentumBuffer:
         def __init__(self, momentum: float):
                 self.momentum = momentum
-                self.running_average = 0
+                self.running_average = None
         def update(self, update_value: torch.Tensor):
+                if self.running_average is None:
+                        self.running_average = torch.zeros_like(update_value)
                 new_average = self.momentum * self.running_average
                 self.running_average = update_value + new_average
 
@@ -347,16 +339,21 @@ def project(
         return v0_parallel.to(dtype), v0_orthogonal.to(dtype)
 
 
-# taken directly from the paper
+# modifed from the paper
 def normalized_guidance(
         pred_cond: torch.Tensor, # [B, C, H, W]
         pred_uncond: torch.Tensor, # [B, C, H, W]
+        diff: torch.Tensor, # [B, C, H, W],
         guidance_scale: float,
         momentum_buffer: MomentumBuffer = None,
         eta: float = 1.0,
         norm_threshold: float = 0.0,
         ):
-        diff = pred_cond - pred_uncond
+        pred_cond = pred_cond.unsqueeze(0)
+        pred_uncond = pred_uncond.unsqueeze(0)
+        diff = diff.unsqueeze(0)
+        eta = eta or 1.0
+        # diff = pred_cond - pred_uncond
         if momentum_buffer is not None:
                 momentum_buffer.update(diff)
                 diff = momentum_buffer.running_average
@@ -367,6 +364,9 @@ def normalized_guidance(
                 diff = diff * scale_factor
         diff_parallel, diff_orthogonal = project(diff, pred_cond)
         normalized_update = diff_orthogonal + eta * diff_parallel
+        #return normalized_update.squeeze(0)
         pred_guided = pred_cond + (guidance_scale - 1) * normalized_update
-        return pred_guided
+        #pred_cond = pred_cond.squeeze(0)
+        #pred_uncond = pred_uncond.squeeze(0)
+        return pred_guided.squeeze(0)
 
