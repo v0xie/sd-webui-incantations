@@ -213,6 +213,9 @@ class MomentumBuffer:
         def update(self, update_value: torch.Tensor):
                 if self.running_average is None:
                         self.running_average = torch.zeros_like(update_value)
+                if self.running_average.shape != update_value.shape:
+                        logger.debug(f"Running average shape {self.running_average.shape} does not match update value shape: {update_value.shape}, updating shape")
+                        self.running_average = torch.zeros_like(update_value)
                 new_average = self.momentum * self.running_average
                 self.running_average = update_value + new_average
 
