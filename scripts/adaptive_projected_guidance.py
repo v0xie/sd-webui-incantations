@@ -142,7 +142,6 @@ class APGExtensionScript(UIWrapper):
                 apg_params.apg_momentum = apg_momentum
                 apg_params.norm_threshold = apg_norm_threshold
                 apg_params.apg_parallel_scale = apg_parallel_scale
-                apg_params.apg_blur_threshold = 10.5
                 apg_params.apg_start_step = start_step
                 apg_params.apg_end_step = end_step
 
@@ -237,15 +236,13 @@ def project(
 def normalized_guidance(
         pred_cond: torch.Tensor, # [B, C, H, W]
         pred_uncond: torch.Tensor, # [B, C, H, W]
-        #diff: torch.Tensor, # [B, C, H, W],
-        guidance_scale: float,
-        momentum_buffer: MomentumBuffer = None,
-        eta: float = 1.0,
-        norm_threshold: float = 0.0,
-        ):
+        apg_params: APGStateParams,
+):
+        momentum_buffer = apg_params.momentum_buffer
+        eta = apg_params.apg_parallel_scale
+        norm_threshold = apg_params.norm_threshold
         pred_cond = pred_cond.unsqueeze(0)
         pred_uncond = pred_uncond.unsqueeze(0)
-        #diff = diff.unsqueeze(0)
         diff = pred_cond - pred_uncond
         if momentum_buffer is not None:
                 momentum_buffer.update(diff)
@@ -258,9 +255,3 @@ def normalized_guidance(
         diff_parallel, diff_orthogonal = project(diff, pred_uncond)
         normalized_update = diff_orthogonal + eta * diff_parallel
         return normalized_update.squeeze(0)
-        #pred_guided = pred_cond + (guidance_scale - 1) * normalized_update
-        #pred_guided = pred_cond + (guidance_scale - 1) * normalized_update
-        #pred_cond = pred_cond.squeeze(0)
-        #pred_uncond = pred_uncond.squeeze(0)
-        return pred_guided.squeeze(0)
-
