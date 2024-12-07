@@ -259,6 +259,7 @@ def combine_denoised_pass_conds_list(*args, **kwargs):
                                                         pred_cond=x_out[cond_index],
                                                         pred_uncond=denoised_uncond[i],
                                                         apg_params = apg_params,
+                                                        index = i,
                                                 )
                                                 cfg_x = normalized_cond * rate * (weight * (cfg_scale - 1))
 

@@ -52,6 +52,7 @@ class APGStateParams:
                 self.momentum_buffer: MomentumBuffer = None
                 self.eta: float = 0.
                 self.norm_threshold: float = 0.
+                self.batch_size: int = 1
                 self.apg_scale: int = -1      # APG guidance scale
                 self.apg_parallel_scale: float = 1.0      # APG scale for paralllel guidance
                 self.apg_momentum: float = 1.0
@@ -145,7 +146,8 @@ class APGExtensionScript(UIWrapper):
                 apg_params.apg_start_step = start_step
                 apg_params.apg_end_step = end_step
 
-                apg_params.momentum_buffer = MomentumBuffer(apg_momentum) 
+                apg_params.batch_size = p.batch_size
+                apg_params.momentum_buffer = MomentumBuffer(apg_momentum, p.batch_size) 
                 apg_params.eta = p.eta
 
 
@@ -206,17 +208,23 @@ def apg_apply_field(field):
 
 # taken directly from the paper
 class MomentumBuffer:
-        def __init__(self, momentum: float):
+        def __init__(self, momentum: float, batch_size: int):
                 self.momentum = momentum
+                self.batch_size = batch_size
                 self.running_average = None
-        def update(self, update_value: torch.Tensor):
+
+        def init_buffer(self, tensor: torch.Tensor) -> torch.Tensor:
+                # shape is [C, H, W], expand to [B, C, H, W]
+                return torch.zeros([self.batch_size, *tensor.shape], dtype=tensor.dtype, device=tensor.device)
+
+        def update(self, update_value: torch.Tensor, index: int):
                 if self.running_average is None:
-                        self.running_average = torch.zeros_like(update_value)
-                if self.running_average.shape != update_value.shape:
+                        self.running_average = self.init_buffer(update_value)
+                if self.running_average[index].shape != update_value.shape:
                         logger.debug(f"Running average shape {self.running_average.shape} does not match update value shape: {update_value.shape}, updating shape")
-                        self.running_average = torch.zeros_like(update_value)
-                new_average = self.momentum * self.running_average
-                self.running_average = update_value + new_average
+                        self.running_average = self.init_buffer(update_value)
+                new_average = self.momentum * self.running_average[index]
+                self.running_average[index] = update_value + new_average
 
 
 # taken directly from the paper
@@ -237,6 +245,7 @@ def normalized_guidance(
         pred_cond: torch.Tensor, # [B, C, H, W]
         pred_uncond: torch.Tensor, # [B, C, H, W]
         apg_params: APGStateParams,
+        index: int,
 ):
         momentum_buffer = apg_params.momentum_buffer
         eta = apg_params.apg_parallel_scale
@@ -245,8 +254,8 @@ def normalized_guidance(
         pred_uncond = pred_uncond.unsqueeze(0)
         diff = pred_cond - pred_uncond
         if momentum_buffer is not None:
-                momentum_buffer.update(diff)
-                diff = momentum_buffer.running_average
+                momentum_buffer.update(diff.squeeze(0), index)
+                diff = momentum_buffer.running_average[index]
         if norm_threshold > 0:
                 ones = torch.ones_like(diff)
                 diff_norm = diff.norm(p=2, dim=[-1, -2, -3], keepdim=True)
