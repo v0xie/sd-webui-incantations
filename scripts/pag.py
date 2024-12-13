@@ -124,6 +124,8 @@ class PAGStateParams:
                 self.pag_next_sigma: bool = False # use next sigma in noise prediction ( for self-guidance)
                 self.pag_disable_perturbation: bool = False # disable perturbation as in PAG
                 self.pag_scale: int = -1      # PAG guidance scale
+                self.pag_shift_scale: float = 1.0 # SG shift scale
+                self.pag_dynamic_shift_scale: bool = False # dynamic shift scale t/d(t)
                 self.pag_start_step: int = 0
                 self.pag_end_step: int = 150 
                 self.cfg_interval_enable: bool = False
@@ -173,8 +175,10 @@ class PAGExtensionScript(UIWrapper):
                         pag_sanf = gr.Checkbox(value=False, default=False, label="Use Saliency-Adaptive Noise Fusion", elem_id='pag_sanf')
                         pag_next_sigma = gr.Checkbox(value=False, default=False, label="Use Next Sigma", elem_id='pag_next_sigma')
                         pag_disable_perturbation = gr.Checkbox(value=False, default=False, label="Disable Perturbation", elem_id='pag_disable_perturbation')
+                        pag_dynamic_shift_scale = gr.Checkbox(value=False, default=False, label="Dynamic Shift Scale", elem_id='pag_dynamic_shift_scale')
                         with gr.Row():
                                 pag_scale = gr.Slider(value = 0, minimum = 0, maximum = 20.0, step = 0.5, label="PAG Scale", elem_id = 'pag_scale', info="")
+                                pag_shift_scale = gr.Slider(value = 1.0, minimum = -50, maximum = 50, step = 0.5, label="PAG Shift Scale", elem_id = 'pag_shift_scale', info="")
                         with gr.Row():
                                 start_step = gr.Slider(value = 0, minimum = 0, maximum = 150, step = 1, label="Start Step", elem_id = 'pag_start_step', info="")
                                 end_step = gr.Slider(value = 150, minimum = 0, maximum = 150, step = 1, label="End Step", elem_id = 'pag_end_step', info="")
@@ -194,6 +198,8 @@ class PAGExtensionScript(UIWrapper):
                 active.do_not_save_to_config = True
                 pag_sanf.do_not_save_to_config = True
                 pag_scale.do_not_save_to_config = True
+                pag_shift_scale.do_not_save_to_config = True
+                pag_dynamic_shift_scale.do_not_save_to_config = True
                 pag_next_sigma.do_not_save_to_config = True
                 pag_disable_perturbation.do_not_save_to_config = True
                 start_step.do_not_save_to_config = True
@@ -208,6 +214,8 @@ class PAGExtensionScript(UIWrapper):
                         (pag_next_sigma, lambda d: gr.Checkbox.update(value='PAG Next Sigma' in d)),
                         (pag_disable_perturbation, lambda d: gr.Checkbox.update(value='PAG Disable Perturbation' in d)),
                         (pag_scale, 'PAG Scale'),
+                        (pag_shift_scale, 'PAG Shift Scale'),
+                        (pag_dynamic_shift_scale, lambda d: gr.Checkbox.update(value='PAG Dynamic Shift Scale' in d)),
                         (start_step, 'PAG Start Step'),
                         (end_step, 'PAG End Step'),
                         (cfg_interval_enable, 'CFG Interval Enable'),
@@ -221,6 +229,8 @@ class PAGExtensionScript(UIWrapper):
                         'pag_next_sigma',
                         'pag_disable_perturbation',
                         'pag_scale',
+                        'pag_shift_scale',
+                        'pag_dynamic_shift_scale',
                         'pag_start_step',
                         'pag_end_step',
                         'cfg_interval_enable',
@@ -228,12 +238,12 @@ class PAGExtensionScript(UIWrapper):
                         'cfg_interval_low',
                         'cfg_interval_high',
                 ]
-                return [active, pag_scale, start_step, end_step, cfg_interval_enable, cfg_schedule, cfg_interval_low, cfg_interval_high, pag_sanf, pag_next_sigma, pag_disable_perturbation]
+                return [active, pag_scale, start_step, end_step, cfg_interval_enable, cfg_schedule, cfg_interval_low, cfg_interval_high, pag_sanf, pag_next_sigma, pag_disable_perturbation, pag_shift_scale, pag_dynamic_shift_scale]
 
         def process_batch(self, p: StableDiffusionProcessing, *args, **kwargs):
                self.pag_process_batch(p, *args, **kwargs)
 
-        def pag_process_batch(self, p: StableDiffusionProcessing, active, pag_scale, start_step, end_step, cfg_interval_enable, cfg_schedule, cfg_interval_low, cfg_interval_high, pag_sanf, pag_next_sigma, pag_disable_perturbation, *args, **kwargs):
+        def pag_process_batch(self, p: StableDiffusionProcessing, active, pag_scale, start_step, end_step, cfg_interval_enable, cfg_schedule, cfg_interval_low, cfg_interval_high, pag_sanf, pag_next_sigma, pag_disable_perturbation, pag_shift_scale, pag_dynamic_shift_scale, *args, **kwargs):
                 # cleanup previous hooks always
                 script_callbacks.remove_current_script_callbacks()
                 self.remove_all_hooks()
@@ -246,6 +256,8 @@ class PAGExtensionScript(UIWrapper):
                 if active is False and cfg_interval_enable is False:
                         return
                 pag_scale = getattr(p, "pag_scale", pag_scale)
+                pag_shift_scale = getattr(p, "pag_shift_scale", pag_shift_scale)
+                pag_dynamic_shift_scale = getattr(p, "pag_dynamic_shift_scale", pag_dynamic_shift_scale)
                 start_step = getattr(p, "pag_start_step", start_step)
                 end_step = getattr(p, "pag_end_step", end_step)
 
@@ -260,6 +272,8 @@ class PAGExtensionScript(UIWrapper):
                                 "PAG Next Sigma": pag_next_sigma,
                                 "PAG Disable Perturbation": pag_disable_perturbation,
                                 "PAG Scale": pag_scale,
+                                "PAG Shift Scale": pag_shift_scale,
+                                "PAG Dynamic Shift Scale": pag_dynamic_shift_scale,
                                 "PAG Start Step": start_step,
                                 "PAG End Step": end_step,
                         })
@@ -270,9 +284,11 @@ class PAGExtensionScript(UIWrapper):
                                 "CFG Interval Low": cfg_interval_low,
                                 "CFG Interval High": cfg_interval_high
                         })
-                self.create_hook(p, active, pag_scale, start_step, end_step, cfg_interval_enable, cfg_schedule, cfg_interval_low, cfg_interval_high, pag_sanf, pag_next_sigma, pag_disable_perturbation)
+                self.create_hook(p, active, pag_scale, start_step, end_step, cfg_interval_enable, cfg_schedule, cfg_interval_low, cfg_interval_high, pag_sanf, pag_next_sigma, pag_disable_perturbation, pag_shift_scale, pag_dynamic_shift_scale)
 
-        def create_hook(self, p: StableDiffusionProcessing, active, pag_scale, start_step, end_step, cfg_interval_enable, cfg_schedule, cfg_interval_low, cfg_interval_high, pag_sanf, pag_next_sigma, pag_disable_perturbation, *args, **kwargs):
+        def create_hook(self, p: StableDiffusionProcessing, active, pag_scale, start_step, end_step, 
+                        cfg_interval_enable, cfg_schedule, cfg_interval_low, cfg_interval_high, 
+                        pag_sanf, pag_next_sigma, pag_disable_perturbation, pag_shift_scale, pag_dynamic_shift_scale, *args, **kwargs):
                 # Create a list of parameters for each concept
                 pag_params = PAGStateParams()
 
@@ -286,6 +302,8 @@ class PAGExtensionScript(UIWrapper):
                 pag_params.pag_next_sigma = pag_next_sigma
                 pag_params.pag_disable_perturbation = pag_disable_perturbation
                 pag_params.pag_scale = pag_scale
+                pag_params.pag_shift_scale = pag_shift_scale
+                pag_params.pag_dynamic_shift_scale = pag_dynamic_shift_scale
                 pag_params.pag_start_step = start_step
                 pag_params.pag_end_step = end_step
                 pag_params.cfg_interval_enable = cfg_interval_enable
@@ -518,7 +536,13 @@ class PAGExtensionScript(UIWrapper):
                 image_cond_in = pag_params.image_cond
 
                 if pag_params.pag_next_sigma:
-                        sigma_in = pag_params.sigmas[pag_params.step+1].expand(pag_params.sigma.shape)
+                        # this is next sigma as defined in the sampler
+                        #sigma_in = pag_params.sigmas[pag_params.step+1].expand(pag_params.sigma.shape)
+                        shift_scale = pag_params.pag_shift_scale
+                        if pag_params.pag_dynamic_shift_scale:
+                                interval = max(pag_params.max_sampling_step - pag_params.step - 1., 0.) / pag_params.max_sampling_step
+                                shift_scale = interval / pag_params.pag_shift_scale if pag_params.pag_shift_scale != 0 else 0
+                        sigma_in = pag_params.sigma + shift_scale
                 else:
                         sigma_in = pag_params.sigma
                 
@@ -554,6 +578,8 @@ class PAGExtensionScript(UIWrapper):
                         xyz_grid.AxisOption("[PAG] Use Next Sigma", str, pag_apply_override('pag_next_sigma', boolean=True), choices=xyz_grid.boolean_choice(reverse=True)),
                         xyz_grid.AxisOption("[PAG] Disable Perturbation", str, pag_apply_override('pag_disable_perturbation', boolean=True), choices=xyz_grid.boolean_choice(reverse=True)),
                         xyz_grid.AxisOption("[PAG] PAG Scale", float, pag_apply_field("pag_scale")),
+                        xyz_grid.AxisOption("[PAG] PAG Shift Scale", float, pag_apply_field("pag_shift_scale")),
+                        xyz_grid.AxisOption("[PAG] Dynamic Shift Scale", str, pag_apply_override('pag_dynamic_shift_scale', boolean=True), choices=xyz_grid.boolean_choice(reverse=True)),
                         xyz_grid.AxisOption("[PAG] PAG Start Step", int, pag_apply_field("pag_start_step")),
                         xyz_grid.AxisOption("[PAG] PAG End Step", int, pag_apply_field("pag_end_step")),
                         xyz_grid.AxisOption("[PAG] Enable CFG Scheduler", str, pag_apply_override('cfg_interval_enable', boolean=True), choices=xyz_grid.boolean_choice(reverse=True)),
