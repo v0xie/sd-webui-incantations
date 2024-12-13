@@ -241,10 +241,8 @@ class T2I0ExtensionScript(UIWrapper):
                 y = lambda params: self.on_cfg_denoiser_callback(params, t2i0_params)
                 # un = lambda params: self.unhook_callbacks()
 
-                if ctnms_alpha > 0 and len(token_indices) <= 0:
-                        logger.warning('No valid token indices found, cannot run CTNMS')
                 # Hook callbacks
-                if ctnms_alpha > 0 and len(token_indices) > 0:
+                if ctnms_alpha > 0:
                         self.ready_hijack_forward(ctnms_alpha, width, height, ema_factor, step_start, step_end, token_indices, params.token_count)
 
                 logger.debug('Hooked callbacks')
