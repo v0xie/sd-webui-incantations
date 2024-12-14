@@ -175,10 +175,10 @@ class PAGExtensionScript(UIWrapper):
                         pag_sanf = gr.Checkbox(value=False, default=False, label="Use Saliency-Adaptive Noise Fusion", elem_id='pag_sanf')
                         pag_next_sigma = gr.Checkbox(value=False, default=False, label="Use Next Sigma", elem_id='pag_next_sigma')
                         pag_disable_perturbation = gr.Checkbox(value=False, default=False, label="Disable Perturbation", elem_id='pag_disable_perturbation')
-                        pag_dynamic_shift_scale = gr.Checkbox(value=False, default=False, label="Dynamic Shift Scale", elem_id='pag_dynamic_shift_scale')
+                        pag_dynamic_shift_scale = gr.Checkbox(value=True, default=True, label="Dynamic Shift Scale", elem_id='pag_dynamic_shift_scale')
                         with gr.Row():
                                 pag_scale = gr.Slider(value = 0, minimum = 0, maximum = 20.0, step = 0.5, label="PAG Scale", elem_id = 'pag_scale', info="")
-                                pag_shift_scale = gr.Slider(value = 1.0, minimum = -50, maximum = 50, step = 0.5, label="PAG Shift Scale", elem_id = 'pag_shift_scale', info="")
+                                pag_shift_scale = gr.Slider(value = 30.0, minimum = -100, maximum = 100, step = 0.5, label="PAG Shift Scale", elem_id = 'pag_shift_scale', info="")
                         with gr.Row():
                                 start_step = gr.Slider(value = 0, minimum = 0, maximum = 150, step = 1, label="Start Step", elem_id = 'pag_start_step', info="")
                                 end_step = gr.Slider(value = 150, minimum = 0, maximum = 150, step = 1, label="End Step", elem_id = 'pag_end_step', info="")
@@ -514,7 +514,8 @@ class PAGExtensionScript(UIWrapper):
                 pag_params.image_cond = params.image_cond.clone().detach()
                 pag_params.denoiser = params.denoiser
                 pag_params.make_condition_dict = get_make_condition_dict_fn(params.text_uncond)
-                pag_params.sigmas = pag_params.denoiser.sampler.get_sigmas(pag_params.denoiser.p, pag_params.max_sampling_step).to(shared.device)
+                #pag_params.sigmas = pag_params.denoiser.sampler.get_sigmas(pag_params.denoiser.p, pag_params.max_sampling_step).to(shared.device)
+                pag_params.sigmas = pag_params.denoiser.sampler.model_wrap.sigmas
 
 
         def on_cfg_denoised_callback(self, params: CFGDenoisedParams, pag_params: PAGStateParams):
@@ -539,10 +540,19 @@ class PAGExtensionScript(UIWrapper):
                         # this is next sigma as defined in the sampler
                         #sigma_in = pag_params.sigmas[pag_params.step+1].expand(pag_params.sigma.shape)
                         shift_scale = pag_params.pag_shift_scale
-                        if pag_params.pag_dynamic_shift_scale:
-                                interval = max(pag_params.max_sampling_step - pag_params.step - 1., 0.) / pag_params.max_sampling_step
-                                shift_scale = interval / pag_params.pag_shift_scale if pag_params.pag_shift_scale != 0 else 0
-                        sigma_in = pag_params.sigma + shift_scale
+                        if pag_params.pag_dynamic_shift_scale and shift_scale != 0:
+                                current_sigma = pag_params.sigma
+                                current_timestep = max(pag_params.max_sampling_step - pag_params.step, 0.) / pag_params.max_sampling_step
+                                next_timestep_scaled = current_timestep / shift_scale
+                                gt_sigmas = torch.where(pag_params.sigmas <= current_sigma[0]+next_timestep_scaled)
+                                if gt_sigmas[0].shape[0] > 0:
+                                        next_timestep_index = gt_sigmas[0][-1]
+                                        next_sigma = pag_params.sigmas[next_timestep_index]
+                                else:
+                                        next_sigma = pag_params.sigmas[0]
+                                logger.debug('[PAG] Current Sigma: %s Shift amount: %s New Sigma: %s', current_sigma, next_sigma-current_sigma, next_sigma) 
+                                pag_params.sigma = torch.ones_like(pag_params.sigma) * next_sigma
+                        sigma_in = torch.clamp(pag_params.sigma, min=0)
                 else:
                         sigma_in = pag_params.sigma
                 
