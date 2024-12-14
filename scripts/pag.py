@@ -536,21 +536,29 @@ class PAGExtensionScript(UIWrapper):
                 uncond = pag_params.text_uncond
                 image_cond_in = pag_params.image_cond
 
-                if pag_params.pag_next_sigma:
+                if pag_params.pag_next_sigma and pag_params.pag_shift_scale != 0:
                         # this is next sigma as defined in the sampler
                         #sigma_in = pag_params.sigmas[pag_params.step+1].expand(pag_params.sigma.shape)
                         shift_scale = pag_params.pag_shift_scale
-                        if pag_params.pag_dynamic_shift_scale and shift_scale != 0:
+
+                        # calculate next sigma from sigma schedule based on shift scale
+                        if pag_params.pag_dynamic_shift_scale:
                                 current_sigma = pag_params.sigma
                                 current_timestep = max(pag_params.max_sampling_step - pag_params.step, 0.) / pag_params.max_sampling_step
                                 next_timestep_scaled = current_timestep / shift_scale
-                                gt_sigmas = torch.where(pag_params.sigmas <= current_sigma[0]+next_timestep_scaled)
+                                gt_sigmas = torch.where(pag_params.sigmas <= current_sigma[0]-next_timestep_scaled)
                                 if gt_sigmas[0].shape[0] > 0:
                                         next_timestep_index = gt_sigmas[0][-1]
                                         next_sigma = pag_params.sigmas[next_timestep_index]
                                 else:
-                                        next_sigma = pag_params.sigmas[0]
+                                        next_sigma = pag_params.sigma[0]
                                 logger.debug('[PAG] Current Sigma: %s Shift amount: %s New Sigma: %s', current_sigma, next_sigma-current_sigma, next_sigma) 
+                                pag_params.sigma = torch.ones_like(pag_params.sigma) * next_sigma
+                        # calculate arbitrary sigma from shift scale
+                        else:
+                                current_sigma = pag_params.sigma[0]
+                                delta_sigma = current_sigma / shift_scale
+                                next_sigma = current_sigma + delta_sigma
                                 pag_params.sigma = torch.ones_like(pag_params.sigma) * next_sigma
                         sigma_in = torch.clamp(pag_params.sigma, min=0)
                 else:
