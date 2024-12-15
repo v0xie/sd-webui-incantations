@@ -525,9 +525,12 @@ class PAGExtensionScript(UIWrapper):
                 """
                 # Run only within interval
                 # Run PAG only if active and within interval
+                # Perturbing last step is weird
                 if not pag_params.pag_active or pag_params.pag_scale <= 0:
                         return
                 if not pag_params.pag_start_step <= params.sampling_step <= pag_params.pag_end_step or pag_params.pag_scale <= 0:
+                        return
+                if params.sampling_step >= pag_params.max_sampling_step-1:
                         return
 
                 # passed from on_cfg_denoiser_callback
