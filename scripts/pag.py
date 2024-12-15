@@ -535,34 +535,21 @@ class PAGExtensionScript(UIWrapper):
                 tensor = pag_params.text_cond
                 uncond = pag_params.text_uncond
                 image_cond_in = pag_params.image_cond
+                sigma_in = pag_params.sigma 
 
                 if pag_params.pag_next_sigma and pag_params.pag_shift_scale != 0:
-                        # this is next sigma as defined in the sampler
-                        #sigma_in = pag_params.sigmas[pag_params.step+1].expand(pag_params.sigma.shape)
-                        shift_scale = pag_params.pag_shift_scale
-
                         # calculate next sigma from sigma schedule based on shift scale
+                        shift_scale = pag_params.pag_shift_scale
+                        current_sigma = pag_params.sigma
+                        current_timestep = params.inner_model.sigma_to_t(current_sigma)
                         if pag_params.pag_dynamic_shift_scale:
-                                current_sigma = pag_params.sigma
-                                current_timestep = max(pag_params.max_sampling_step - pag_params.step, 0.) / pag_params.max_sampling_step
-                                next_timestep_scaled = current_timestep / shift_scale
-                                gt_sigmas = torch.where(pag_params.sigmas <= current_sigma[0]-next_timestep_scaled)
-                                if gt_sigmas[0].shape[0] > 0:
-                                        next_timestep_index = gt_sigmas[0][-1]
-                                        next_sigma = pag_params.sigmas[next_timestep_index]
-                                else:
-                                        next_sigma = pag_params.sigma[0]
-                                logger.debug('[PAG] Current Sigma: %s Shift amount: %s New Sigma: %s', current_sigma, next_sigma-current_sigma, next_sigma) 
-                                pag_params.sigma = torch.ones_like(pag_params.sigma) * next_sigma
-                        # calculate arbitrary sigma from shift scale
+                                timestep_delta = current_timestep / shift_scale
                         else:
-                                current_sigma = pag_params.sigma[0]
-                                delta_sigma = current_sigma / shift_scale
-                                next_sigma = current_sigma + delta_sigma
-                                pag_params.sigma = torch.ones_like(pag_params.sigma) * next_sigma
-                        sigma_in = torch.clamp(pag_params.sigma, min=0)
-                else:
-                        sigma_in = pag_params.sigma
+                                timestep_delta = round(pag_params.pag_shift_scale)
+                        next_timestep = torch.clamp(current_timestep - timestep_delta, min=0, max=999)
+                        next_sigma = params.inner_model.t_to_sigma(next_timestep)
+                        sigma_in = next_sigma
+                        logger.debug('[PAG] Current Sigma: %s Shift amount: %s New Sigma: %s', current_sigma, next_sigma-current_sigma, next_sigma) 
                 
                 # concatenate the conditions 
                 # "modules/sd_samplers_cfg_denoiser.py:237"
