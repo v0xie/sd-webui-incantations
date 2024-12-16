@@ -2,29 +2,18 @@ import logging
 from os import environ
 import modules.scripts as scripts
 import gradio as gr
-import scipy.stats as stats
 
-from scripts.ui_wrapper import UIWrapper, arg
-from modules import script_callbacks, patches
-from modules.hypernetworks import hypernetwork
-#import modules.sd_hijack_optimizations
-from modules.script_callbacks import CFGDenoiserParams, CFGDenoisedParams, AfterCFGCallbackParams
-from modules.prompt_parser import reconstruct_multicond_batch
+from scripts.ui_wrapper import UIWrapper
+from modules import shared, script_callbacks
+from modules.script_callbacks import CFGDenoiserParams, CFGDenoisedParams
 from modules.processing import StableDiffusionProcessing
-#from modules.shared import sd_model, opts
 from modules.sd_samplers_cfg_denoiser import catenate_conds
-from modules.sd_samplers_cfg_denoiser import CFGDenoiser
-from modules import shared
 
-import math
 import torch
-from torch.nn import functional as F
-from torchvision.transforms import GaussianBlur
 
 from warnings import warn
 from typing import Callable, Dict, Optional
 from collections import OrderedDict
-import torch
 
 logger = logging.getLogger(__name__)
 logger.setLevel(environ.get("SD_WEBUI_LOG_LEVEL", logging.INFO))
@@ -90,9 +79,6 @@ class PAGStateParams:
                 self.pag_x_out = None
                 self.batch_size = -1      # Batch size
                 self.denoiser = None # CFGDenoiser
-                self.patched_combine_denoised = None
-                self.conds_list = None
-                self.uncond_shape_0 = None
 
 
 class PAGExtensionScript(UIWrapper):
