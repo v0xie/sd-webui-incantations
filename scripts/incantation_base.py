@@ -19,6 +19,7 @@ from scripts.tcg import TCGExtensionScript
 from scripts.smoothed_energy_guidance import SEGExtensionScript
 from scripts.adaptive_projected_guidance import APGExtensionScript
 from scripts.cfg_scheduler import CFGSchedulerExtensionScript
+from scripts.self_guidance import SGExtensionScript
 
 logger = logging.getLogger(__name__)
 logger.setLevel(environ.get("SD_WEBUI_LOG_LEVEL", logging.INFO))
@@ -39,6 +40,7 @@ class SubmoduleInfo:
 
 # main scripts
 submodules: list[SubmoduleInfo] = [
+        SubmoduleInfo(module=SGExtensionScript()),
         SubmoduleInfo(module=SEGExtensionScript()),
         SubmoduleInfo(module=SCFGExtensionScript()),
         SubmoduleInfo(module=PAGExtensionScript()),

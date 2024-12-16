@@ -54,6 +54,7 @@ class CFGCombinerScript(UIWrapper):
                 "cfgi_params": None,
                 "tcg_params": None,
                 "apg_params": None,
+                "sg_params": None
             }
             setattr(p, 'incant_cfg_params', cfg_dict)
 
@@ -71,11 +72,13 @@ class CFGCombinerScript(UIWrapper):
             cfgi_active = p.extra_generation_params.get('CFG Interval Enable', False)
             tcg_active = p.extra_generation_params.get('TCG Active', False)
             apg_active = p.extra_generation_params.get('APG Active', False)
+            sg_active = p.extra_generation_params.get('SG Active', False)
 
             if not any([
                         pag_active,
                         scfg_active,
                         cfgi_active,
+                        sg_active,
                         tcg_active,
                         apg_active
                     ]):
@@ -135,7 +138,8 @@ class CFGCombinerScript(UIWrapper):
                                     scfg_params = cfg_dict['scfg_params'],
                                     cfgi_params = cfg_dict['cfgi_params'],
                                     tcg_params = cfg_dict['tcg_params'],
-                                    apg_params = cfg_dict['apg_params']
+                                    apg_params = cfg_dict['apg_params'],
+                                    sg_params = cfg_dict['sg_params']
                                 )
                             patched_combine_denoised = patches.patch(__name__, denoiser, "combine_denoised", pass_conds_func)
                             setattr(denoiser, 'combine_denoised_patched', True)
@@ -185,13 +189,15 @@ def combine_denoised_pass_conds_list(*args, **kwargs):
         cfgi_params = kwargs.get('cfgi_params', None)
         apg_params = kwargs.get('apg_params', None)
         tcg_params = kwargs.get('tcg_params', None)
+        sg_params = kwargs.get('sg_params', None)
 
         if not any([
                 pag_params,
                 scfg_params,
                 cfgi_params,
                 apg_params,
-                tcg_params
+                tcg_params,
+                sg_params
         ]):
                 logger.warning("No reason to hijack combine_denoised")
                 return original_func(*args)
@@ -308,10 +314,29 @@ def combine_denoised_pass_conds_list(*args, **kwargs):
                                                         tcg_x = tcg_delta * (weight * tcg_params.tcg_scale)
 
                                                         if use_saliency_map:
-                                                                sal_cfg = sanf(cfg_x, tcg_x)
-                                                                denoised[i] += sal_cfg
+                                                                sal_tcg = sanf(cfg_x, tcg_x)
+                                                                denoised[i] += sal_tcg
                                                         else:
                                                                 denoised[i] += tcg_x
+
+                                                except Exception as e:
+                                                        logger.exception("Exception in combine_denoised_pass_conds_list - %s", e)
+
+                                # 4. Self-Guidance
+                                if sg_params is not None:
+                                        if not sg_params.sg_active or not sg_params.sg_start_step <= sg_params.step <= sg_params.sg_end_step or sg_params.sg_scale == 0 or sg_params.sg_x_out is None:
+                                                pass
+                                        # do pag
+                                        else:
+                                                try:
+                                                        sg_delta = x_out[cond_index] - sg_params.sg_x_out[i]
+                                                        sg_x = sg_delta * (weight * sg_params.sg_scale)
+
+                                                        if use_saliency_map:
+                                                                sal_sg = sanf(cfg_x, sg_x)
+                                                                denoised[i] += sal_sg
+                                                        else:
+                                                                denoised[i] += sg_x
 
                                                 except Exception as e:
                                                         logger.exception("Exception in combine_denoised_pass_conds_list - %s", e)
