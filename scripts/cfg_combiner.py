@@ -51,7 +51,7 @@ class CFGCombinerScript(UIWrapper):
                 "denoiser": None,
                 "pag_params": None,
                 "scfg_params": None,
-                "cfgi_params": None
+                "cfgi_params": None,
                 "apg_params": None,
             }
             setattr(p, 'incant_cfg_params', cfg_dict)
