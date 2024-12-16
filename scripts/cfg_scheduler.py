@@ -87,7 +87,7 @@ class CFGSchedulerExtensionScript(UIWrapper):
 
         # Extension title in menu UI
         def title(self) -> str:
-                return "Perturbed Attention Guidance"
+                return "CFG Scheduler"
 
         # Decide to show menu in txt2img or img2img
         def show(self, is_img2img):
@@ -95,8 +95,8 @@ class CFGSchedulerExtensionScript(UIWrapper):
 
         # Setup menu ui detail
         def setup_ui(self, is_img2img) -> list:
-                with gr.Accordion('CFG Scheduler', open=False):
-                        cfg_interval_enable = gr.Checkbox(value=False, default=False, label="Enable CFG Scheduler", elem_id='cfg_interval_enable', info="If enabled, applies CFG only within noise interval with the selected schedule type. PAG must be enabled (scale can be 0). SDXL recommend CFG=15; CFG interval (0.28, 5.42]")
+                with gr.Accordion(label=self.title(), open=False):
+                        cfg_interval_enable = gr.Checkbox(value=False, default=False, label="Enable CFG Scheduler", elem_id='cfg_interval_enable', info="If Enabled and Schedule != Constant, applies CFG only within noise interval with the selected schedule type. PAG must be enabled (scale can be 0). SDXL recommend CFG=15; CFG interval (0.28, 5.42]")
                         with gr.Row():
                                 cfg_schedule = gr.Dropdown(
                                         value='Constant',
