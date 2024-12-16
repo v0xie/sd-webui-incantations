@@ -96,7 +96,13 @@ class CFGSchedulerExtensionScript(UIWrapper):
         # Setup menu ui detail
         def setup_ui(self, is_img2img) -> list:
                 with gr.Accordion(label=self.title(), open=False):
-                        cfg_interval_enable = gr.Checkbox(value=False, default=False, label="Enable CFG Scheduler", elem_id='cfg_interval_enable', info="If Enabled and Schedule != Constant, applies CFG only within noise interval with the selected schedule type. PAG must be enabled (scale can be 0). SDXL recommend CFG=15; CFG interval (0.28, 5.42]")
+                        cfg_interval_enable = gr.Checkbox(
+                               value=False, 
+                               default=False, 
+                               label="Enable CFG Scheduler", 
+                               elem_id='cfg_interval_enable',
+                               info="If Enabled and Schedule != Constant, applies CFG only within noise interval with the selected schedule type. SDXL recommend CFG=15; CFG interval (0.28, 5.42]"
+                        )
                         with gr.Row():
                                 cfg_schedule = gr.Dropdown(
                                         value='Constant',
@@ -125,10 +131,7 @@ class CFGSchedulerExtensionScript(UIWrapper):
                 ]
                 return [cfg_interval_enable, cfg_schedule, cfg_interval_low, cfg_interval_high]
 
-        def process_batch(self, p: StableDiffusionProcessing, *args, **kwargs):
-               self.pag_process_batch(p, *args, **kwargs)
-
-        def pag_process_batch(self, p: StableDiffusionProcessing, cfg_interval_enable, cfg_schedule, cfg_interval_low, cfg_interval_high, *args, **kwargs):
+        def process_batch(self, p: StableDiffusionProcessing, cfg_interval_enable, cfg_schedule, cfg_interval_low, cfg_interval_high, *args, **kwargs):
                 # cleanup previous hooks always
                 script_callbacks.remove_current_script_callbacks()
                 self.remove_all_hooks()
@@ -179,10 +182,7 @@ class CFGSchedulerExtensionScript(UIWrapper):
                 script_callbacks.on_cfg_denoiser(cfg_denoise_lambda)
                 script_callbacks.on_script_unloaded(unhook_lambda)
 
-        def postprocess_batch(self, p, *args, **kwargs):
-                self.pag_postprocess_batch(p, *args, **kwargs)
-
-        def pag_postprocess_batch(self, p, cfg_interval_enable, *args, **kwargs):
+        def postprocess_batch(self, p, cfg_interval_enable, *args, **kwargs):
                 script_callbacks.remove_current_script_callbacks()
                 logger.debug('Removed script callbacks')
                 active = getattr(p, "cfg_interval_enable", cfg_interval_enable)
@@ -192,7 +192,7 @@ class CFGSchedulerExtensionScript(UIWrapper):
         def remove_all_hooks(self):
                 return
 
-        def unhook_callbacks(self, pag_params: CFGSchedulerParams):
+        def unhook_callbacks(self, cfgi_params: CFGSchedulerParams):
                 return
 
         def on_cfg_denoiser_callback(self, params: CFGDenoiserParams, cfgi_params: CFGSchedulerParams):
@@ -224,7 +224,6 @@ class CFGSchedulerExtensionScript(UIWrapper):
                         xyz_grid.AxisOption("[CFG-SCHED] CFG Noise Interval Low", float, cfgs_apply_field("cfg_interval_low")),
                         xyz_grid.AxisOption("[CFG-SCHED] CFG Noise Interval High", float, cfgs_apply_field("cfg_interval_high")),
                         xyz_grid.AxisOption("[CFG-SCHED] CFG Schedule Type", str, cfgs_apply_override('cfg_interval_schedule', boolean=False), choices=lambda: SCHEDULES),
-                        #xyz_grid.AxisOption("[PAG] ctnms_alpha", float, pag_apply_field("pag_ctnms_alpha")),
                 }
                 return extra_axis_options
 
