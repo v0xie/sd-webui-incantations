@@ -97,9 +97,9 @@ class CFGSchedulerExtensionScript(UIWrapper):
         def setup_ui(self, is_img2img) -> list:
                 with gr.Accordion(label=self.title(), open=False):
                         cfg_interval_enable = gr.Checkbox(
-                               value=False, 
-                               default=False, 
-                               label="Enable CFG Scheduler", 
+                               value=False,
+                               default=False,
+                               label="Enable CFG Scheduler",
                                elem_id='cfg_interval_enable',
                                info="If Enabled and Schedule != Constant, applies CFG only within noise interval with the selected schedule type. SDXL recommend CFG=15; CFG interval (0.28, 5.42]"
                         )

@@ -20,7 +20,7 @@ incantations_debug = environ.get("INCANTAIONS_DEBUG", False)
 An unofficial implementation of "Self-Rectifying Diffusion Sampling with Perturbed-Attention Guidance" for Automatic1111 WebUI.
 
 @misc{ahn2024selfrectifying,
-      title={Self-Rectifying Diffusion Sampling with Perturbed-Attention Guidance}, 
+      title={Self-Rectifying Diffusion Sampling with Perturbed-Attention Guidance},
       author={Donghoon Ahn and Hyoungwon Cho and Jaewon Min and Wooseok Jang and Jungwoo Kim and SeonHwa Kim and Hyun Hee Park and Kyong Hwan Jin and Seungryong Kim},
       year={2024},
       eprint={2403.17377},
@@ -32,7 +32,7 @@ Include noise interval for CFG and PAG guidance in the sampling process from "Ap
 Sample and Distribution Quality in Diffusion Models"
 
 @misc{kynkäänniemi2024applying,
-      title={Applying Guidance in a Limited Interval Improves Sample and Distribution Quality in Diffusion Models}, 
+      title={Applying Guidance in a Limited Interval Improves Sample and Distribution Quality in Diffusion Models},
       author={Tuomas Kynkäänniemi and Miika Aittala and Tero Karras and Samuli Laine and Timo Aila and Jaakko Lehtinen},
       year={2024},
       eprint={2404.07724},
@@ -42,7 +42,7 @@ Sample and Distribution Quality in Diffusion Models"
 
 Saliency-adaptive noise fusion from arXiv:2311.10329 "High-fidelity Person-centric Subject-to-Image Synthesis"
 @misc{wang2024highfidelity,
-      title={High-fidelity Person-centric Subject-to-Image Synthesis}, 
+      title={High-fidelity Person-centric Subject-to-Image Synthesis},
       author={Yibin Wang and Weizhong Zhang and Jianwei Zheng and Cheng Jin},
       year={2024},
       eprint={2311.10329},
@@ -63,7 +63,7 @@ class PAGStateParams:
                 self.pag_scale: int = -1      # PAG guidance scale
                 self.step: int = 0
                 self.pag_start_step: int = 0
-                self.pag_end_step: int = 150 
+                self.pag_end_step: int = 150
                 self.x_in = None
                 self.text_cond = None
                 self.image_cond = None
@@ -155,9 +155,9 @@ class PAGExtensionScript(UIWrapper):
                 if not hasattr(p, 'incant_cfg_params'):
                         logger.error("No incant_cfg_params found in p")
                 p.incant_cfg_params['pag_params'] = pag_params
-                
-                pag_params.pag_active = active 
-                pag_params.pag_sanf = pag_sanf 
+
+                pag_params.pag_active = active
+                pag_params.pag_sanf = pag_sanf
                 pag_params.pag_scale = pag_scale
                 pag_params.pag_start_step = start_step
                 pag_params.pag_end_step = end_step
@@ -223,7 +223,7 @@ class PAGExtensionScript(UIWrapper):
                         """ Copy the output of the to_v module to the parent module """
                         parent_module = getattr(module, 'pag_parent_module', None)
                         # copy the output of the to_v module to the parent module
-                        setattr(parent_module[0], 'pag_last_to_v', output.detach().clone())
+                        parent_module[0].pag_last_to_v = output.detach().clone()
 
                 def pag_pre_hook(module, input, kwargs, output):
                         if hasattr(module, 'pag_enable') and getattr(module, 'pag_enable', False) is False:
@@ -237,22 +237,21 @@ class PAGExtensionScript(UIWrapper):
 
                         batch_size, seq_len, inner_dim = output.shape
                         identity = torch.eye(seq_len, dtype=last_to_v.dtype, device=shared.device).expand(batch_size, -1, -1)
-                        if last_to_v is not None:    
+                        if last_to_v is not None:
                                 new_output = torch.einsum('bij,bjk->bik', identity, last_to_v[:, :seq_len, :])
                                 return new_output
                         else:
                                 # this is bad
                                 return output
 
-                # Create hooks 
+                # Create hooks
                 for module in crossattn_modules:
                         module_hooks.module_add_forward_hook(module, pag_pre_hook, hook_type="forward", with_kwargs=True)
                         module_hooks.module_add_forward_hook(module.to_v, to_v_pre_hook, hook_type="forward", with_kwargs=True)
 
         def get_middle_block_modules(self):
-                """ Get all attention modules from the middle block 
-                Refere to page 22 of the PAG paper, Appendix A.2
-                
+                """ Get all attention modules from the middle block
+                Refer to page 22 of the PAG paper, Appendix A.2
                 """
                 try:
                         #m = shared.sd_model
@@ -305,9 +304,8 @@ class PAGExtensionScript(UIWrapper):
                 pag_params.make_condition_dict = get_make_condition_dict_fn(params.text_uncond)
 
         def on_cfg_denoised_callback(self, params: CFGDenoisedParams, pag_params: PAGStateParams):
-                """ Callback function for the CFGDenoisedParams 
+                """ Callback function for the CFGDenoisedParams
                 Refer to pg.22 A.2 of the PAG paper for how CFG and PAG combine
-                
                 """
                 # Run only within interval
                 # Run PAG only if active and within interval
@@ -322,16 +320,16 @@ class PAGExtensionScript(UIWrapper):
                 uncond = pag_params.text_uncond
                 image_cond_in = pag_params.image_cond
                 sigma_in = pag_params.sigma
-                
-                # concatenate the conditions 
+
+                # concatenate the conditions
                 # "modules/sd_samplers_cfg_denoiser.py:237"
                 cond_in = catenate_conds([tensor, uncond])
                 make_condition_dict = get_make_condition_dict_fn(uncond)
                 conds = make_condition_dict(cond_in, image_cond_in)
-                
+
                 # set pag_enable to True for the hooked cross attention modules
                 for module in pag_params.crossattn_modules:
-                        setattr(module, 'pag_enable', True)
+                        module.pag_enable = True
 
                 # get the PAG guidance (is there a way to optimize this so we don't have to calculate it twice?)
                 pag_x_out = params.inner_model(x_in, sigma_in, cond=conds)
@@ -339,8 +337,8 @@ class PAGExtensionScript(UIWrapper):
 
                 # set pag_enable to False
                 for module in pag_params.crossattn_modules:
-                        setattr(module, 'pag_enable', False)
-        
+                        module.pag_enable = False
+
         def get_xyz_axis_options(self) -> dict:
                 xyz_grid = [x for x in scripts.scripts_data if x.script_class.__module__ in ("xyz_grid.py", "scripts.xyz_grid")][0].module
                 extra_axis_options = {
@@ -373,13 +371,13 @@ def pag_apply_override(field, boolean: bool = False):
             x = True if x.lower() == "true" else False
         setattr(p, field, x)
         if not hasattr(p, "pag_active"):
-                setattr(p, "pag_active", True)
+                p.pag_active = True
     return fun
 
 
 def pag_apply_field(field):
     def fun(p, x, xs):
         if not hasattr(p, "pag_active"):
-                setattr(p, "pag_active", True)
+                p.pag_active = True
         setattr(p, field, x)
     return fun
