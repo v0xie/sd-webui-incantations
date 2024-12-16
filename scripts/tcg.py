@@ -2,6 +2,7 @@ import logging
 from os import environ
 import modules.scripts as scripts
 import gradio as gr
+import torch
 
 from scripts.ui_wrapper import UIWrapper
 from modules import shared, script_callbacks, rng
@@ -172,6 +173,9 @@ class TCGExtensionScript(UIWrapper):
                 tcg_params.denoiser = None
 
                 time_embed_modules = self.get_time_embed_modules(limit=tcg_max_layer_index)
+                if len(time_embed_modules) == 0:
+                        logger.error("No time embed modules found, cannot apply TCG")
+                        return
                 tcg_params.time_embed_modules = time_embed_modules
 
                 # Use lambda to call the callback function with the parameters to avoid global variables
@@ -209,12 +213,7 @@ class TCGExtensionScript(UIWrapper):
                         module_hooks.modules_remove_field(module, 'tcg_timestep_min')
                         module_hooks.modules_remove_field(module, 'tcg_std_scale')
                         module_hooks.remove_module_forward_hook(module, 'tcg_hook')
-
                         module_hooks.modules_remove_field(module, 'tcg_enable')
-                        module_hooks.modules_remove_field(module, 'tcg_last_to_v')
-                        module_hooks.modules_remove_field(module.to_v, 'tcg_parent_module')
-                        module_hooks.remove_module_forward_hook(module, 'tcg_pre_hook')
-                        module_hooks.remove_module_forward_hook(module.to_v, 'to_v_pre_hook')
 
         def unhook_callbacks(self, tcg_params: TCGStateParams):
                 return
@@ -225,18 +224,18 @@ class TCGExtensionScript(UIWrapper):
                 Then applies the TCG perturbation to the output of the cross attention module (multiplication by identity)
                 """
 
-                # add field for last_to_v
                 for module in time_embed_modules:
-                        self.add_field_cross_attn_modules(module, 'tcg_enable', False)
-                        self.add_field_cross_attn_modules(module, 'tcg_scale', tcg_scale)
-                        self.add_field_cross_attn_modules(module, 'tcg_alpha', tcg_alpha)
-                        self.add_field_cross_attn_modules(module, 'tcg_std_scale', tcg_std_scale)
-                        self.add_field_cross_attn_modules(module, 'tcg_timestep', 1000)
-                        self.add_field_cross_attn_modules(module, 'tcg_timestep_max', 1000)
-                        self.add_field_cross_attn_modules(module, 'tcg_timestep_min', 400)
-                        # self.add_field_cross_attn_modules(to_out, 'tcg_parent_module', [module])
+                        module_hooks.modules_add_field(module, 'tcg_enable', False)
+                        module_hooks.modules_add_field(module, 'tcg_scale', tcg_scale)
+                        module_hooks.modules_add_field(module, 'tcg_alpha', tcg_alpha)
+                        module_hooks.modules_add_field(module, 'tcg_std_scale', tcg_std_scale)
+                        module_hooks.modules_add_field(module, 'tcg_timestep', 1000)
+                        module_hooks.modules_add_field(module, 'tcg_timestep_max', 1000)
+                        module_hooks.modules_add_field(module, 'tcg_timestep_min', 400)
 
                 def tcg_hook(module, input, kwargs, output):
+                        out_dtype = output.dtype
+                        new_output = output.float()
                         if getattr(module, 'tcg_enable', False) is False:
                             return
 
@@ -257,13 +256,14 @@ class TCGExtensionScript(UIWrapper):
                             noise_scale = tcg_scale * (timestep/1000.0) ** alpha
                         else:
                             noise_scale = tcg_scale
+                        # not sure how correct a clamp here is, but it helps if the std is too high
                         if std_scale:
-                            noise_scale = noise_scale * output.std()
-                        new_output = output + rng.randn_like(output) * noise_scale
+                            noise_scale = noise_scale * torch.clamp(new_output.std(), min=-10, max=10)
+                        new_output += rng.randn_like(new_output) * noise_scale
                         if new_output.isnan().any():
                             logger.error(f"NaN in TCG output")
                             return output
-                        return new_output
+                        return new_output.to(out_dtype)
 
                 # Create hooks 
                 for module in time_embed_modules:
@@ -271,9 +271,9 @@ class TCGExtensionScript(UIWrapper):
 
         def get_time_embed_modules(self, limit=10):
                 try:
-                        time_embed_modules = module_hooks.get_modules(
-                               network_layer_name_filter='timestep',
-                        )
+                        m = shared.sd_model
+                        nlm = m.network_layer_mapping
+                        time_embed_modules = [m for m in nlm.values() if 'timestep' in m.__class__.__name__.lower()]
                         limit = min(limit, len(time_embed_modules)-1) # pertubring the very last layer is not useful
                         time_embed_modules = time_embed_modules[:limit]
                         return time_embed_modules
