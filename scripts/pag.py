@@ -2,19 +2,13 @@ import logging
 from os import environ
 import modules.scripts as scripts
 import gradio as gr
+import torch
 
 from scripts.ui_wrapper import UIWrapper
 from modules import shared, script_callbacks
 from modules.script_callbacks import CFGDenoiserParams, CFGDenoisedParams
 from modules.processing import StableDiffusionProcessing
 from modules.sd_samplers_cfg_denoiser import catenate_conds
-
-import torch
-
-from warnings import warn
-from typing import Callable, Dict, Optional
-from collections import OrderedDict
-
 from scripts.incant_utils import module_hooks
 
 logger = logging.getLogger(__name__)
@@ -67,6 +61,7 @@ class PAGStateParams:
                 self.pag_active: bool = False      # PAG guidance scale
                 self.pag_sanf: bool = False # saliency-adaptive noise fusion, handled in cfg_combiner
                 self.pag_scale: int = -1      # PAG guidance scale
+                self.step: int = 0
                 self.pag_start_step: int = 0
                 self.pag_end_step: int = 150 
                 self.x_in = None
@@ -282,6 +277,8 @@ class PAGExtensionScript(UIWrapper):
         def on_cfg_denoiser_callback(self, params: CFGDenoiserParams, pag_params: PAGStateParams):
                 # always unhook
                 self.unhook_callbacks(pag_params)
+
+                pag_params.step = params.sampling_step
 
                 # Run PAG only if active and within interval
                 if not pag_params.pag_active or pag_params.pag_scale <= 0:
