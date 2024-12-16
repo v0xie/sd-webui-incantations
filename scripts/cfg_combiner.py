@@ -3,12 +3,20 @@ import logging
 import torch
 import torchvision.transforms as F
 from modules import shared, scripts, devices, patches, script_callbacks
+from modules.devices import NansException
 from modules.script_callbacks import CFGDenoiserParams
 from modules.processing import StableDiffusionProcessing
 from scripts.incantation_base import UIWrapper
 from scripts.scfg import scfg_combine_denoised
+from scripts.adaptive_projected_guidance import normalized_guidance
 
 logger = logging.getLogger(__name__)
+
+
+class CFGCombinerParams:
+        def __init__(self):
+                self.current_step = 0
+
 
 class CFGCombinerScript(UIWrapper):
         """ Some scripts modify the CFGs in ways that are not compatible with each other.
@@ -44,7 +52,11 @@ class CFGCombinerScript(UIWrapper):
                 "pag_params": None,
                 "scfg_params": None,
                 "cfgi_params": None,
+<<<<<<< HEAD
                 "tcg_params": None
+=======
+                "apg_params": None,
+>>>>>>> dev
             }
             setattr(p, 'incant_cfg_params', cfg_dict)
 
@@ -60,19 +72,27 @@ class CFGCombinerScript(UIWrapper):
             pag_active = p.extra_generation_params.get('PAG Active', False)
             scfg_active = p.extra_generation_params.get('SCFG Active', False)
             cfgi_active = p.extra_generation_params.get('CFG Interval Enable', False)
+<<<<<<< HEAD
             tcg_active = p.extra_generation_params.get('TCG Active', False)
+=======
+            apg_active = p.extra_generation_params.get('APG Active', False)
+>>>>>>> dev
 
             if not any([
                         pag_active,
                         scfg_active,
                         cfgi_active,
+<<<<<<< HEAD
                         tcg_active
+=======
+                        apg_active
+>>>>>>> dev
                     ]):
                 return
 
             #logger.debug("CFGCombinerScript process_batch: pag_active or scfg_active")
-
-            cfg_denoise_lambda = lambda params: self.on_cfg_denoiser_callback(params, p.incant_cfg_params)
+            cfg_params = CFGCombinerParams()
+            cfg_denoise_lambda = lambda params: self.on_cfg_denoiser_callback(params, p.incant_cfg_params, cfg_params)
             unhook_lambda = lambda: self.unhook_callbacks()
 
             script_callbacks.on_cfg_denoiser(cfg_denoise_lambda)
@@ -88,17 +108,19 @@ class CFGCombinerScript(UIWrapper):
                     return
             self.unpatch_cfg_denoiser(cfg_dict)
 
-        def on_cfg_denoiser_callback(self, params: CFGDenoiserParams, cfg_dict: dict):
+        def on_cfg_denoiser_callback(self, params: CFGDenoiserParams, cfg_dict: dict, cfg_params: CFGCombinerParams):
             """ Callback for when the CFG denoiser is called 
             Patches the combine_denoised function with a custom one.
             """
+            cfg_params.current_step = params.sampling_step
+
             if cfg_dict['denoiser'] is None:
                     cfg_dict['denoiser'] = params.denoiser
             else:
                     self.unpatch_cfg_denoiser(cfg_dict)
-            self.patch_cfg_denoiser(params.denoiser, cfg_dict)
+            self.patch_cfg_denoiser(params.denoiser, cfg_dict, cfg_params)
 
-        def patch_cfg_denoiser(self, denoiser, cfg_dict: dict):
+        def patch_cfg_denoiser(self, denoiser, cfg_dict: dict, cfg_params: CFGCombinerParams):
             """ Patch the CFG Denoiser combine_denoised function """
             if not cfg_dict:
                     logger.error("Unable to patch CFG Denoiser, no dict passed as cfg_dict")
@@ -106,7 +128,9 @@ class CFGCombinerScript(UIWrapper):
             if not denoiser:
                     logger.error("Unable to patch CFG Denoiser, denoiser is None")
                     return
-
+            if not cfg_params:
+                    logger.error("Unable to patch CFG Denoiser, cfg_params is None")
+                    return
             if getattr(denoiser, 'combine_denoised_patched', False) is False:
                     try:
                             setattr(denoiser, 'combine_denoised_original', denoiser.combine_denoised)
@@ -114,11 +138,13 @@ class CFGCombinerScript(UIWrapper):
                             pass_conds_func = lambda *args, **kwargs: combine_denoised_pass_conds_list(
                                     *args,
                                     **kwargs,
+                                    cfg_params = cfg_params,
                                     original_func = denoiser.combine_denoised_original,
                                     pag_params = cfg_dict['pag_params'],
                                     scfg_params = cfg_dict['scfg_params'],
                                     cfgi_params = cfg_dict['cfgi_params'],
-                                    tcg_params = cfg_dict['tcg_params']
+                                    tcg_params = cfg_dict['tcg_params'],
+                                    apg_params = cfg_dict['apg_params']
                                 )
                             patched_combine_denoised = patches.patch(__name__, denoiser, "combine_denoised", pass_conds_func)
                             setattr(denoiser, 'combine_denoised_patched', True)
@@ -161,13 +187,21 @@ def combine_denoised_pass_conds_list(*args, **kwargs):
             3. ...
             ...
         """
+        cfg_params = kwargs.get('cfg_params', None)
         original_func = kwargs.get('original_func', None)
         pag_params = kwargs.get('pag_params', None)
         scfg_params = kwargs.get('scfg_params', None)
         cfgi_params = kwargs.get('cfgi_params', None)
+        apg_params = kwargs.get('apg_params', None)
         tcg_params = kwargs.get('tcg_params', None)
 
-        if pag_params is None and scfg_params is None and cfgi_params is None and tcg_params is None:
+        if not any([
+                pag_params,
+                scfg_params,
+                cfgi_params,
+                apg_params,
+                tcg_params
+        ]):
                 logger.warning("No reason to hijack combine_denoised")
                 return original_func(*args)
 
@@ -234,8 +268,19 @@ def combine_denoised_pass_conds_list(*args, **kwargs):
                                                # rate is tensor, probably
                                                pass
 
-                                # 1. Experimental formulation for S-CFG combined with CFG
+                                # 1. Experimental formulation for S-CFG combined with CFG combined with APG
                                 cfg_x = (model_delta) * rate * (weight * cfg_scale)
+
+                                if apg_params is not None:
+                                        if apg_params.apg_start_step <= cfg_params.current_step <= apg_params.apg_end_step:
+                                                normalized_cond = normalized_guidance(
+                                                        pred_cond=x_out[cond_index],
+                                                        pred_uncond=denoised_uncond[i],
+                                                        apg_params = apg_params,
+                                                        index = i,
+                                                )
+                                                cfg_x = normalized_cond * rate * (weight * (cfg_scale - 1))
+
                                 if not use_saliency_map or not run_pag:
                                         denoised[i] += cfg_x
                                 del rate

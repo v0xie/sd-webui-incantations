@@ -17,6 +17,7 @@ from scripts.cfg_combiner import CFGCombinerScript
 from scripts.cfg_icg import ICGExtensionScript
 from scripts.tcg import TCGExtensionScript
 from scripts.smoothed_energy_guidance import SEGExtensionScript
+from scripts.adaptive_projected_guidance import APGExtensionScript
 from scripts.cfg_scheduler import CFGSchedulerExtensionScript
 
 logger = logging.getLogger(__name__)
@@ -38,12 +39,13 @@ class SubmoduleInfo:
 
 # main scripts
 submodules: list[SubmoduleInfo] = [
-        SubmoduleInfo(module=TCGExtensionScript()),
-        SubmoduleInfo(module=ICGExtensionScript()),
         SubmoduleInfo(module=SEGExtensionScript()),
         SubmoduleInfo(module=SCFGExtensionScript()),
         SubmoduleInfo(module=PAGExtensionScript()),
         SubmoduleInfo(module=CFGSchedulerExtensionScript()),
+        SubmoduleInfo(module=TCGExtensionScript()),
+        SubmoduleInfo(module=ICGExtensionScript()),
+        SubmoduleInfo(module=APGExtensionScript()),
         SubmoduleInfo(module=T2I0ExtensionScript()),
         SubmoduleInfo(module=IncantExtensionScript()),
 ]
