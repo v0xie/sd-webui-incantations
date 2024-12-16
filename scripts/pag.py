@@ -85,8 +85,7 @@ class PAGStateParams:
 
 class PAGExtensionScript(UIWrapper):
         def __init__(self):
-                self.cached_c = [None, None]
-                self.handles = []
+                pass
 
         # Extension title in menu UI
         def title(self) -> str:
