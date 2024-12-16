@@ -51,7 +51,8 @@ class CFGCombinerScript(UIWrapper):
                 "denoiser": None,
                 "pag_params": None,
                 "scfg_params": None,
-                "apg_params": None
+                "cfgi_params": None
+                "apg_params": None,
             }
             setattr(p, 'incant_cfg_params', cfg_dict)
 
@@ -65,14 +66,14 @@ class CFGCombinerScript(UIWrapper):
             """ Process the batch and hook the CFG denoiser if PAG or S-CFG is active """
             logger.debug("CFGCombinerScript process_batch")
             pag_active = p.extra_generation_params.get('PAG Active', False)
-            cfg_active = p.extra_generation_params.get('CFG Interval Enable', False)
             scfg_active = p.extra_generation_params.get('SCFG Active', False)
+            cfgi_active = p.extra_generation_params.get('CFG Interval Enable', False)
             apg_active = p.extra_generation_params.get('APG Active', False)
 
             if not any([
                         pag_active,
-                        cfg_active,
                         scfg_active,
+                        cfgi_active,
                         apg_active
                     ]):
                 return
@@ -129,6 +130,7 @@ class CFGCombinerScript(UIWrapper):
                                     original_func = denoiser.combine_denoised_original,
                                     pag_params = cfg_dict['pag_params'],
                                     scfg_params = cfg_dict['scfg_params'],
+                                    cfgi_params = cfg_dict['cfgi_params'],
                                     apg_params = cfg_dict['apg_params']
                                 )
                             patched_combine_denoised = patches.patch(__name__, denoiser, "combine_denoised", pass_conds_func)
@@ -176,13 +178,14 @@ def combine_denoised_pass_conds_list(*args, **kwargs):
         original_func = kwargs.get('original_func', None)
         pag_params = kwargs.get('pag_params', None)
         scfg_params = kwargs.get('scfg_params', None)
+        cfgi_params = kwargs.get('cfgi_params', None)
         apg_params = kwargs.get('apg_params', None)
 
         if cfg_params is None:
                 logger.error("No CFGCombinerParams passed to combine_denoised_pass_conds_list")
                 return original_func(*args)
 
-        if pag_params is None and scfg_params is None and apg_params is None:
+        if pag_params is None and scfg_params is None and cfgi_params is None and apg_params is None:
                 logger.warning("No reason to hijack combine_denoised")
                 return original_func(*args)
 
@@ -196,9 +199,9 @@ def combine_denoised_pass_conds_list(*args, **kwargs):
 
                 # 1. CFG Interval
                 # Overrides cfg_scale if pag_params is not None
-                if pag_params is not None:
-                        if pag_params.cfg_interval_enable:
-                                cfg_scale = pag_params.cfg_interval_scheduled_value
+                if cfgi_params is not None:
+                        if cfgi_params.cfg_interval_enable:
+                                cfg_scale = cfgi_params.cfg_interval_scheduled_value
 
                 # 2. PAG
                 pag_x_out = None
