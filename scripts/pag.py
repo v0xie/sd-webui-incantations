@@ -71,9 +71,6 @@ GitHub URL: https://github.com/v0xie/sd-webui-incantations
 """
 
 
-handles = []
-global_scale = 1
-
 class PAGStateParams:
         def __init__(self):
                 self.pag_active: bool = False      # PAG guidance scale
@@ -81,10 +78,6 @@ class PAGStateParams:
                 self.pag_scale: int = -1      # PAG guidance scale
                 self.pag_start_step: int = 0
                 self.pag_end_step: int = 150 
-                self.step : int = 0 
-                self.max_sampling_step : int = 1 
-                self.guidance_scale: int = -1 # CFG
-                self.current_noise_level: float = 100.0
                 self.x_in = None
                 self.text_cond = None
                 self.image_cond = None
@@ -125,7 +118,6 @@ class PAGExtensionScript(UIWrapper):
                         with gr.Row():
                                 start_step = gr.Slider(value = 0, minimum = 0, maximum = 150, step = 1, label="Start Step", elem_id = 'pag_start_step', info="")
                                 end_step = gr.Slider(value = 150, minimum = 0, maximum = 150, step = 1, label="End Step", elem_id = 'pag_end_step', info="")
-                                
                 active.do_not_save_to_config = True
                 pag_sanf.do_not_save_to_config = True
                 pag_scale.do_not_save_to_config = True
@@ -187,8 +179,6 @@ class PAGExtensionScript(UIWrapper):
                 pag_params.pag_scale = pag_scale
                 pag_params.pag_start_step = start_step
                 pag_params.pag_end_step = end_step
-                pag_params.max_sampling_step = p.steps
-                pag_params.guidance_scale = p.cfg_scale
                 pag_params.batch_size = p.batch_size
                 pag_params.denoiser = None
 
@@ -316,8 +306,6 @@ class PAGExtensionScript(UIWrapper):
                 # always unhook
                 self.unhook_callbacks(pag_params)
 
-                pag_params.step = params.sampling_step
-
                 # Run PAG only if active and within interval
                 if not pag_params.pag_active or pag_params.pag_scale <= 0:
                         return
@@ -341,7 +329,6 @@ class PAGExtensionScript(UIWrapper):
                 pag_params.image_cond = params.image_cond.clone().detach()
                 pag_params.denoiser = params.denoiser
                 pag_params.make_condition_dict = get_make_condition_dict_fn(params.text_uncond)
-
 
         def on_cfg_denoised_callback(self, params: CFGDenoisedParams, pag_params: PAGStateParams):
                 """ Callback function for the CFGDenoisedParams 
@@ -426,7 +413,6 @@ def pag_apply_field(field):
     return fun
 
 
-# thanks torch; removing hooks DOESN'T WORK
 # thank you to @ProGamerGov for this https://github.com/pytorch/pytorch/issues/70455
 def _remove_all_forward_hooks(
     module: torch.nn.Module, hook_fn_name: Optional[str] = None
