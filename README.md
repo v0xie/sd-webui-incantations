@@ -6,6 +6,7 @@
 - [Compatibility Notice](#compatibility-notice)
 - [News](#compatibility-notice)
 - [Extension Features](#extension-features)
+    - [Smoothed Energy Guidance](#smoothed-energy-guidance)
     - [Semantic CFG](#semantic-cfg-s-cfg)
     - [Perturbed Attention Guidance](#perturbed-attention-guidance)
     - [CFG Scheduler](#cfg-interval--cfg-scheduler)
@@ -46,11 +47,36 @@ To install the `sd-webui-incantations` extension, follow these steps:
 * May conflict with other extensions which modify the CFGDenoiser
 
 ## News
-- 07-06-2024 🔥 - Saliency Adaptive Noise Fusion for PAG, and bug-fixes! https://github.com/v0xie/sd-webui-incantations/pull/52
-- 15-05-2024 🔥 - S-CFG, optimizations for PAG and T2I-Zero, and more! https://github.com/v0xie/sd-webui-incantations/pull/37
-- 29-04-2024 🔥 - The implementation of T2I-Zero is fixed and works much more stably now.
+- 2024-07-02 🔥 - Smoothed Energy Guidance! https://github.com/v0xie/sd-webui-incantations/pull/60
+- 2024-06-07 🔥 - Saliency Adaptive Noise Fusion for PAG, and bug-fixes! https://github.com/v0xie/sd-webui-incantations/pull/52
+- 2024-05-15 🔥 - S-CFG, optimizations for PAG and T2I-Zero, and more! https://github.com/v0xie/sd-webui-incantations/pull/37
+- 2024-04-29 🔥 - The implementation of T2I-Zero is fixed and works much more stably now.
 
 # Extension Features
+
+---
+## Smoothed Energy Guidance
+Increases quality of outputs by blurring the self-attention in the middle block layers, with minimal added inference time.
+Recommended to fix the CFG scale to 3.0, and control the effect using the Blur Sigma value. Increase CFG if the effect is insufficient.
+
+#### Controls
+* **SEG Blur Sigma** - Controls the sigma value (2^sigma) in the Gaussian Blur. Values greater than 10.5 is "infinite blur".
+* **Start Step**: Start SEG on this step.
+* **End Step**: End SEG after this step.
+
+#### Results
+SD XL
+
+* Unconditional
+![image](./images/xyz_grid-0463-3.jpg)
+
+- Prompt: "a family of teddy bears having a barbecue in their backyard"
+![image](./images/xyz_grid-0469-4.jpg)
+
+#### Also check out the paper authors' official project repository:
+- https://github.com/SusungHong/SEG-SDXL
+
+#### [Return to top](#sd-webui-incantations)
 
 ---
 ## Semantic CFG (S-CFG)
@@ -74,6 +100,7 @@ Prompt: "A cute puppy on the moon", Min Rate: 0.5, Max Rate: 10.0
 
 #### Also check out the paper authors' official project repository:
 - https://github.com/SmilesDZgk/S-CFG
+
 #### [Return to top](#sd-webui-incantations)
 
 ---
@@ -305,6 +332,17 @@ SD XL
         archivePrefix={arXiv},
         primaryClass={cs.CV}
       }
+
+      @misc{hong2024smoothedenergyguidanceguiding,
+        title={Smoothed Energy Guidance: Guiding Diffusion Models with Reduced Energy Curvature of Attention}, 
+        author={Susung Hong},
+        year={2024},
+        eprint={2408.00760},
+        archivePrefix={arXiv},
+        primaryClass={cs.CV},
+        url={https://arxiv.org/abs/2408.00760}
+      }
+}
 
 
 - [Hard Prompts Made Easy](https://github.com/YuxinWenRick/hard-prompts-made-easy)
