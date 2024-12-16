@@ -52,11 +52,8 @@ class CFGCombinerScript(UIWrapper):
                 "pag_params": None,
                 "scfg_params": None,
                 "cfgi_params": None,
-<<<<<<< HEAD
-                "tcg_params": None
-=======
+                "tcg_params": None,
                 "apg_params": None,
->>>>>>> dev
             }
             setattr(p, 'incant_cfg_params', cfg_dict)
 
@@ -72,21 +69,15 @@ class CFGCombinerScript(UIWrapper):
             pag_active = p.extra_generation_params.get('PAG Active', False)
             scfg_active = p.extra_generation_params.get('SCFG Active', False)
             cfgi_active = p.extra_generation_params.get('CFG Interval Enable', False)
-<<<<<<< HEAD
             tcg_active = p.extra_generation_params.get('TCG Active', False)
-=======
             apg_active = p.extra_generation_params.get('APG Active', False)
->>>>>>> dev
 
             if not any([
                         pag_active,
                         scfg_active,
                         cfgi_active,
-<<<<<<< HEAD
-                        tcg_active
-=======
+                        tcg_active,
                         apg_active
->>>>>>> dev
                     ]):
                 return
 
