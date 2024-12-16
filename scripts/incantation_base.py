@@ -15,6 +15,8 @@ from scripts.pag import PAGExtensionScript
 from scripts.save_attn_maps import SaveAttentionMapsScript
 from scripts.cfg_combiner import CFGCombinerScript
 from scripts.smoothed_energy_guidance import SEGExtensionScript
+from scripts.cfg_scheduler import CFGSchedulerExtensionScript
+from scripts.self_guidance import SGExtensionScript
 
 logger = logging.getLogger(__name__)
 logger.setLevel(environ.get("SD_WEBUI_LOG_LEVEL", logging.INFO))
@@ -35,9 +37,11 @@ class SubmoduleInfo:
 
 # main scripts
 submodules: list[SubmoduleInfo] = [
+        SubmoduleInfo(module=SGExtensionScript()),
         SubmoduleInfo(module=SEGExtensionScript()),
         SubmoduleInfo(module=SCFGExtensionScript()),
         SubmoduleInfo(module=PAGExtensionScript()),
+        SubmoduleInfo(module=CFGSchedulerExtensionScript()),
         SubmoduleInfo(module=T2I0ExtensionScript()),
         SubmoduleInfo(module=IncantExtensionScript()),
 ]

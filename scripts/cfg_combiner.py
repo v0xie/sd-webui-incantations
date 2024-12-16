@@ -42,7 +42,9 @@ class CFGCombinerScript(UIWrapper):
             cfg_dict = {
                 "denoiser": None,
                 "pag_params": None,
-                "scfg_params": None
+                "scfg_params": None,
+                "cfgi_params": None,
+                "sg_params": None
             }
             setattr(p, 'incant_cfg_params', cfg_dict)
 
@@ -56,13 +58,15 @@ class CFGCombinerScript(UIWrapper):
             """ Process the batch and hook the CFG denoiser if PAG or S-CFG is active """
             logger.debug("CFGCombinerScript process_batch")
             pag_active = p.extra_generation_params.get('PAG Active', False)
-            cfg_active = p.extra_generation_params.get('CFG Interval Enable', False)
             scfg_active = p.extra_generation_params.get('SCFG Active', False)
+            cfgi_active = p.extra_generation_params.get('CFG Interval Enable', False)
+            sg_active = p.extra_generation_params.get('SG Active', False)
 
             if not any([
                         pag_active,
-                        cfg_active,
-                        scfg_active
+                        scfg_active,
+                        cfgi_active,
+                        sg_active
                     ]):
                 return
 
@@ -112,7 +116,9 @@ class CFGCombinerScript(UIWrapper):
                                     **kwargs,
                                     original_func = denoiser.combine_denoised_original,
                                     pag_params = cfg_dict['pag_params'],
-                                    scfg_params = cfg_dict['scfg_params']
+                                    scfg_params = cfg_dict['scfg_params'],
+                                    cfgi_params = cfg_dict['cfgi_params'],
+                                    sg_params = cfg_dict['sg_params']
                                 )
                             patched_combine_denoised = patches.patch(__name__, denoiser, "combine_denoised", pass_conds_func)
                             setattr(denoiser, 'combine_denoised_patched', True)
@@ -158,8 +164,10 @@ def combine_denoised_pass_conds_list(*args, **kwargs):
         original_func = kwargs.get('original_func', None)
         pag_params = kwargs.get('pag_params', None)
         scfg_params = kwargs.get('scfg_params', None)
+        cfgi_params = kwargs.get('cfgi_params', None)
+        sg_params = kwargs.get('sg_params', None)
 
-        if pag_params is None and scfg_params is None:
+        if pag_params is None and scfg_params is None and cfgi_params is None and sg_params is None:
                 logger.warning("No reason to hijack combine_denoised")
                 return original_func(*args)
 
@@ -173,9 +181,9 @@ def combine_denoised_pass_conds_list(*args, **kwargs):
 
                 # 1. CFG Interval
                 # Overrides cfg_scale if pag_params is not None
-                if pag_params is not None:
-                        if pag_params.cfg_interval_enable:
-                                cfg_scale = pag_params.cfg_interval_scheduled_value
+                if cfgi_params is not None:
+                        if cfgi_params.cfg_interval_enable:
+                                cfg_scale = cfgi_params.cfg_interval_scheduled_value
 
                 # 2. PAG
                 pag_x_out = None
@@ -266,6 +274,22 @@ def combine_denoised_pass_conds_list(*args, **kwargs):
                                                                 sal_cfg = cfg_x * m1 + pag_x * (1 - m1)
 
                                                                 denoised[i] += sal_cfg
+                                                except Exception as e:
+                                                        logger.exception("Exception in combine_denoised_pass_conds_list - %s", e)
+                                # 4. Self-Guidance
+                                if sg_params is not None:
+                                        if not sg_params.sg_active or not sg_params.sg_start_step <= sg_params.step <= sg_params.sg_end_step or sg_params.sg_scale == 0 or sg_params.sg_x_out is None:
+                                                pass
+                                        # do pag
+                                        else:
+                                                try:
+                                                        sg_delta = x_out[cond_index] - sg_params.sg_x_out[i]
+                                                        sg_x = sg_delta * (weight * sg_params.sg_scale)
+
+                                                        #if not use_saliency_map:
+                                                        denoised[i] += sg_x
+                                                        # else
+
                                                 except Exception as e:
                                                         logger.exception("Exception in combine_denoised_pass_conds_list - %s", e)
 
