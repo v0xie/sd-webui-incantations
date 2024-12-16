@@ -55,17 +55,6 @@ Sample and Distribution Quality in Diffusion Models"
       primaryClass={cs.CV}
 }
 
-Include CFG schedulers from "Analysis of Classifier-Free Guidance Weight Schedulers"
-
-@misc{wang2024analysis,
-      title={Analysis of Classifier-Free Guidance Weight Schedulers}, 
-      author={Xi Wang and Nicolas Dufour and Nefeli Andreou and Marie-Paule Cani and Victoria Fernandez Abrevaya and David Picard and Vicky Kalogeiton},
-      year={2024},
-      eprint={2404.13040},
-      archivePrefix={arXiv},
-      primaryClass={cs.CV}
-}
-
 Saliency-adaptive noise fusion from arXiv:2311.10329 "High-fidelity Person-centric Subject-to-Image Synthesis"
 @misc{wang2024highfidelity,
       title={High-fidelity Person-centric Subject-to-Image Synthesis}, 

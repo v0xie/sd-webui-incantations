@@ -2,29 +2,14 @@ import logging
 from os import environ
 import modules.scripts as scripts
 import gradio as gr
-import scipy.stats as stats
 
-from scripts.ui_wrapper import UIWrapper, arg
-from modules import script_callbacks, patches
-from modules.hypernetworks import hypernetwork
-#import modules.sd_hijack_optimizations
-from modules.script_callbacks import CFGDenoiserParams, CFGDenoisedParams, AfterCFGCallbackParams
-from modules.prompt_parser import reconstruct_multicond_batch
+from scripts.ui_wrapper import UIWrapper
+from modules import script_callbacks
+from modules.script_callbacks import CFGDenoiserParams
 from modules.processing import StableDiffusionProcessing
-#from modules.shared import sd_model, opts
-from modules.sd_samplers_cfg_denoiser import catenate_conds
-from modules.sd_samplers_cfg_denoiser import CFGDenoiser
-from modules import shared
 
 import math
-import torch
-from torch.nn import functional as F
-from torchvision.transforms import GaussianBlur
 
-from warnings import warn
-from typing import Callable, Dict, Optional
-from collections import OrderedDict
-import torch
 
 logger = logging.getLogger(__name__)
 logger.setLevel(environ.get("SD_WEBUI_LOG_LEVEL", logging.INFO))
@@ -35,10 +20,22 @@ incantations_debug = environ.get("INCANTAIONS_DEBUG", False)
 An unofficial implementation of CFG schedulers from "Analysis of Classifier-Free Guidance Weight Schedulers"
 
 @misc{wang2024analysis,
-      title={Analysis of Classifier-Free Guidance Weight Schedulers}, 
+      title={Analysis of Classifier-Free Guidance Weight Schedulers},
       author={Xi Wang and Nicolas Dufour and Nefeli Andreou and Marie-Paule Cani and Victoria Fernandez Abrevaya and David Picard and Vicky Kalogeiton},
       year={2024},
       eprint={2404.13040},
+      archivePrefix={arXiv},
+      primaryClass={cs.CV}
+}
+
+Include noise interval for CFG and PAG guidance in the sampling process from "Applying Guidance in a Limited Interval Improves
+Sample and Distribution Quality in Diffusion Models"
+
+@misc{kynkäänniemi2024applying,
+      title={Applying Guidance in a Limited Interval Improves Sample and Distribution Quality in Diffusion Models},
+      author={Tuomas Kynkäänniemi and Miika Aittala and Tero Karras and Samuli Laine and Timo Aila and Jaakko Lehtinen},
+      year={2024},
+      eprint={2404.07724},
       archivePrefix={arXiv},
       primaryClass={cs.CV}
 }
@@ -80,8 +77,8 @@ class CFGSchedulerParams:
                 self.cfg_interval_low: float = 0
                 self.cfg_interval_high: float = 50.0
                 self.cfg_interval_scheduled_value: float = 7.0
-                self.step : int = 0 
-                self.max_sampling_step : int = 1 
+                self.step : int = 0
+                self.max_sampling_step : int = 1
                 self.guidance_scale: int = -1 # CFG
                 self.current_noise_level: float = 100.0
                 self.x_in = None
@@ -122,12 +119,12 @@ class CFGSchedulerExtensionScript(UIWrapper):
                                 cfg_schedule = gr.Dropdown(
                                         value='Constant',
                                         choices= SCHEDULES,
-                                        label="CFG Schedule Type", 
-                                        elem_id='cfg_interval_schedule', 
+                                        label="CFG Schedule Type",
+                                        elem_id='cfg_interval_schedule',
                                 )
                                 cfg_interval_low = gr.Slider(value = 0, minimum = 0, maximum = 100, step = 0.1, label="CFG Noise Interval Low", elem_id = 'cfg_interval_low', info="")
                                 cfg_interval_high = gr.Slider(value = 100, minimum = 0, maximum = 100, step = 0.1, label="CFG Noise Interval High", elem_id = 'cfg_interval_high', info="")
-                                
+
                 cfg_interval_enable.do_not_save_to_config = True
                 cfg_schedule.do_not_save_to_config = True
                 cfg_interval_low.do_not_save_to_config = True
@@ -179,7 +176,7 @@ class CFGSchedulerExtensionScript(UIWrapper):
                 if not hasattr(p, 'incant_cfg_params'):
                         logger.error("No incant_cfg_params found in p")
                 p.incant_cfg_params['cfgi_params'] = cfgi_params
-                
+
                 cfgi_params.cfg_interval_enable = cfg_interval_enable
                 cfgi_params.cfg_interval_schedule = cfg_schedule
                 cfgi_params.max_sampling_step = p.steps
@@ -246,7 +243,7 @@ class CFGSchedulerExtensionScript(UIWrapper):
                                 # Scheduled CFG Value
                                 scheduled_cfg_scale = cfg_scheduler(cfgi_params.cfg_interval_schedule, cfgi_params.step, cfgi_params.max_sampling_step, cfgi_params.guidance_scale)
                                 cfgi_params.cfg_interval_scheduled_value = scheduled_cfg_scale if begin_range <= cfgi_params.current_noise_level <= end_range else 1.0
-        
+
 
         def get_xyz_axis_options(self) -> dict:
                 xyz_grid = [x for x in scripts.scripts_data if x.script_class.__module__ in ("xyz_grid.py", "scripts.xyz_grid")][0].module
@@ -305,7 +302,7 @@ def find_closest_index(noise_level: float, N: int, sigma_min=0.002, sigma_max=80
     if noise_level >= sigma_max:
         return 0
         #return N - 1
-    
+
     low, high = 0, N - 1
     while low <= high:
         mid = (low + high) // 2
@@ -316,7 +313,7 @@ def find_closest_index(noise_level: float, N: int, sigma_min=0.002, sigma_max=80
             high = mid - 1
         else:
             low = mid + 1
-    
+
     # If exact match not found, return the index with noise level closest to the target
     return low if abs(calculate_noise_level(low, N) - noise_level) < abs(calculate_noise_level(high, N) - noise_level) else high
 
@@ -412,7 +409,7 @@ def clamp_cosine_schedule(step: int, max_steps: int, w0: float, c: float):
 
 
 def invlinear_schedule(step: int, max_steps: int, w0: float):
-        """ 
+        """
         Normalized inverse linear scheduler for CFG guidance weight.
         """
         # return w0 * (step / max_steps)
@@ -437,7 +434,7 @@ def sine_schedule(step: int, max_steps: int, w0: float):
         """
         Normalized sine scheduler for CFG guidance weight.
         """
-        return w0 * (math.sin((math.pi * step / max_steps) - (math.pi / 2)) + 1) 
+        return w0 * (math.sin((math.pi * step / max_steps) - (math.pi / 2)) + 1)
 
 
 def v_shape_schedule(step: int, max_steps: int, w0: float):
@@ -476,13 +473,13 @@ def cfgs_apply_override(field, boolean: bool = False):
             x = True if x.lower() == "true" else False
         setattr(p, field, x)
         if 'cfg_interval_' in field and not hasattr(p, "cfg_interval_enable"):
-            setattr(p, "cfg_interval_enable", True)
+            p.cfg_interval_enable = True
     return fun
 
 
 def cfgs_apply_field(field):
     def fun(p, x, xs):
         if not hasattr(p, "cfg_interval_enable"):
-                setattr(p, "cfg_interval_enable", True)
+                p.cfg_interval_enable = True
         setattr(p, field, x)
     return fun
