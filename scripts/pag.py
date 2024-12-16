@@ -15,6 +15,8 @@ from warnings import warn
 from typing import Callable, Dict, Optional
 from collections import OrderedDict
 
+from scripts.incant_utils import module_hooks
+
 logger = logging.getLogger(__name__)
 logger.setLevel(environ.get("SD_WEBUI_LOG_LEVEL", logging.INFO))
 
@@ -202,12 +204,11 @@ class PAGExtensionScript(UIWrapper):
         def remove_all_hooks(self):
                 cross_attn_modules = self.get_cross_attn_modules()
                 for module in cross_attn_modules:
-                        to_v = getattr(module, 'to_v', None)
-                        self.remove_field_cross_attn_modules(module, 'pag_enable')
-                        self.remove_field_cross_attn_modules(module, 'pag_last_to_v')
-                        self.remove_field_cross_attn_modules(to_v, 'pag_parent_module')
-                        _remove_all_forward_hooks(module, 'pag_pre_hook')
-                        _remove_all_forward_hooks(to_v, 'to_v_pre_hook')
+                        module_hooks.modules_remove_field(module, 'pag_enable')
+                        module_hooks.modules_remove_field(module, 'pag_last_to_v')
+                        module_hooks.modules_remove_field(module.to_v, 'pag_parent_module')
+                        module_hooks.remove_module_forward_hook(module, 'pag_pre_hook')
+                        module_hooks.remove_module_forward_hook(module.to_v, 'to_v_pre_hook')
 
         def unhook_callbacks(self, pag_params: PAGStateParams):
                 return
@@ -220,11 +221,9 @@ class PAGExtensionScript(UIWrapper):
 
                 # add field for last_to_v
                 for module in crossattn_modules:
-                        to_v = getattr(module, 'to_v', None)
-                        self.add_field_cross_attn_modules(module, 'pag_enable', False)
-                        self.add_field_cross_attn_modules(module, 'pag_last_to_v', None)
-                        self.add_field_cross_attn_modules(to_v, 'pag_parent_module', [module])
-                        # self.add_field_cross_attn_modules(to_out, 'pag_parent_module', [module])
+                        module_hooks.modules_add_field(module, 'pag_enable', False)
+                        module_hooks.modules_add_field(module, 'pag_last_to_v', None)
+                        module_hooks.modules_add_field(module.to_v, 'pag_parent_module', [module])
 
                 def to_v_pre_hook(module, input, kwargs, output):
                         """ Copy the output of the to_v module to the parent module """
@@ -253,9 +252,8 @@ class PAGExtensionScript(UIWrapper):
 
                 # Create hooks 
                 for module in crossattn_modules:
-                        handle_parent = module.register_forward_hook(pag_pre_hook, with_kwargs=True)
-                        to_v = getattr(module, 'to_v', None)
-                        handle_to_v = to_v.register_forward_hook(to_v_pre_hook, with_kwargs=True)
+                        module_hooks.module_add_forward_hook(module, pag_pre_hook, hook_type="forward", with_kwargs=True)
+                        module_hooks.module_add_forward_hook(module.to_v, to_v_pre_hook, hook_type="forward", with_kwargs=True)
 
         def get_middle_block_modules(self):
                 """ Get all attention modules from the middle block 
@@ -263,9 +261,13 @@ class PAGExtensionScript(UIWrapper):
                 
                 """
                 try:
-                        m = shared.sd_model
-                        nlm = m.network_layer_mapping
-                        middle_block_modules = [m for m in nlm.values() if 'middle_block_1_transformer_blocks_0_attn1' in m.network_layer_name and 'CrossAttention' in m.__class__.__name__]
+                        #m = shared.sd_model
+                        #nlm = m.network_layer_mapping
+                        #middle_block_modules = [m for m in nlm.values() if 'middle_block_1_transformer_blocks_0_attn1' in m.network_layer_name and 'CrossAttention' in m.__class__.__name__]
+                        middle_block_modules = module_hooks.get_modules(
+                               network_layer_name_filter='middle_block_1_transformer_blocks_0_attn1',
+                               module_name_filter = 'CrossAttention'
+                        )
                         return middle_block_modules
                 except AttributeError:
                         logger.exception("AttributeError in get_middle_block_modules", stack_info=True)
@@ -277,16 +279,6 @@ class PAGExtensionScript(UIWrapper):
         def get_cross_attn_modules(self):
                 """ Get all cross attention modules """
                 return self.get_middle_block_modules()
-
-        def add_field_cross_attn_modules(self, module, field, value):
-                """ Add a field to a module if it doesn't exist """
-                if not hasattr(module, field):
-                        setattr(module, field, value)
-        
-        def remove_field_cross_attn_modules(self, module, field):
-                """ Remove a field from a module if it exists """
-                if hasattr(module, field):
-                        delattr(module, field)
 
         def on_cfg_denoiser_callback(self, params: CFGDenoiserParams, pag_params: PAGStateParams):
                 # always unhook
@@ -347,8 +339,6 @@ class PAGExtensionScript(UIWrapper):
 
                 # get the PAG guidance (is there a way to optimize this so we don't have to calculate it twice?)
                 pag_x_out = params.inner_model(x_in, sigma_in, cond=conds)
-
-                # update pag_x_out
                 pag_params.pag_x_out = pag_x_out
 
                 # set pag_enable to False
@@ -397,55 +387,3 @@ def pag_apply_field(field):
                 setattr(p, "pag_active", True)
         setattr(p, field, x)
     return fun
-
-
-# thank you to @ProGamerGov for this https://github.com/pytorch/pytorch/issues/70455
-def _remove_all_forward_hooks(
-    module: torch.nn.Module, hook_fn_name: Optional[str] = None
-) -> None:
-    """
-    This function removes all forward hooks in the specified module, without requiring
-    any hook handles. This lets us clean up & remove any hooks that weren't property
-    deleted.
-
-    Warning: Various PyTorch modules and systems make use of hooks, and thus extreme
-    caution should be exercised when removing all hooks. Users are recommended to give
-    their hook function a unique name that can be used to safely identify and remove
-    the target forward hooks.
-
-    Args:
-
-        module (nn.Module): The module instance to remove forward hooks from.
-        hook_fn_name (str, optional): Optionally only remove specific forward hooks
-            based on their function's __name__ attribute.
-            Default: None
-    """
-
-    if hook_fn_name is None:
-        warn("Removing all active hooks can break some PyTorch modules & systems.")
-
-
-    def _remove_hooks(m: torch.nn.Module, name: Optional[str] = None) -> None:
-        if hasattr(module, "_forward_hooks"):
-            if m._forward_hooks != OrderedDict():
-                if name is not None:
-                    dict_items = list(m._forward_hooks.items())
-                    m._forward_hooks = OrderedDict(
-                        [(i, fn) for i, fn in dict_items if fn.__name__ != name]
-                    )
-                else:
-                    m._forward_hooks: Dict[int, Callable] = OrderedDict()
-
-    def _remove_child_hooks(
-        target_module: torch.nn.Module, hook_name: Optional[str] = None
-    ) -> None:
-        for name, child in target_module._modules.items():
-            if child is not None:
-                _remove_hooks(child, hook_name)
-                _remove_child_hooks(child, hook_name)
-
-    # Remove hooks from target submodules
-    _remove_child_hooks(module, hook_fn_name)
-
-    # Remove hooks from the target module
-    _remove_hooks(module, hook_fn_name)
