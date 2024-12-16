@@ -46,9 +46,6 @@ GitHub URL: https://github.com/v0xie/sd-webui-incantations
 """
 
 
-handles = []
-global_scale = 1
-
 SCHEDULES = [
         'Constant',
         'Clamp-Linear (c=4.0)',
@@ -81,21 +78,6 @@ class CFGSchedulerParams:
                 self.max_sampling_step : int = 1
                 self.guidance_scale: int = -1 # CFG
                 self.current_noise_level: float = 100.0
-                self.x_in = None
-                self.text_cond = None
-                self.image_cond = None
-                self.sigma = None
-                self.text_uncond = None
-                self.make_condition_dict = None # callable lambda
-                self.crossattn_modules = [] # callable lambda
-                self.to_v_modules = []
-                self.to_out_modules = []
-                self.pag_x_out = None
-                self.batch_size = -1      # Batch size
-                self.denoiser = None # CFGDenoiser
-                self.patched_combine_denoised = None
-                self.conds_list = None
-                self.uncond_shape_0 = None
 
 
 class CFGSchedulerExtensionScript(UIWrapper):
@@ -154,11 +136,9 @@ class CFGSchedulerExtensionScript(UIWrapper):
                 cfg_interval_enable = getattr(p, "cfg_interval_enable", cfg_interval_enable)
                 if cfg_interval_enable is False:
                         return
-
                 cfg_schedule = getattr(p, "cfg_interval_schedule", cfg_schedule)
                 cfg_interval_low = getattr(p, "cfg_interval_low", cfg_interval_low)
                 cfg_interval_high = getattr(p, "cfg_interval_high", cfg_interval_high)
-
                 if cfg_interval_enable:
                         p.extra_generation_params.update({
                                 "CFG Interval Enable": cfg_interval_enable,
@@ -181,8 +161,6 @@ class CFGSchedulerExtensionScript(UIWrapper):
                 cfgi_params.cfg_interval_schedule = cfg_schedule
                 cfgi_params.max_sampling_step = p.steps
                 cfgi_params.guidance_scale = p.cfg_scale
-                cfgi_params.batch_size = p.batch_size
-                cfgi_params.denoiser = None
                 cfgi_params.cfg_interval_scheduled_value = p.cfg_scale
 
                 if cfgi_params.cfg_interval_enable:
@@ -194,12 +172,10 @@ class CFGSchedulerExtensionScript(UIWrapper):
                        cfgi_params.cfg_interval_high = calculate_noise_level(high_index, cfgi_params.max_sampling_step)
                        logger.debug(f"Step Aligned CFG Interval (low, high): ({low_index}, {high_index}), Step Aligned CFG Interval: ({round(cfgi_params.cfg_interval_low, 4)}, {round(cfgi_params.cfg_interval_high, 4)})")
 
-
                 # Use lambda to call the callback function with the parameters to avoid global variables
                 cfg_denoise_lambda = lambda callback_params: self.on_cfg_denoiser_callback(callback_params, cfgi_params)
                 unhook_lambda = lambda _: self.unhook_callbacks(cfgi_params)
 
-                #logger.debug('Hooked callbacks')
                 script_callbacks.on_cfg_denoiser(cfg_denoise_lambda)
                 script_callbacks.on_script_unloaded(unhook_lambda)
 
@@ -208,7 +184,6 @@ class CFGSchedulerExtensionScript(UIWrapper):
 
         def pag_postprocess_batch(self, p, cfg_interval_enable, *args, **kwargs):
                 script_callbacks.remove_current_script_callbacks()
-
                 logger.debug('Removed script callbacks')
                 active = getattr(p, "cfg_interval_enable", cfg_interval_enable)
                 if active is False:
@@ -225,14 +200,12 @@ class CFGSchedulerExtensionScript(UIWrapper):
                 self.unhook_callbacks(cfgi_params)
 
                 cfgi_params.step = params.sampling_step
-
                 # CFG Interval
                 # TODO: set rho based on sdxl or sd1.5
                 cfgi_params.current_noise_level = calculate_noise_level(
                         i = cfgi_params.step,
                         N = cfgi_params.max_sampling_step,
                 )
-
                 if cfgi_params.cfg_interval_enable:
                         if cfgi_params.cfg_interval_schedule != 'Constant':
                                 # Calculate noise interval
@@ -244,7 +217,6 @@ class CFGSchedulerExtensionScript(UIWrapper):
                                 scheduled_cfg_scale = cfg_scheduler(cfgi_params.cfg_interval_schedule, cfgi_params.step, cfgi_params.max_sampling_step, cfgi_params.guidance_scale)
                                 cfgi_params.cfg_interval_scheduled_value = scheduled_cfg_scale if begin_range <= cfgi_params.current_noise_level <= end_range else 1.0
 
-
         def get_xyz_axis_options(self) -> dict:
                 xyz_grid = [x for x in scripts.scripts_data if x.script_class.__module__ in ("xyz_grid.py", "scripts.xyz_grid")][0].module
                 extra_axis_options = {
@@ -255,6 +227,7 @@ class CFGSchedulerExtensionScript(UIWrapper):
                         #xyz_grid.AxisOption("[PAG] ctnms_alpha", float, pag_apply_field("pag_ctnms_alpha")),
                 }
                 return extra_axis_options
+
 
 def calculate_noise_level(i, N, sigma_min=0.002, sigma_max=80.0, rho=3):
     """
@@ -321,7 +294,6 @@ def find_closest_index(noise_level: float, N: int, sigma_min=0.002, sigma_max=80
 ### CFG Schedulers
 
 
-# TODO: Refactor this into something cleaner
 def cfg_scheduler(schedule: str, step: int, max_steps: int, w0: float) -> float:
         """
         Constant scheduler for CFG guidance weight.
@@ -462,7 +434,6 @@ def interval_schedule(step: int, max_steps: int, w0: float, low: float, high: fl
         if low <= step <= high:
                 return w0
         return 1.0
-
 
 
 # XYZ Plot
