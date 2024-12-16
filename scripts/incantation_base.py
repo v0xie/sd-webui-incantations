@@ -15,6 +15,7 @@ from scripts.pag import PAGExtensionScript
 from scripts.save_attn_maps import SaveAttentionMapsScript
 from scripts.cfg_combiner import CFGCombinerScript
 from scripts.smoothed_energy_guidance import SEGExtensionScript
+from scripts.adaptive_projected_guidance import APGExtensionScript
 from scripts.cfg_scheduler import CFGSchedulerExtensionScript
 
 logger = logging.getLogger(__name__)
@@ -36,6 +37,7 @@ class SubmoduleInfo:
 
 # main scripts
 submodules: list[SubmoduleInfo] = [
+        SubmoduleInfo(module=APGExtensionScript()),
         SubmoduleInfo(module=SEGExtensionScript()),
         SubmoduleInfo(module=SCFGExtensionScript()),
         SubmoduleInfo(module=PAGExtensionScript()),
