@@ -3,12 +3,20 @@ import logging
 import torch
 import torchvision.transforms as F
 from modules import shared, scripts, devices, patches, script_callbacks
+from modules.devices import NansException
 from modules.script_callbacks import CFGDenoiserParams
 from modules.processing import StableDiffusionProcessing
 from scripts.incantation_base import UIWrapper
 from scripts.scfg import scfg_combine_denoised
+from scripts.adaptive_projected_guidance import normalized_guidance
 
 logger = logging.getLogger(__name__)
+
+
+class CFGCombinerParams:
+        def __init__(self):
+                self.current_step = 0
+
 
 class CFGCombinerScript(UIWrapper):
         """ Some scripts modify the CFGs in ways that are not compatible with each other.
@@ -44,6 +52,8 @@ class CFGCombinerScript(UIWrapper):
                 "pag_params": None,
                 "scfg_params": None,
                 "cfgi_params": None,
+                "tcg_params": None,
+                "apg_params": None,
                 "sg_params": None
             }
             setattr(p, 'incant_cfg_params', cfg_dict)
@@ -60,19 +70,23 @@ class CFGCombinerScript(UIWrapper):
             pag_active = p.extra_generation_params.get('PAG Active', False)
             scfg_active = p.extra_generation_params.get('SCFG Active', False)
             cfgi_active = p.extra_generation_params.get('CFG Interval Enable', False)
+            tcg_active = p.extra_generation_params.get('TCG Active', False)
+            apg_active = p.extra_generation_params.get('APG Active', False)
             sg_active = p.extra_generation_params.get('SG Active', False)
 
             if not any([
                         pag_active,
                         scfg_active,
                         cfgi_active,
-                        sg_active
+                        sg_active,
+                        tcg_active,
+                        apg_active
                     ]):
                 return
 
             #logger.debug("CFGCombinerScript process_batch: pag_active or scfg_active")
-
-            cfg_denoise_lambda = lambda params: self.on_cfg_denoiser_callback(params, p.incant_cfg_params)
+            cfg_params = CFGCombinerParams()
+            cfg_denoise_lambda = lambda params: self.on_cfg_denoiser_callback(params, p.incant_cfg_params, cfg_params)
             unhook_lambda = lambda: self.unhook_callbacks()
 
             script_callbacks.on_cfg_denoiser(cfg_denoise_lambda)
@@ -88,17 +102,19 @@ class CFGCombinerScript(UIWrapper):
                     return
             self.unpatch_cfg_denoiser(cfg_dict)
 
-        def on_cfg_denoiser_callback(self, params: CFGDenoiserParams, cfg_dict: dict):
+        def on_cfg_denoiser_callback(self, params: CFGDenoiserParams, cfg_dict: dict, cfg_params: CFGCombinerParams):
             """ Callback for when the CFG denoiser is called 
             Patches the combine_denoised function with a custom one.
             """
+            cfg_params.current_step = params.sampling_step
+
             if cfg_dict['denoiser'] is None:
                     cfg_dict['denoiser'] = params.denoiser
             else:
                     self.unpatch_cfg_denoiser(cfg_dict)
-            self.patch_cfg_denoiser(params.denoiser, cfg_dict)
+            self.patch_cfg_denoiser(params.denoiser, cfg_dict, cfg_params)
 
-        def patch_cfg_denoiser(self, denoiser, cfg_dict: dict):
+        def patch_cfg_denoiser(self, denoiser, cfg_dict: dict, cfg_params: CFGCombinerParams):
             """ Patch the CFG Denoiser combine_denoised function """
             if not cfg_dict:
                     logger.error("Unable to patch CFG Denoiser, no dict passed as cfg_dict")
@@ -106,7 +122,9 @@ class CFGCombinerScript(UIWrapper):
             if not denoiser:
                     logger.error("Unable to patch CFG Denoiser, denoiser is None")
                     return
-
+            if not cfg_params:
+                    logger.error("Unable to patch CFG Denoiser, cfg_params is None")
+                    return
             if getattr(denoiser, 'combine_denoised_patched', False) is False:
                     try:
                             setattr(denoiser, 'combine_denoised_original', denoiser.combine_denoised)
@@ -114,10 +132,13 @@ class CFGCombinerScript(UIWrapper):
                             pass_conds_func = lambda *args, **kwargs: combine_denoised_pass_conds_list(
                                     *args,
                                     **kwargs,
+                                    cfg_params = cfg_params,
                                     original_func = denoiser.combine_denoised_original,
                                     pag_params = cfg_dict['pag_params'],
                                     scfg_params = cfg_dict['scfg_params'],
                                     cfgi_params = cfg_dict['cfgi_params'],
+                                    tcg_params = cfg_dict['tcg_params'],
+                                    apg_params = cfg_dict['apg_params'],
                                     sg_params = cfg_dict['sg_params']
                                 )
                             patched_combine_denoised = patches.patch(__name__, denoiser, "combine_denoised", pass_conds_func)
@@ -161,13 +182,23 @@ def combine_denoised_pass_conds_list(*args, **kwargs):
             3. ...
             ...
         """
+        cfg_params = kwargs.get('cfg_params', None)
         original_func = kwargs.get('original_func', None)
         pag_params = kwargs.get('pag_params', None)
         scfg_params = kwargs.get('scfg_params', None)
         cfgi_params = kwargs.get('cfgi_params', None)
+        apg_params = kwargs.get('apg_params', None)
+        tcg_params = kwargs.get('tcg_params', None)
         sg_params = kwargs.get('sg_params', None)
 
-        if pag_params is None and scfg_params is None and cfgi_params is None and sg_params is None:
+        if not any([
+                pag_params,
+                scfg_params,
+                cfgi_params,
+                apg_params,
+                tcg_params,
+                sg_params
+        ]):
                 logger.warning("No reason to hijack combine_denoised")
                 return original_func(*args)
 
@@ -209,7 +240,6 @@ def combine_denoised_pass_conds_list(*args, **kwargs):
                 use_saliency_map = False
                 if pag_params is not None:
                         use_saliency_map = pag_params.pag_sanf
-                
 
                 ### Combine Denoised
                 for i, conds in enumerate(conds_list):
@@ -235,8 +265,19 @@ def combine_denoised_pass_conds_list(*args, **kwargs):
                                                # rate is tensor, probably
                                                pass
 
-                                # 1. Experimental formulation for S-CFG combined with CFG
+                                # 1. Experimental formulation for S-CFG combined with CFG combined with APG
                                 cfg_x = (model_delta) * rate * (weight * cfg_scale)
+
+                                if apg_params is not None:
+                                        if apg_params.apg_start_step <= cfg_params.current_step <= apg_params.apg_end_step:
+                                                normalized_cond = normalized_guidance(
+                                                        pred_cond=x_out[cond_index],
+                                                        pred_uncond=denoised_uncond[i],
+                                                        apg_params = apg_params,
+                                                        index = i,
+                                                )
+                                                cfg_x = normalized_cond * rate * (weight * (cfg_scale - 1))
+
                                 if not use_saliency_map or not run_pag:
                                         denoised[i] += cfg_x
                                 del rate
@@ -252,30 +293,35 @@ def combine_denoised_pass_conds_list(*args, **kwargs):
                                                         pag_delta = x_out[cond_index] - pag_x_out[i]
                                                         pag_x = pag_delta * (weight * pag_scale)
 
-                                                        if not use_saliency_map:
+                                                        if use_saliency_map:
+                                                                sal_cfg = sanf(cfg_x, pag_x)
+                                                                denoised[i] += sal_cfg
+                                                        else:
                                                                 denoised[i] += pag_x
 
-                                                        # 3. Saliency Adaptive Noise Fusion arXiv.2311.10329v5
-                                                        # Smooth the saliency maps
-                                                        if use_saliency_map:
-                                                                blur = F.GaussianBlur(kernel_size=3, sigma=1).to(device=shared.device)
-                                                                omega_rt = blur(torch.abs(cfg_x))
-                                                                omega_rs = blur(torch.abs(pag_x))
-                                                                soft_rt = torch.softmax(omega_rt, dim=0)
-                                                                soft_rs = torch.softmax(omega_rs, dim=0)
-
-                                                                m = torch.stack([soft_rt, soft_rs], dim=0) # 2 c h w
-                                                                _, argmax_indices = torch.max(m, dim=0)
-
-                                                                # select from cfg_x or pag_x
-                                                                m1 = torch.where(argmax_indices == 0, 1, 0)
-
-                                                                # hadamard product
-                                                                sal_cfg = cfg_x * m1 + pag_x * (1 - m1)
-
-                                                                denoised[i] += sal_cfg
                                                 except Exception as e:
                                                         logger.exception("Exception in combine_denoised_pass_conds_list - %s", e)
+
+                                # 3. TCG
+                                # TCG is added like CFG
+                                if tcg_params is not None:
+                                        if not tcg_params.tcg_active or tcg_params.tcg_scale <= 0 or tcg_params.tcg_x_out is None \
+                                                or not tcg_params.tcg_start_step <= tcg_params.step <= tcg_params.tcg_end_step:
+                                                pass
+                                        else:
+                                                try:
+                                                        tcg_delta = x_out[cond_index] - tcg_params.tcg_x_out[i]
+                                                        tcg_x = tcg_delta * (weight * tcg_params.tcg_scale)
+
+                                                        if use_saliency_map:
+                                                                sal_tcg = sanf(cfg_x, tcg_x)
+                                                                denoised[i] += sal_tcg
+                                                        else:
+                                                                denoised[i] += tcg_x
+
+                                                except Exception as e:
+                                                        logger.exception("Exception in combine_denoised_pass_conds_list - %s", e)
+
                                 # 4. Self-Guidance
                                 if sg_params is not None:
                                         if not sg_params.sg_active or not sg_params.sg_start_step <= sg_params.step <= sg_params.sg_end_step or sg_params.sg_scale == 0 or sg_params.sg_x_out is None:
@@ -286,15 +332,35 @@ def combine_denoised_pass_conds_list(*args, **kwargs):
                                                         sg_delta = x_out[cond_index] - sg_params.sg_x_out[i]
                                                         sg_x = sg_delta * (weight * sg_params.sg_scale)
 
-                                                        #if not use_saliency_map:
-                                                        denoised[i] += sg_x
-                                                        # else
+                                                        if use_saliency_map:
+                                                                sal_sg = sanf(cfg_x, sg_x)
+                                                                denoised[i] += sal_sg
+                                                        else:
+                                                                denoised[i] += sg_x
 
                                                 except Exception as e:
                                                         logger.exception("Exception in combine_denoised_pass_conds_list - %s", e)
 
-                                #torch.cuda.empty_cache()
                                 devices.torch_gc()
 
                 return denoised
+
         return new_combine_denoised(*args)
+
+# 3. Saliency Adaptive Noise Fusion arXiv.2311.10329v5
+def sanf(cfg_x, pag_x):
+        blur = F.GaussianBlur(kernel_size=3, sigma=1).to(device=shared.device)
+        omega_rt = blur(torch.abs(cfg_x))
+        omega_rs = blur(torch.abs(pag_x))
+        soft_rt = torch.softmax(omega_rt, dim=0)
+        soft_rs = torch.softmax(omega_rs, dim=0)
+
+        m = torch.stack([soft_rt, soft_rs], dim=0) # 2 c h w
+        _, argmax_indices = torch.max(m, dim=0)
+
+        # select from cfg_x or pag_x
+        m1 = torch.where(argmax_indices == 0, 1, 0)
+
+        # hadamard product
+        sal_cfg = cfg_x * m1 + pag_x * (1 - m1)
+        return sal_cfg
