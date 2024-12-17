@@ -40,6 +40,17 @@ Sample and Distribution Quality in Diffusion Models"
       primaryClass={cs.CV}
 }
 
+EP-CFG from "EP-CFG: Energy-Preserving Classifier-Free Guidance"
+@misc{zhang2024epcfgenergypreservingclassifierfreeguidance,
+      title={EP-CFG: Energy-Preserving Classifier-Free Guidance}, 
+      author={Kai Zhang and Fujun Luan and Sai Bi and Jianming Zhang},
+      year={2024},
+      eprint={2412.09966},
+      archivePrefix={arXiv},
+      primaryClass={cs.CV},
+      url={https://arxiv.org/abs/2412.09966}, 
+}
+
 Author: v0xie
 GitHub URL: https://github.com/v0xie/sd-webui-incantations
 
@@ -78,6 +89,9 @@ class CFGSchedulerParams:
                 self.max_sampling_step : int = 1
                 self.guidance_scale: int = -1 # CFG
                 self.current_noise_level: float = 100.0
+                self.ep_cfg_enable: bool = False
+                self.ep_cfg_noise_low: float = 0.45 # noise thresholds
+                self.ep_cfg_noise_high: float = 0.55
 
 
 class CFGSchedulerExtensionScript(UIWrapper):
@@ -96,13 +110,16 @@ class CFGSchedulerExtensionScript(UIWrapper):
         # Setup menu ui detail
         def setup_ui(self, is_img2img) -> list:
                 with gr.Accordion(label=self.title(), open=False):
-                        cfg_interval_enable = gr.Checkbox(
-                               value=False,
-                               default=False,
-                               label="Enable CFG Scheduler",
-                               elem_id='cfg_interval_enable',
-                               info="If Enabled and Schedule != Constant, applies CFG only within noise interval with the selected schedule type. SDXL recommend CFG=15; CFG interval (0.28, 5.42]"
-                        )
+                        with gr.Row():
+                                ep_cfg_enable = gr.Checkbox(value=False, label="EP-CFG Enable", elem_id='ep_cfg_interval_enable')
+                        with gr.Row():
+                                cfg_interval_enable = gr.Checkbox(
+                                value=False,
+                                default=False,
+                                label="Enable CFG Scheduler",
+                                elem_id='cfg_interval_enable',
+                                info="If Enabled and Schedule != Constant, applies CFG only within noise interval with the selected schedule type. SDXL recommend CFG=15; CFG interval (0.28, 5.42]"
+                                )
                         with gr.Row():
                                 cfg_schedule = gr.Dropdown(
                                         value='Constant',
@@ -117,41 +134,49 @@ class CFGSchedulerExtensionScript(UIWrapper):
                 cfg_schedule.do_not_save_to_config = True
                 cfg_interval_low.do_not_save_to_config = True
                 cfg_interval_high.do_not_save_to_config = True
+                ep_cfg_enable.do_not_save_to_config = True
                 self.infotext_fields = [
                         (cfg_interval_enable, lambda d: gr.Checkbox.update(value='CFG Interval Enable' in d)),
                         (cfg_schedule, 'CFG Interval Schedule'),
                         (cfg_interval_low, 'CFG Interval Low'),
-                        (cfg_interval_high, 'CFG Interval High')
+                        (cfg_interval_high, 'CFG Interval High'),
+                        (ep_cfg_enable, lambda d: gr.Checkbox.update(value='EP-CFG Enable' in d))
                 ]
                 self.paste_field_names = [
                         'cfg_interval_enable',
                         'cfg_interval_schedule',
                         'cfg_interval_low',
                         'cfg_interval_high',
+                        'ep_cfg_interval_enable'
                 ]
-                return [cfg_interval_enable, cfg_schedule, cfg_interval_low, cfg_interval_high]
+                return [cfg_interval_enable, cfg_schedule, cfg_interval_low, cfg_interval_high, ep_cfg_enable]
 
-        def process_batch(self, p: StableDiffusionProcessing, cfg_interval_enable, cfg_schedule, cfg_interval_low, cfg_interval_high, *args, **kwargs):
+        def process_batch(self, p: StableDiffusionProcessing, cfg_interval_enable, cfg_schedule, cfg_interval_low, cfg_interval_high, ep_cfg_enable, *args, **kwargs):
                 # cleanup previous hooks always
                 script_callbacks.remove_current_script_callbacks()
                 self.remove_all_hooks()
 
                 cfg_interval_enable = getattr(p, "cfg_interval_enable", cfg_interval_enable)
-                if cfg_interval_enable is False:
+                if cfg_interval_enable is False and ep_cfg_enable is False:
                         return
                 cfg_schedule = getattr(p, "cfg_interval_schedule", cfg_schedule)
                 cfg_interval_low = getattr(p, "cfg_interval_low", cfg_interval_low)
                 cfg_interval_high = getattr(p, "cfg_interval_high", cfg_interval_high)
+                ep_cfg_enable = getattr(p, "ep_cfg_enable", ep_cfg_enable)
                 if cfg_interval_enable:
                         p.extra_generation_params.update({
                                 "CFG Interval Enable": cfg_interval_enable,
                                 "CFG Interval Schedule": cfg_schedule,
                                 "CFG Interval Low": cfg_interval_low,
-                                "CFG Interval High": cfg_interval_high
+                                "CFG Interval High": cfg_interval_high,
                         })
-                self.create_hook(p,cfg_interval_enable, cfg_schedule, cfg_interval_low, cfg_interval_high)
+                if ep_cfg_enable:
+                        p.extra_generation_params.update({
+                                "EP-CFG Enable": ep_cfg_enable,
+                        })
+                self.create_hook(p,cfg_interval_enable, cfg_schedule, cfg_interval_low, cfg_interval_high, ep_cfg_enable)
 
-        def create_hook(self, p: StableDiffusionProcessing, cfg_interval_enable, cfg_schedule, cfg_interval_low, cfg_interval_high, *args, **kwargs):
+        def create_hook(self, p: StableDiffusionProcessing, cfg_interval_enable, cfg_schedule, cfg_interval_low, cfg_interval_high, ep_cfg_enable, *args, **kwargs):
                 # Create a list of parameters for each concept
                 cfgi_params = CFGSchedulerParams()
 
@@ -165,6 +190,7 @@ class CFGSchedulerExtensionScript(UIWrapper):
                 cfgi_params.max_sampling_step = p.steps
                 cfgi_params.guidance_scale = p.cfg_scale
                 cfgi_params.cfg_interval_scheduled_value = p.cfg_scale
+                cfgi_params.ep_cfg_enable = ep_cfg_enable
 
                 if cfgi_params.cfg_interval_enable:
                        # Refer to 3.1 Practice in the paper
@@ -224,6 +250,7 @@ class CFGSchedulerExtensionScript(UIWrapper):
                         xyz_grid.AxisOption("[CFG-SCHED] CFG Noise Interval Low", float, cfgs_apply_field("cfg_interval_low")),
                         xyz_grid.AxisOption("[CFG-SCHED] CFG Noise Interval High", float, cfgs_apply_field("cfg_interval_high")),
                         xyz_grid.AxisOption("[CFG-SCHED] CFG Schedule Type", str, cfgs_apply_override('cfg_interval_schedule', boolean=False), choices=lambda: SCHEDULES),
+                        xyz_grid.AxisOption("[CFG-SCHED] EP-CFG Enable", str, cfgs_apply_override('ep_cfg_interval_enable', boolean=True), choices=xyz_grid.boolean_choice(reverse=True))
                 }
                 return extra_axis_options
 

@@ -244,43 +244,16 @@ def combine_denoised_pass_conds_list(*args, **kwargs):
                 ### Combine Denoised
                 for i, conds in enumerate(conds_list):
                         for cond_index, weight in conds:
-
                                 model_delta = x_out[cond_index] - denoised_uncond[i]
 
-                                # S-CFG
-                                rate = 1.0
-                                if scfg_params is not None:
-                                        rate = scfg_combine_denoised(
-                                                        model_delta = model_delta,
-                                                        cfg_scale = cfg_scale,
-                                                        scfg_params = scfg_params,
-                                        )
-                                        # If rate is not an int, convert to tensor
-                                        if rate is None:
-                                               logger.error("scfg_combine_denoised returned None, using default rate of 1.0")
-                                               rate = 1.0
-                                        elif not isinstance(rate, int) and not isinstance(rate, float):
-                                               rate = rate.to(device=shared.device, dtype=model_delta.dtype)
-                                        else:
-                                               # rate is tensor, probably
-                                               pass
 
                                 # 1. Experimental formulation for S-CFG combined with CFG combined with APG
-                                cfg_x = (model_delta) * rate * (weight * cfg_scale)
+                                cfg_o = model_delta * (weight * cfg_scale)
+                                cfg_x = model_delta * (weight * cfg_scale)
 
-                                if apg_params is not None:
-                                        if apg_params.apg_start_step <= cfg_params.current_step <= apg_params.apg_end_step:
-                                                normalized_cond = normalized_guidance(
-                                                        pred_cond=x_out[cond_index],
-                                                        pred_uncond=denoised_uncond[i],
-                                                        apg_params = apg_params,
-                                                        index = i,
-                                                )
-                                                cfg_x = normalized_cond * rate * (weight * (cfg_scale - 1))
-
-                                if not use_saliency_map or not run_pag:
-                                        denoised[i] += cfg_x
-                                del rate
+                                                #cfg_x = normalized_cond
+                                                # cfg_o = normalized_cond * (weight * (cfg_scale - 1))
+                                                # cfg_x = normalized_cond * (weight * (cfg_scale - 1))
 
                                 # 2. PAG
                                 # PAG is added like CFG
@@ -293,11 +266,11 @@ def combine_denoised_pass_conds_list(*args, **kwargs):
                                                         pag_delta = x_out[cond_index] - pag_x_out[i]
                                                         pag_x = pag_delta * (weight * pag_scale)
 
-                                                        if use_saliency_map:
-                                                                sal_cfg = sanf(cfg_x, pag_x)
-                                                                denoised[i] += sal_cfg
+                                                        if pag_params.pag_sanf:
+                                                                sal_cfg = sanf(cfg_o, pag_x)
+                                                                cfg_x += sal_cfg
                                                         else:
-                                                                denoised[i] += pag_x
+                                                                cfg_x += pag_x
 
                                                 except Exception as e:
                                                         logger.exception("Exception in combine_denoised_pass_conds_list - %s", e)
@@ -313,11 +286,11 @@ def combine_denoised_pass_conds_list(*args, **kwargs):
                                                         tcg_delta = x_out[cond_index] - tcg_params.tcg_x_out[i]
                                                         tcg_x = tcg_delta * (weight * tcg_params.tcg_scale)
 
-                                                        if use_saliency_map:
-                                                                sal_tcg = sanf(cfg_x, tcg_x)
-                                                                denoised[i] += sal_tcg
+                                                        if tcg_params.tcg_sanf:
+                                                                sal_tcg = sanf(cfg_o, tcg_x)
+                                                                cfg_x += sal_tcg
                                                         else:
-                                                                denoised[i] += tcg_x
+                                                                cfg_x += tcg_x
 
                                                 except Exception as e:
                                                         logger.exception("Exception in combine_denoised_pass_conds_list - %s", e)
@@ -332,14 +305,45 @@ def combine_denoised_pass_conds_list(*args, **kwargs):
                                                         sg_delta = x_out[cond_index] - sg_params.sg_x_out[i]
                                                         sg_x = sg_delta * (weight * sg_params.sg_scale)
 
-                                                        if use_saliency_map:
-                                                                sal_sg = sanf(cfg_x, sg_x)
-                                                                denoised[i] += sal_sg
+                                                        if sg_params.sg_sanf:
+                                                                sal_sg = sanf(cfg_o, sg_x)
+                                                                cfg_x += sal_sg
                                                         else:
-                                                                denoised[i] += sg_x
+                                                                cfg_x += sg_x
 
                                                 except Exception as e:
                                                         logger.exception("Exception in combine_denoised_pass_conds_list - %s", e)
+
+                                # S-CFG
+                                rate = 1.0
+                                if scfg_params is not None:
+                                        rate = scfg_combine_denoised(
+                                                        model_delta = cfg_x,
+                                                        cfg_scale = cfg_scale,
+                                                        scfg_params = scfg_params,
+                                        )
+                                        # If rate is not an int, convert to tensor
+                                        if rate is None:
+                                               logger.error("scfg_combine_denoised returned None, using default rate of 1.0")
+                                               rate = 1.0
+                                        elif not isinstance(rate, int) and not isinstance(rate, float):
+                                               rate = rate.to(device=shared.device, dtype=model_delta.dtype)
+                                        else:
+                                               # rate is tensor, probably
+                                               pass
+                                cfg_x = rate * cfg_x
+
+                                if apg_params is not None:
+                                        if apg_params.apg_start_step <= cfg_params.current_step <= apg_params.apg_end_step:
+                                                cfg_x = (cfg_scale-1) * normalized_guidance(
+                                                        pred_cond=cfg_x,
+                                                        pred_uncond=denoised_uncond[i],
+                                                        apg_params = apg_params,
+                                                        index = i,
+                                                )
+
+                                denoised[i] += cfg_x
+                                
 
                                 devices.torch_gc()
 
