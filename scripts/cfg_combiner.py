@@ -328,6 +328,19 @@ def combine_denoised_pass_conds_list(*args, **kwargs):
                                                pass
                                 cfg_x = rate * cfg_x
 
+
+
+                                # 5. APG
+                                if apg_params is not None:
+                                        if apg_params.apg_start_step <= cfg_params.current_step <= apg_params.apg_end_step:
+                                                cfg_x = normalized_guidance(
+                                                #cfg_x = (cfg_scale-1) * normalized_guidance(
+                                                        pred_cond=cfg_x,
+                                                        pred_uncond=denoised_uncond[i],
+                                                        apg_params = apg_params,
+                                                        index = i,
+                                                )
+
                                 # 6. EP-CFG
                                 # Isolate the latents between 0.45 and 0.55 in the energy histogram
                                 # Rescale the cfg term by sqrt of the energy of the original prediction by the energy of the denoised prediction
@@ -335,7 +348,8 @@ def combine_denoised_pass_conds_list(*args, **kwargs):
                                         if cfgi_params.ep_cfg_enable:
                                                 min_p = cfgi_params.ep_cfg_min
                                                 max_p = cfgi_params.ep_cfg_max
-                                                xc = x_out[cond_index]
+                                                xc = denoised[i]
+                                                #xc = x_out[cond_index]
                                                 xcfg = denoised[i] + cfg_x
                                                 ...
                                                 # Step 2: Calculate robust energy for xc
@@ -363,17 +377,6 @@ def combine_denoised_pass_conds_list(*args, **kwargs):
                                                 scaling_factor = torch.sqrt(robust_energy_xc / (robust_energy_xcfg + 1e-6))
                                                 xcfg_rescaled = xcfg * scaling_factor.unsqueeze(-1).unsqueeze(-1)
                                                 cfg_x = cfg_x * scaling_factor.unsqueeze(-1).unsqueeze(-1)
-
-
-                                # 5. APG
-                                if apg_params is not None:
-                                        if apg_params.apg_start_step <= cfg_params.current_step <= apg_params.apg_end_step:
-                                                cfg_x = (cfg_scale-1) * normalized_guidance(
-                                                        pred_cond=cfg_x,
-                                                        pred_uncond=denoised_uncond[i],
-                                                        apg_params = apg_params,
-                                                        index = i,
-                                                )
                                 
 
                                 # 6. Add to denoised
