@@ -6,6 +6,7 @@
 - [Compatibility Notice](#compatibility-notice)
 - [News](#compatibility-notice)
 - [Extension Features](#extension-features)
+    - [EP-CFG](#ep-cfg)
     - [Self-Guidance](#self-guidance)
     - [Adaptive Projected Guidance](#adaptive-projected-guidance)
     - [Timestep Guidance](#timestep-guidance)
@@ -59,6 +60,26 @@ To install the `sd-webui-incantations` extension, follow these steps:
 # Extension Features
 
 ---
+## EP-CFG
+https://arxiv.org/abs/2412.09966
+A new method for rescaling the additive term of CFG.
+
+#### Results
+SD 1.5
+![image](./images/xyz_grid-0022-1.webp)
+Model used is nextphoto_v30\[1c1f913f3b\] by *bigbeanboiler* on CivitAI
+
+#### [Return to top](#sd-webui-incantations)
+
+## Self-Guidance
+TODO  
+
+## Adaptive Projected Guidance
+TODO  
+
+## Timestep Guidance
+TODO  
+
 ## Smoothed Energy Guidance
 Increases quality of outputs by blurring the self-attention in the middle block layers, with minimal added inference time.
 Recommended to fix the CFG scale to 3.0, and control the effect using the Blur Sigma value. Increase CFG if the effect is insufficient.
@@ -346,7 +367,16 @@ SD XL
         primaryClass={cs.CV},
         url={https://arxiv.org/abs/2408.00760}
       }
-}
+
+      @misc{zhang2024epcfgenergypreservingclassifierfreeguidance,
+        title={EP-CFG: Energy-Preserving Classifier-Free Guidance}, 
+        author={Kai Zhang and Fujun Luan and Sai Bi and Jianming Zhang},
+        year={2024},
+        eprint={2412.09966},
+        archivePrefix={arXiv},
+        primaryClass={cs.CV},
+        url={https://arxiv.org/abs/2412.09966}, 
+      }
 
 
 - [Hard Prompts Made Easy](https://github.com/YuxinWenRick/hard-prompts-made-easy)
