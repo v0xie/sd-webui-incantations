@@ -71,7 +71,9 @@ Model used is nextphoto_v30\[1c1f913f3b\] by *bigbeanboiler* on CivitAI
 
 #### [Return to top](#sd-webui-incantations)
 
+
 ## Self-Guidance
+https://arxiv.org/abs/2412.05827  
 
 #### Results
 SD 1.5
@@ -79,13 +81,23 @@ SD 1.5
 EP-CFG enabled; Model used is nextphoto_v30\[1c1f913f3b\] by *bigbeanboiler* on CivitAI
 
 #### [Return to top](#sd-webui-incantations)
-TODO  
+
 
 ## Adaptive Projected Guidance
+https://arxiv.org/abs/2410.02416  
+A method for rescaling high CFG scales.  
+
+#### Results
+SD 1.5
+![image](./images/xyz_grid-0059-APG.webp)
+CFG Scale: 15; Model used is nextphoto_v30\[1c1f913f3b\] by *bigbeanboiler* on CivitAI
+
+#### [Return to top](#sd-webui-incantations)
 TODO  
 
 ## Timestep Guidance
 TODO  
+
 
 ## Smoothed Energy Guidance
 Increases quality of outputs by blurring the self-attention in the middle block layers, with minimal added inference time.
@@ -393,6 +405,16 @@ SD XL
         archivePrefix={arXiv},
         primaryClass={cs.CV},
         url={https://arxiv.org/abs/2412.05827}, 
+      }
+
+      @misc{sadat2024eliminatingoversaturationartifactshigh,
+        title={Eliminating Oversaturation and Artifacts of High Guidance Scales in Diffusion Models}, 
+        author={Seyedmorteza Sadat and Otmar Hilliges and Romann M. Weber},
+        year={2024},
+        eprint={2410.02416},
+        archivePrefix={arXiv},
+        primaryClass={cs.LG},
+        url={https://arxiv.org/abs/2410.02416}, 
       }
 
 
