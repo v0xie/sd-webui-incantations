@@ -72,6 +72,13 @@ Model used is nextphoto_v30\[1c1f913f3b\] by *bigbeanboiler* on CivitAI
 #### [Return to top](#sd-webui-incantations)
 
 ## Self-Guidance
+
+#### Results
+SD 1.5
+![image](./images/xyz_grid-0041-SG.webp)
+EP-CFG enabled; Model used is nextphoto_v30\[1c1f913f3b\] by *bigbeanboiler* on CivitAI
+
+#### [Return to top](#sd-webui-incantations)
 TODO  
 
 ## Adaptive Projected Guidance
