@@ -61,7 +61,7 @@ To install the `sd-webui-incantations` extension, follow these steps:
 
 ---
 ## EP-CFG
-https://arxiv.org/abs/2412.09966
+https://arxiv.org/abs/2412.09966  
 A new method for rescaling the additive term of CFG.
 
 #### Results
@@ -96,6 +96,14 @@ CFG Scale: 15; Model used is nextphoto_v30\[1c1f913f3b\] by *bigbeanboiler* on C
 TODO  
 
 ## Timestep Guidance
+https://arxiv.org/abs/2407.02687  
+
+#### Results
+SD 1.5
+![image](./images/xyz_grid-0075-TSG.webp)
+CFG Scale: 3; Model used is nextphoto_v30\[1c1f913f3b\] by *bigbeanboiler* on CivitAI
+
+#### [Return to top](#sd-webui-incantations)
 TODO  
 
 
@@ -415,6 +423,16 @@ SD XL
         archivePrefix={arXiv},
         primaryClass={cs.LG},
         url={https://arxiv.org/abs/2410.02416}, 
+      }
+
+      @misc{sadat2024trainingproblemrethinkingclassifierfree,
+        title={No Training, No Problem: Rethinking Classifier-Free Guidance for Diffusion Models}, 
+        author={Seyedmorteza Sadat and Manuel Kansy and Otmar Hilliges and Romann M. Weber},
+        year={2024},
+        eprint={2407.02687},
+        archivePrefix={arXiv},
+        primaryClass={cs.LG},
+        url={https://arxiv.org/abs/2407.02687}, 
       }
 
 
