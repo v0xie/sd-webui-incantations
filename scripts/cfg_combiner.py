@@ -333,8 +333,7 @@ def combine_denoised_pass_conds_list(*args, **kwargs):
                                 # 5. APG
                                 if apg_params is not None:
                                         if apg_params.apg_start_step <= cfg_params.current_step <= apg_params.apg_end_step:
-                                                cfg_x = normalized_guidance(
-                                                #cfg_x = (cfg_scale-1) * normalized_guidance(
+                                                cfg_x = (cfg_scale-1) * normalized_guidance(
                                                         pred_cond=cfg_x,
                                                         pred_uncond=denoised_uncond[i],
                                                         apg_params = apg_params,
