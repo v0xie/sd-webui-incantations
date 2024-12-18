@@ -385,6 +385,16 @@ SD XL
         url={https://arxiv.org/abs/2412.09966}, 
       }
 
+      @misc{li2024selfguidanceboostingflowdiffusion,
+        title={Self-Guidance: Boosting Flow and Diffusion Generation on Their Own}, 
+        author={Tiancheng Li and Weijian Luo and Zhiyang Chen and Liyuan Ma and Guo-Jun Qi},
+        year={2024},
+        eprint={2412.05827},
+        archivePrefix={arXiv},
+        primaryClass={cs.CV},
+        url={https://arxiv.org/abs/2412.05827}, 
+      }
+
 
 - [Hard Prompts Made Easy](https://github.com/YuxinWenRick/hard-prompts-made-easy)
 - [@udon-universe's extension templates](https://github.com/udon-universe/stable-diffusion-webui-extension-templates)
