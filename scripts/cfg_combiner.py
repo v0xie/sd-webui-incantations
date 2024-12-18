@@ -348,9 +348,9 @@ def combine_denoised_pass_conds_list(*args, **kwargs):
                                         if cfgi_params.ep_cfg_enable:
                                                 min_p = cfgi_params.ep_cfg_min
                                                 max_p = cfgi_params.ep_cfg_max
-                                                xc = denoised[i]
+                                                xc = x_out[cond_index]
                                                 #xc = x_out[cond_index]
-                                                xcfg = denoised[i] + cfg_x
+                                                xcfg = x_out[cond_index] + cfg_x
                                                 ...
                                                 # Step 2: Calculate robust energy for xc
 
@@ -358,24 +358,25 @@ def combine_denoised_pass_conds_list(*args, **kwargs):
                                                 b, h, w = xc.shape
                                                 xc_energy = torch.norm(xc, dim=(1, 2))**2
                                                 xc_energy = torch.reshape(xc_energy, (xc.shape[0], -1))
-                                                xc_energy = xc_energy ** 2
-                                                q_45_xc = torch.quantile(xc_energy, 0.45, dim=-1, keepdim=True)
-                                                q_55_xc = torch.quantile(xc_energy, 0.55, dim=-1, keepdim=True)
+                                                xc_energy = xc_energy.float()
+                                                #xc_energy = xc_energy ** 2
+                                                q_45_xc = torch.quantile(xc_energy, min_p, dim=-1, keepdim=True)
+                                                q_55_xc = torch.quantile(xc_energy, max_p, dim=-1, keepdim=True)
                                                 mask_xc = (xc_energy >= q_45_xc) & (xc_energy <= q_55_xc)
                                                 robust_energy_xc = torch.sum(xc_energy * mask_xc.float(), dim=-1)
                                                 
                                                 # Step 3: Calculate robust energy for xcfg
                                                 xcfg_energy = torch.norm(xcfg, dim=(1, 2))**2
                                                 xcfg_energy = torch.reshape(xcfg_energy, (xcfg.shape[0], -1))
-                                                xcfg_energy = xcfg_energy ** 2
-                                                q_45_xcfg = torch.quantile(xcfg_energy, 0.45, dim=-1, keepdim=True)
-                                                q_55_xcfg = torch.quantile(xcfg_energy, 0.55, dim=-1, keepdim=True)
+                                                xcfg_energy = xcfg_energy.float()
+                                                #xcfg_energy = xcfg_energy ** 2
+                                                q_45_xcfg = torch.quantile(xcfg_energy, min_p, dim=-1, keepdim=True)
+                                                q_55_xcfg = torch.quantile(xcfg_energy, max_p, dim=-1, keepdim=True)
                                                 mask_xcfg = (xcfg_energy >= q_45_xcfg) & (xcfg_energy <= q_55_xcfg)
                                                 robust_energy_xcfg = torch.sum(xcfg_energy * mask_xcfg.float(), dim=-1)
                                                 
                                                 # Step 4: Rescale xcfg based on the ratio of robust energies
                                                 scaling_factor = torch.sqrt(robust_energy_xc / (robust_energy_xcfg + 1e-6))
-                                                xcfg_rescaled = xcfg * scaling_factor.unsqueeze(-1).unsqueeze(-1)
                                                 cfg_x = cfg_x * scaling_factor.unsqueeze(-1).unsqueeze(-1)
                                 
 
