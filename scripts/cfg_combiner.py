@@ -69,7 +69,7 @@ class CFGCombinerScript(UIWrapper):
             logger.debug("CFGCombinerScript process_batch")
             pag_active = p.extra_generation_params.get('PAG Active', False)
             scfg_active = p.extra_generation_params.get('SCFG Active', False)
-            cfgi_active = p.extra_generation_params.get('CFG Interval Enable', False)
+            cfgi_active = p.extra_generation_params.get('CFG Interval Enable', False) or p.extra_generation_params.get('EP-CFG Enable', False)
             tcg_active = p.extra_generation_params.get('TCG Active', False)
             apg_active = p.extra_generation_params.get('APG Active', False)
             sg_active = p.extra_generation_params.get('SG Active', False)
@@ -246,16 +246,11 @@ def combine_denoised_pass_conds_list(*args, **kwargs):
                         for cond_index, weight in conds:
                                 model_delta = x_out[cond_index] - denoised_uncond[i]
 
-
                                 # 1. Experimental formulation for S-CFG combined with CFG combined with APG
-                                cfg_o = model_delta * (weight * cfg_scale)
-                                cfg_x = model_delta * (weight * cfg_scale)
+                                cfg_o = model_delta * (weight * cfg_scale) # original delta
+                                cfg_x = cfg_o.detach().clone() # modified
 
-                                                #cfg_x = normalized_cond
-                                                # cfg_o = normalized_cond * (weight * (cfg_scale - 1))
-                                                # cfg_x = normalized_cond * (weight * (cfg_scale - 1))
-
-                                # 2. PAG
+                                # 1. PAG
                                 # PAG is added like CFG
                                 if pag_params is not None:
                                         if not run_pag:
@@ -275,7 +270,7 @@ def combine_denoised_pass_conds_list(*args, **kwargs):
                                                 except Exception as e:
                                                         logger.exception("Exception in combine_denoised_pass_conds_list - %s", e)
 
-                                # 3. TCG
+                                # 2. TCG
                                 # TCG is added like CFG
                                 if tcg_params is not None:
                                         if not tcg_params.tcg_active or tcg_params.tcg_scale <= 0 or tcg_params.tcg_x_out is None \
@@ -295,7 +290,7 @@ def combine_denoised_pass_conds_list(*args, **kwargs):
                                                 except Exception as e:
                                                         logger.exception("Exception in combine_denoised_pass_conds_list - %s", e)
 
-                                # 4. Self-Guidance
+                                # 3. Self-Guidance
                                 if sg_params is not None:
                                         if not sg_params.sg_active or not sg_params.sg_start_step <= sg_params.step <= sg_params.sg_end_step or sg_params.sg_scale == 0 or sg_params.sg_x_out is None:
                                                 pass
@@ -314,7 +309,7 @@ def combine_denoised_pass_conds_list(*args, **kwargs):
                                                 except Exception as e:
                                                         logger.exception("Exception in combine_denoised_pass_conds_list - %s", e)
 
-                                # S-CFG
+                                # 4. S-CFG
                                 rate = 1.0
                                 if scfg_params is not None:
                                         rate = scfg_combine_denoised(
@@ -333,6 +328,44 @@ def combine_denoised_pass_conds_list(*args, **kwargs):
                                                pass
                                 cfg_x = rate * cfg_x
 
+                                # 6. EP-CFG
+                                # Isolate the latents between 0.45 and 0.55 in the energy histogram
+                                # Rescale the cfg term by sqrt of the energy of the original prediction by the energy of the denoised prediction
+                                if cfgi_params is not None:
+                                        if cfgi_params.ep_cfg_enable:
+                                                min_p = cfgi_params.ep_cfg_min
+                                                max_p = cfgi_params.ep_cfg_max
+                                                xc = x_out[cond_index]
+                                                xcfg = denoised[i] + cfg_x
+                                                ...
+                                                # Step 2: Calculate robust energy for xc
+
+                                                #xc_energy = torch.norm(xc, dim=(1, 2))**2
+                                                b, h, w = xc.shape
+                                                xc_energy = torch.norm(xc, dim=(1, 2))**2
+                                                xc_energy = torch.reshape(xc_energy, (xc.shape[0], -1))
+                                                xc_energy = xc_energy ** 2
+                                                q_45_xc = torch.quantile(xc_energy, 0.45, dim=-1, keepdim=True)
+                                                q_55_xc = torch.quantile(xc_energy, 0.55, dim=-1, keepdim=True)
+                                                mask_xc = (xc_energy >= q_45_xc) & (xc_energy <= q_55_xc)
+                                                robust_energy_xc = torch.sum(xc_energy * mask_xc.float(), dim=-1)
+                                                
+                                                # Step 3: Calculate robust energy for xcfg
+                                                xcfg_energy = torch.norm(xcfg, dim=(1, 2))**2
+                                                xcfg_energy = torch.reshape(xcfg_energy, (xcfg.shape[0], -1))
+                                                xcfg_energy = xcfg_energy ** 2
+                                                q_45_xcfg = torch.quantile(xcfg_energy, 0.45, dim=-1, keepdim=True)
+                                                q_55_xcfg = torch.quantile(xcfg_energy, 0.55, dim=-1, keepdim=True)
+                                                mask_xcfg = (xcfg_energy >= q_45_xcfg) & (xcfg_energy <= q_55_xcfg)
+                                                robust_energy_xcfg = torch.sum(xcfg_energy * mask_xcfg.float(), dim=-1)
+                                                
+                                                # Step 4: Rescale xcfg based on the ratio of robust energies
+                                                scaling_factor = torch.sqrt(robust_energy_xc / (robust_energy_xcfg + 1e-6))
+                                                xcfg_rescaled = xcfg * scaling_factor.unsqueeze(-1).unsqueeze(-1)
+                                                cfg_x = cfg_x * scaling_factor.unsqueeze(-1).unsqueeze(-1)
+
+
+                                # 5. APG
                                 if apg_params is not None:
                                         if apg_params.apg_start_step <= cfg_params.current_step <= apg_params.apg_end_step:
                                                 cfg_x = (cfg_scale-1) * normalized_guidance(
@@ -341,7 +374,9 @@ def combine_denoised_pass_conds_list(*args, **kwargs):
                                                         apg_params = apg_params,
                                                         index = i,
                                                 )
+                                
 
+                                # 6. Add to denoised
                                 denoised[i] += cfg_x
                                 
 

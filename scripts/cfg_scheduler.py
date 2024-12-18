@@ -90,8 +90,8 @@ class CFGSchedulerParams:
                 self.guidance_scale: int = -1 # CFG
                 self.current_noise_level: float = 100.0
                 self.ep_cfg_enable: bool = False
-                self.ep_cfg_noise_low: float = 0.45 # noise thresholds
-                self.ep_cfg_noise_high: float = 0.55
+                self.ep_cfg_min: float = 0.45 # noise thresholds
+                self.ep_cfg_max: float = 0.55
 
 
 class CFGSchedulerExtensionScript(UIWrapper):
@@ -157,12 +157,12 @@ class CFGSchedulerExtensionScript(UIWrapper):
                 self.remove_all_hooks()
 
                 cfg_interval_enable = getattr(p, "cfg_interval_enable", cfg_interval_enable)
+                ep_cfg_enable = getattr(p, "ep_cfg_enable", ep_cfg_enable)
                 if cfg_interval_enable is False and ep_cfg_enable is False:
                         return
                 cfg_schedule = getattr(p, "cfg_interval_schedule", cfg_schedule)
                 cfg_interval_low = getattr(p, "cfg_interval_low", cfg_interval_low)
                 cfg_interval_high = getattr(p, "cfg_interval_high", cfg_interval_high)
-                ep_cfg_enable = getattr(p, "ep_cfg_enable", ep_cfg_enable)
                 if cfg_interval_enable:
                         p.extra_generation_params.update({
                                 "CFG Interval Enable": cfg_interval_enable,
