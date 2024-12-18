@@ -6,6 +6,7 @@
 - [Compatibility Notice](#compatibility-notice)
 - [News](#compatibility-notice)
 - [Extension Features](#extension-features)
+    - [EP-CFG](#ep-cfg)
     - [Self-Guidance](#self-guidance)
     - [Adaptive Projected Guidance](#adaptive-projected-guidance)
     - [Timestep Guidance](#timestep-guidance)
@@ -59,6 +60,53 @@ To install the `sd-webui-incantations` extension, follow these steps:
 # Extension Features
 
 ---
+## EP-CFG
+https://arxiv.org/abs/2412.09966  
+A new method for rescaling the additive term of CFG.
+
+#### Results
+SD 1.5
+![image](./images/xyz_grid-0022-1.webp)
+Model used is nextphoto_v30\[1c1f913f3b\] by *bigbeanboiler* on CivitAI
+
+#### [Return to top](#sd-webui-incantations)
+
+
+## Self-Guidance
+https://arxiv.org/abs/2412.05827  
+
+#### Results
+SD 1.5
+![image](./images/xyz_grid-0041-SG.webp)
+EP-CFG enabled; Model used is nextphoto_v30\[1c1f913f3b\] by *bigbeanboiler* on CivitAI
+
+#### [Return to top](#sd-webui-incantations)
+
+
+## Adaptive Projected Guidance
+https://arxiv.org/abs/2410.02416  
+A method for rescaling high CFG scales.  
+
+#### Results
+SD 1.5
+![image](./images/xyz_grid-0059-APG.webp)
+CFG Scale: 15; Model used is nextphoto_v30\[1c1f913f3b\] by *bigbeanboiler* on CivitAI
+
+#### [Return to top](#sd-webui-incantations)
+TODO  
+
+## Timestep Guidance
+https://arxiv.org/abs/2407.02687  
+
+#### Results
+SD 1.5
+![image](./images/xyz_grid-0075-TSG.webp)
+CFG Scale: 3; Model used is nextphoto_v30\[1c1f913f3b\] by *bigbeanboiler* on CivitAI
+
+#### [Return to top](#sd-webui-incantations)
+TODO  
+
+
 ## Smoothed Energy Guidance
 Increases quality of outputs by blurring the self-attention in the middle block layers, with minimal added inference time.
 Recommended to fix the CFG scale to 3.0, and control the effect using the Blur Sigma value. Increase CFG if the effect is insufficient.
@@ -346,7 +394,46 @@ SD XL
         primaryClass={cs.CV},
         url={https://arxiv.org/abs/2408.00760}
       }
-}
+
+      @misc{zhang2024epcfgenergypreservingclassifierfreeguidance,
+        title={EP-CFG: Energy-Preserving Classifier-Free Guidance}, 
+        author={Kai Zhang and Fujun Luan and Sai Bi and Jianming Zhang},
+        year={2024},
+        eprint={2412.09966},
+        archivePrefix={arXiv},
+        primaryClass={cs.CV},
+        url={https://arxiv.org/abs/2412.09966}, 
+      }
+
+      @misc{li2024selfguidanceboostingflowdiffusion,
+        title={Self-Guidance: Boosting Flow and Diffusion Generation on Their Own}, 
+        author={Tiancheng Li and Weijian Luo and Zhiyang Chen and Liyuan Ma and Guo-Jun Qi},
+        year={2024},
+        eprint={2412.05827},
+        archivePrefix={arXiv},
+        primaryClass={cs.CV},
+        url={https://arxiv.org/abs/2412.05827}, 
+      }
+
+      @misc{sadat2024eliminatingoversaturationartifactshigh,
+        title={Eliminating Oversaturation and Artifacts of High Guidance Scales in Diffusion Models}, 
+        author={Seyedmorteza Sadat and Otmar Hilliges and Romann M. Weber},
+        year={2024},
+        eprint={2410.02416},
+        archivePrefix={arXiv},
+        primaryClass={cs.LG},
+        url={https://arxiv.org/abs/2410.02416}, 
+      }
+
+      @misc{sadat2024trainingproblemrethinkingclassifierfree,
+        title={No Training, No Problem: Rethinking Classifier-Free Guidance for Diffusion Models}, 
+        author={Seyedmorteza Sadat and Manuel Kansy and Otmar Hilliges and Romann M. Weber},
+        year={2024},
+        eprint={2407.02687},
+        archivePrefix={arXiv},
+        primaryClass={cs.LG},
+        url={https://arxiv.org/abs/2407.02687}, 
+      }
 
 
 - [Hard Prompts Made Easy](https://github.com/YuxinWenRick/hard-prompts-made-easy)
