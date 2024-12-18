@@ -214,7 +214,10 @@ class SGExtensionScript(UIWrapper):
                 sg_params.image_cond = params.image_cond.clone().detach()
                 sg_params.denoiser = params.denoiser
                 sg_params.make_condition_dict = get_make_condition_dict_fn(params.text_uncond)
-                sg_params.sigmas = sg_params.denoiser.sampler.model_wrap.sigmas
+                if hasattr(sg_params.denoiser.sampler.model_wrap, 'sigmas'):
+                        sg_params.sigmas = sg_params.denoiser.sampler.model_wrap.sigmas
+                else:
+                        sg_params.sigmas = None
 
         def on_cfg_denoised_callback(self, params: CFGDenoisedParams, sg_params: SGStateParams):
                 """ Callback function for the CFGDenoisedParams
@@ -237,17 +240,27 @@ class SGExtensionScript(UIWrapper):
                 image_cond_in = sg_params.image_cond
                 sigma_in = sg_params.sigma 
 
-                #if sg_params.sg_shift_scale != 0:
                 # calculate next sigma from sigma schedule based on shift scale
+                # compatibility with DDIM since they use timesteps
                 shift_scale = sg_params.sg_shift_scale
                 current_sigma = sg_params.sigma
-                current_timestep = params.inner_model.sigma_to_t(current_sigma)
+
+                if sg_params.sigmas is not None:
+                        current_timestep = params.inner_model.sigma_to_t(current_sigma)
+                else:
+                        current_timestep = current_sigma
+
                 if sg_params.sg_dynamic_shift_scale:
                         timestep_delta = current_timestep / shift_scale
                 else:
                         timestep_delta = round(sg_params.sg_shift_scale)
                 next_timestep = torch.clamp(current_timestep - timestep_delta, min=0, max=999)
-                next_sigma = params.inner_model.t_to_sigma(next_timestep)
+
+                if sg_params.sigmas is not None:
+                        next_sigma = params.inner_model.t_to_sigma(next_timestep)
+                else:
+                        next_sigma = next_timestep 
+
                 sigma_in = next_sigma
                 logger.debug('[SG] Current Sigma: %s Shift amount: %s New Sigma: %s', current_sigma, next_sigma-current_sigma, next_sigma) 
 
