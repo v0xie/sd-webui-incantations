@@ -14,7 +14,12 @@ from scripts.scfg import SCFGExtensionScript
 from scripts.pag import PAGExtensionScript
 from scripts.save_attn_maps import SaveAttentionMapsScript
 from scripts.cfg_combiner import CFGCombinerScript
+from scripts.cfg_icg import ICGExtensionScript
+from scripts.tcg import TCGExtensionScript
 from scripts.smoothed_energy_guidance import SEGExtensionScript
+from scripts.adaptive_projected_guidance import APGExtensionScript
+from scripts.cfg_scheduler import CFGSchedulerExtensionScript
+from scripts.self_guidance import SGExtensionScript
 
 logger = logging.getLogger(__name__)
 logger.setLevel(environ.get("SD_WEBUI_LOG_LEVEL", logging.INFO))
@@ -35,9 +40,14 @@ class SubmoduleInfo:
 
 # main scripts
 submodules: list[SubmoduleInfo] = [
+        SubmoduleInfo(module=SGExtensionScript()),
         SubmoduleInfo(module=SEGExtensionScript()),
         SubmoduleInfo(module=SCFGExtensionScript()),
         SubmoduleInfo(module=PAGExtensionScript()),
+        SubmoduleInfo(module=CFGSchedulerExtensionScript()),
+        SubmoduleInfo(module=TCGExtensionScript()),
+        SubmoduleInfo(module=ICGExtensionScript()),
+        SubmoduleInfo(module=APGExtensionScript()),
         SubmoduleInfo(module=T2I0ExtensionScript()),
         SubmoduleInfo(module=IncantExtensionScript()),
 ]
@@ -99,6 +109,10 @@ class IncantBaseExtensionScript(scripts.Script):
         def before_process_batch(self, p: StableDiffusionProcessing, *args, **kwargs):
                 for m in submodules:
                         m.module.before_process_batch(p, *self.m_args(m, *args), **kwargs)
+
+        def process_before_every_sampling(self, p: StableDiffusionProcessing, *args, **kwargs):
+                for m in submodules:
+                        m.module.process_before_every_sampling(p, *self.m_args(m, *args), **kwargs)
         
         def process_batch(self, p: StableDiffusionProcessing, *args, **kwargs):
                 for m in submodules:

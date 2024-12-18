@@ -26,6 +26,9 @@ class UIWrapper:
     def before_process_batch(self, p, *args, **kwargs):
         pass
 
+    def process_before_every_sampling(self, p, *args, **kwargs):
+        pass
+
     def process_batch(self, p, *args, **kwargs):
         pass
 
