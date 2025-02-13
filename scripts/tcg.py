@@ -96,7 +96,7 @@ class TCGExtensionScript(UIWrapper):
                         tcg_sanf = gr.Checkbox(value=False, default=False, label="Use Saliency-Adaptive Noise Fusion", elem_id='tcg_sanf')
                         with gr.Row():
                                 #boost and skip
-                                variance = gr.Slider(value = 0, minimum = 0.0, maximum = 4.0, step = 0.01, label="Variance", elem_id = 'tcg_variance', info="Boost variance of initial noise by this value squared")
+                                tcg_variance = gr.Slider(value = 1.0, minimum = -1.0, maximum = 4.0, step = 0.01, label="Initial Noise Variance", elem_id = 'tcg_variance', info="Boost variance of initial noise")
                         with gr.Row():
                                 start_step = gr.Slider(value = 0, minimum = 0, maximum = 150, step = 1, label="Start Step", elem_id = 'tcg_start_step', info="")
                                 end_step = gr.Slider(value = 150, minimum = 0, maximum = 150, step = 1, label="End Step", elem_id = 'tcg_end_step', info="")
@@ -114,7 +114,7 @@ class TCGExtensionScript(UIWrapper):
                 tcg_std_scale.do_not_save_to_config = True
                 start_step.do_not_save_to_config = True
                 end_step.do_not_save_to_config = True
-                variance.do_not_save_to_config = True
+                tcg_variance.do_not_save_to_config = True
                 self.infotext_fields = [
                         (active, lambda d: gr.Checkbox.update(value='TCG Active' in d)),
                         (tcg_sanf, lambda d: gr.Checkbox.update(value='TCG SANF' in d)),
@@ -124,7 +124,7 @@ class TCGExtensionScript(UIWrapper):
                         (tcg_alpha, 'TCG Alpha'),
                         (tcg_max_layer_index, 'TCG Max Layer Index'),
                         (tcg_std_scale, lambda d: gr.Checkbox.update(value='TCG Std Scale' in d)),
-                        (variance, 'TCG Variance'),
+                        (tcg_variance, 'TCG Variance'),
                 ]
                 self.paste_field_names = [
                         'tcg_active',
@@ -137,9 +137,9 @@ class TCGExtensionScript(UIWrapper):
                         'tcg_std_scale',
                         'tcg_variance'
                 ]
-                return [active, start_step, end_step, tcg_sanf, tcg_scale, tcg_alpha, tcg_std_scale, tcg_max_layer_index, variance]
+                return [active, start_step, end_step, tcg_sanf, tcg_scale, tcg_alpha, tcg_std_scale, tcg_max_layer_index, tcg_variance]
 
-        def process_batch(self, p: StableDiffusionProcessing, active, start_step, end_step, tcg_sanf, tcg_scale, tcg_alpha, tcg_std_scale, tcg_max_layer_index, variance, *args, **kwargs):
+        def process_batch(self, p: StableDiffusionProcessing, active, start_step, end_step, tcg_sanf, tcg_scale, tcg_alpha, tcg_std_scale, tcg_max_layer_index, tcg_variance, *args, **kwargs):
                 # cleanup previous hooks always
                 script_callbacks.remove_current_script_callbacks()
                 self.remove_all_hooks()
@@ -169,7 +169,7 @@ class TCGExtensionScript(UIWrapper):
                                 "TCG Max Layer Index": tcg_max_layer_index,
                                 "TCG Variance": tcg_variance,
                         })
-                self.create_hook(p, active, start_step, end_step, tcg_sanf, tcg_scale, tcg_alpha, tcg_std_scale, tcg_max_layer_index, variance)
+                self.create_hook(p, active, start_step, end_step, tcg_sanf, tcg_scale, tcg_alpha, tcg_std_scale, tcg_max_layer_index, tcg_variance)
 
         def create_hook(self, p: StableDiffusionProcessing, active, start_step, end_step, tcg_sanf, tcg_scale, tcg_alpha, tcg_std_scale, tcg_max_layer_index, variance, *args, **kwargs):
                 # Create a list of parameters for each concept
@@ -373,13 +373,14 @@ class TCGExtensionScript(UIWrapper):
                 for module in tcg_params.time_embed_modules:
                         module.tcg_enable = False
         
-        def process_before_every_sampling(self, p, active, start_step, end_step, tcg_sanf, tcg_scale, tcg_alpha, tcg_std_scale, tcg_max_layer_index, variance, *args, **kwargs):
+        def process_before_every_sampling(self, p, active, start_step, end_step, tcg_sanf, tcg_scale, tcg_alpha, tcg_std_scale, tcg_max_layer_index, tcg_variance, *args, **kwargs):
+                active = getattr(p, "tcg_active", active)
                 if not active:
                         return
-                if variance > 0:
+                tcg_variance = getattr(p, "tcg_variance", tcg_variance)
+                if tcg_variance != 1 and not p.is_hr_pass:
                         x = kwargs.get('x')
-                        new_variance = variance
-                        #new_variance = pow(1+variance, 2)
+                        new_variance = tcg_variance
                         x.mul_(new_variance)
 
 
