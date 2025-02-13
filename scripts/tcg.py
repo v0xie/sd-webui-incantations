@@ -1,5 +1,6 @@
 import logging
 from os import environ
+from math import pow
 import modules.scripts as scripts
 import gradio as gr
 import torch
@@ -28,6 +29,19 @@ Guidance for Diffusion Models" (2024, Sadat et al.)
       primaryClass={cs.LG},
       url={https://arxiv.org/abs/2407.02687}, 
 }
+
+Include variance-boosting from "Boost-and-Skip: A Simple Guidance-Free Diffusion for Minority Generation" (2025, Um et al.)
+@misc{um2025boostandskipsimpleguidancefreediffusion,
+      title={Boost-and-Skip: A Simple Guidance-Free Diffusion for Minority Generation}, 
+      author={Soobin Um and Beomsu Kim and Jong Chul Ye},
+      year={2025},
+      eprint={2502.06516},
+      archivePrefix={arXiv},
+      primaryClass={cs.LG},
+      url={https://arxiv.org/abs/2502.06516}, 
+}
+
+
 
 Author: v0xie
 GitHub URL: https://github.com/v0xie/sd-webui-incantations
@@ -81,6 +95,9 @@ class TCGExtensionScript(UIWrapper):
                         active = gr.Checkbox(value=False, default=False, label="Active", elem_id='tcg_active')
                         tcg_sanf = gr.Checkbox(value=False, default=False, label="Use Saliency-Adaptive Noise Fusion", elem_id='tcg_sanf')
                         with gr.Row():
+                                #boost and skip
+                                variance = gr.Slider(value = 0, minimum = 0.0, maximum = 4.0, step = 0.01, label="Variance", elem_id = 'tcg_variance', info="Boost variance of initial noise by this value squared")
+                        with gr.Row():
                                 start_step = gr.Slider(value = 0, minimum = 0, maximum = 150, step = 1, label="Start Step", elem_id = 'tcg_start_step', info="")
                                 end_step = gr.Slider(value = 150, minimum = 0, maximum = 150, step = 1, label="End Step", elem_id = 'tcg_end_step', info="")
                         with gr.Row():
@@ -89,7 +106,6 @@ class TCGExtensionScript(UIWrapper):
                                 tcg_max_layer_index = gr.Slider(value = 10, minimum = 1, maximum = 100, step = 1, label="TCG Max Layer Index", elem_id = 'tcg_max_layer_index', info="")
                                 tcg_std_scale = gr.Checkbox(value=True, default=True, label="TCG Std Scale", elem_id='tcg_std_scale', info="If enabled, applies TCG with standard deviation scaling")
 
-                                
                 active.do_not_save_to_config = True
                 tcg_sanf.do_not_save_to_config = True
                 tcg_scale.do_not_save_to_config = True
@@ -98,6 +114,7 @@ class TCGExtensionScript(UIWrapper):
                 tcg_std_scale.do_not_save_to_config = True
                 start_step.do_not_save_to_config = True
                 end_step.do_not_save_to_config = True
+                variance.do_not_save_to_config = True
                 self.infotext_fields = [
                         (active, lambda d: gr.Checkbox.update(value='TCG Active' in d)),
                         (tcg_sanf, lambda d: gr.Checkbox.update(value='TCG SANF' in d)),
@@ -107,6 +124,7 @@ class TCGExtensionScript(UIWrapper):
                         (tcg_alpha, 'TCG Alpha'),
                         (tcg_max_layer_index, 'TCG Max Layer Index'),
                         (tcg_std_scale, lambda d: gr.Checkbox.update(value='TCG Std Scale' in d)),
+                        (variance, 'TCG Variance'),
                 ]
                 self.paste_field_names = [
                         'tcg_active',
@@ -117,10 +135,11 @@ class TCGExtensionScript(UIWrapper):
                         'tcg_alpha',
                         'tcg_max_layer_index',
                         'tcg_std_scale',
+                        'tcg_variance'
                 ]
-                return [active, start_step, end_step, tcg_sanf, tcg_scale, tcg_alpha, tcg_std_scale, tcg_max_layer_index]
+                return [active, start_step, end_step, tcg_sanf, tcg_scale, tcg_alpha, tcg_std_scale, tcg_max_layer_index, variance]
 
-        def process_batch(self, p: StableDiffusionProcessing, active, start_step, end_step, tcg_sanf, tcg_scale, tcg_alpha, tcg_std_scale, tcg_max_layer_index, *args, **kwargs):
+        def process_batch(self, p: StableDiffusionProcessing, active, start_step, end_step, tcg_sanf, tcg_scale, tcg_alpha, tcg_std_scale, tcg_max_layer_index, variance, *args, **kwargs):
                 # cleanup previous hooks always
                 script_callbacks.remove_current_script_callbacks()
                 self.remove_all_hooks()
@@ -135,6 +154,7 @@ class TCGExtensionScript(UIWrapper):
                 tcg_alpha = getattr(p, "tcg_alpha", tcg_alpha)
                 tcg_std_scale = getattr(p, "tcg_std_scale", tcg_std_scale)
                 tcg_max_layer_index = getattr(p, "tcg_max_layer_index", tcg_max_layer_index)
+                tcg_variance = getattr(p, "tcg_variance", 0)
 
                 if active:
                         p.extra_generation_params.update({
@@ -147,10 +167,11 @@ class TCGExtensionScript(UIWrapper):
                                 "TCG Alpha": tcg_alpha,
                                 "TCG Std Scale": tcg_std_scale,
                                 "TCG Max Layer Index": tcg_max_layer_index,
+                                "TCG Variance": tcg_variance,
                         })
-                self.create_hook(p, active, start_step, end_step, tcg_sanf, tcg_scale, tcg_alpha, tcg_std_scale, tcg_max_layer_index)
+                self.create_hook(p, active, start_step, end_step, tcg_sanf, tcg_scale, tcg_alpha, tcg_std_scale, tcg_max_layer_index, variance)
 
-        def create_hook(self, p: StableDiffusionProcessing, active, start_step, end_step, tcg_sanf, tcg_scale, tcg_alpha, tcg_std_scale, tcg_max_layer_index, *args, **kwargs):
+        def create_hook(self, p: StableDiffusionProcessing, active, start_step, end_step, tcg_sanf, tcg_scale, tcg_alpha, tcg_std_scale, tcg_max_layer_index, variance, *args, **kwargs):
                 # Create a list of parameters for each concept
                 tcg_params = TCGStateParams()
 
@@ -351,6 +372,16 @@ class TCGExtensionScript(UIWrapper):
                 # set tcg_enable to False
                 for module in tcg_params.time_embed_modules:
                         module.tcg_enable = False
+        
+        def process_before_every_sampling(self, p, active, start_step, end_step, tcg_sanf, tcg_scale, tcg_alpha, tcg_std_scale, tcg_max_layer_index, variance, *args, **kwargs):
+                if not active:
+                        return
+                if variance > 0:
+                        x = kwargs.get('x')
+                        new_variance = variance
+                        #new_variance = pow(1+variance, 2)
+                        x.mul_(new_variance)
+
 
         def get_xyz_axis_options(self) -> dict:
                 xyz_grid = [x for x in scripts.scripts_data if x.script_class.__module__ in ("xyz_grid.py", "scripts.xyz_grid")][0].module
@@ -363,6 +394,7 @@ class TCGExtensionScript(UIWrapper):
                         xyz_grid.AxisOption("[TCG] Alpha", float, tcg_apply_field("tcg_alpha")),
                         xyz_grid.AxisOption("[TCG] Std Scale", str, tcg_apply_override('tcg_std_scale', boolean=True), choices=xyz_grid.boolean_choice(reverse=True)),
                         xyz_grid.AxisOption("[TCG] Max Layer Index", int, tcg_apply_field("tcg_max_layer_index")),
+                        xyz_grid.AxisOption("[TCG] Variance", float, tcg_apply_field("tcg_variance")),
                 }
                 return extra_axis_options
 
