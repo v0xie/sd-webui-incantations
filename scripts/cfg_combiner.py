@@ -69,7 +69,7 @@ class CFGCombinerScript(UIWrapper):
             logger.debug("CFGCombinerScript process_batch")
             pag_active = p.extra_generation_params.get('PAG Active', False)
             scfg_active = p.extra_generation_params.get('SCFG Active', False)
-            cfgi_active = p.extra_generation_params.get('CFG Interval Enable', False) or p.extra_generation_params.get('EP-CFG Enable', False)
+            cfgi_active = p.extra_generation_params.get('CFG Interval Enable', False) or p.extra_generation_params.get('EP-CFG Enable', False) or p.extra_generation_params.get('TCFG Enable', False)
             tcg_active = p.extra_generation_params.get('TCG Active', False)
             apg_active = p.extra_generation_params.get('APG Active', False)
             sg_active = p.extra_generation_params.get('SG Active', False)
@@ -377,7 +377,24 @@ def combine_denoised_pass_conds_list(*args, **kwargs):
                                                 # Step 4: Rescale xcfg based on the ratio of robust energies
                                                 scaling_factor = torch.sqrt(robust_energy_xc / (robust_energy_xcfg + 1e-6))
                                                 cfg_x = cfg_x * scaling_factor.unsqueeze(-1).unsqueeze(-1)
-                                
+
+                                        # 7. TCFG [arXiv:2503.18137] Kwon et. al.
+                                        if cfgi_params.tcfg_enable:
+                                                C, H, W = cfg_x.shape
+                                                uncond = denoised[i].reshape(-1) # (D,)
+                                                cond = cfg_x.reshape(-1) # (D,)
+
+                                                A = torch.stack([uncond, cond], dim=0) # (2, D)
+                                                U, S, Vh = torch.linalg.svd(A, full_matrices=False)
+                                                # U: (2, 2) 
+                                                # S: (2,)
+                                                # Vh: (2, D)
+                                                v1 = Vh[0, :] # (D,)
+                                                dotval = torch.dot(uncond,v1)
+                                                uncond_proj = dotval * v1
+                                                # reshape to (C, H, W)
+                                                uncond_proj = uncond_proj.view_as(denoised[i])
+                                                denoised[i] = uncond_proj
 
                                 # 6. Add to denoised
                                 denoised[i] += cfg_x

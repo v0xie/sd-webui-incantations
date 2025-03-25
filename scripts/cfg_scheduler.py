@@ -92,6 +92,7 @@ class CFGSchedulerParams:
                 self.ep_cfg_enable: bool = False
                 self.ep_cfg_min: float = 0.45 # noise thresholds
                 self.ep_cfg_max: float = 0.55
+                self.tcfg_enable: bool = False
 
 
 class CFGSchedulerExtensionScript(UIWrapper):
@@ -112,6 +113,7 @@ class CFGSchedulerExtensionScript(UIWrapper):
                 with gr.Accordion(label=self.title(), open=False):
                         with gr.Row():
                                 ep_cfg_enable = gr.Checkbox(value=False, label="EP-CFG Enable", elem_id='ep_cfg_interval_enable')
+                                tcfg_enable = gr.Checkbox(value=False, label="TCFG Enable", elem_id='tcfg_enable')
                         with gr.Row():
                                 cfg_interval_enable = gr.Checkbox(
                                 value=False,
@@ -129,7 +131,7 @@ class CFGSchedulerExtensionScript(UIWrapper):
                                 )
                                 cfg_interval_low = gr.Slider(value = 0, minimum = 0, maximum = 100, step = 0.1, label="CFG Noise Interval Low", elem_id = 'cfg_interval_low', info="")
                                 cfg_interval_high = gr.Slider(value = 100, minimum = 0, maximum = 100, step = 0.1, label="CFG Noise Interval High", elem_id = 'cfg_interval_high', info="")
-
+                tcfg_enable.do_not_save_to_config = True
                 cfg_interval_enable.do_not_save_to_config = True
                 cfg_schedule.do_not_save_to_config = True
                 cfg_interval_low.do_not_save_to_config = True
@@ -137,6 +139,7 @@ class CFGSchedulerExtensionScript(UIWrapper):
                 ep_cfg_enable.do_not_save_to_config = True
                 self.infotext_fields = [
                         (cfg_interval_enable, lambda d: gr.Checkbox.update(value='CFG Interval Enable' in d)),
+                        (tcfg_enable, lambda d: gr.Checkbox.update(value='TCFG Enable' in d)),
                         (cfg_schedule, 'CFG Interval Schedule'),
                         (cfg_interval_low, 'CFG Interval Low'),
                         (cfg_interval_high, 'CFG Interval High'),
@@ -147,18 +150,20 @@ class CFGSchedulerExtensionScript(UIWrapper):
                         'cfg_interval_schedule',
                         'cfg_interval_low',
                         'cfg_interval_high',
-                        'ep_cfg_interval_enable'
+                        'ep_cfg_interval_enable',
+                        'tcfg_enable'
                 ]
-                return [cfg_interval_enable, cfg_schedule, cfg_interval_low, cfg_interval_high, ep_cfg_enable]
+                return [cfg_interval_enable, cfg_schedule, cfg_interval_low, cfg_interval_high, ep_cfg_enable, tcfg_enable]
 
-        def process_batch(self, p: StableDiffusionProcessing, cfg_interval_enable, cfg_schedule, cfg_interval_low, cfg_interval_high, ep_cfg_enable, *args, **kwargs):
+        def process_batch(self, p: StableDiffusionProcessing, cfg_interval_enable, cfg_schedule, cfg_interval_low, cfg_interval_high, ep_cfg_enable, tcfg_enable, *args, **kwargs):
                 # cleanup previous hooks always
                 script_callbacks.remove_current_script_callbacks()
                 self.remove_all_hooks()
 
                 cfg_interval_enable = getattr(p, "cfg_interval_enable", cfg_interval_enable)
                 ep_cfg_enable = getattr(p, "ep_cfg_enable", ep_cfg_enable)
-                if cfg_interval_enable is False and ep_cfg_enable is False:
+                tcfg_enable = getattr(p, "tcfg_enable", tcfg_enable)
+                if cfg_interval_enable is False and ep_cfg_enable is False and tcfg_enable is False:
                         return
                 cfg_schedule = getattr(p, "cfg_interval_schedule", cfg_schedule)
                 cfg_interval_low = getattr(p, "cfg_interval_low", cfg_interval_low)
@@ -174,9 +179,13 @@ class CFGSchedulerExtensionScript(UIWrapper):
                         p.extra_generation_params.update({
                                 "EP-CFG Enable": ep_cfg_enable,
                         })
-                self.create_hook(p,cfg_interval_enable, cfg_schedule, cfg_interval_low, cfg_interval_high, ep_cfg_enable)
+                if tcfg_enable:
+                        p.extra_generation_params.update({
+                                "TCFG Enable": tcfg_enable,
+                        })
+                self.create_hook(p,cfg_interval_enable, cfg_schedule, cfg_interval_low, cfg_interval_high, ep_cfg_enable, tcfg_enable)
 
-        def create_hook(self, p: StableDiffusionProcessing, cfg_interval_enable, cfg_schedule, cfg_interval_low, cfg_interval_high, ep_cfg_enable, *args, **kwargs):
+        def create_hook(self, p: StableDiffusionProcessing, cfg_interval_enable, cfg_schedule, cfg_interval_low, cfg_interval_high, ep_cfg_enable, tcfg_enable, *args, **kwargs):
                 # Create a list of parameters for each concept
                 cfgi_params = CFGSchedulerParams()
 
@@ -191,6 +200,7 @@ class CFGSchedulerExtensionScript(UIWrapper):
                 cfgi_params.guidance_scale = p.cfg_scale
                 cfgi_params.cfg_interval_scheduled_value = p.cfg_scale
                 cfgi_params.ep_cfg_enable = ep_cfg_enable
+                cfgi_params.tcfg_enable = tcfg_enable
 
                 if cfgi_params.cfg_interval_enable:
                        # Refer to 3.1 Practice in the paper
