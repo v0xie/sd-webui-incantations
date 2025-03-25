@@ -51,6 +51,17 @@ EP-CFG from "EP-CFG: Energy-Preserving Classifier-Free Guidance"
       url={https://arxiv.org/abs/2412.09966}, 
 }
 
+TCFG from "TCFG: Tangential Damping Classifier-free Guidance"
+@misc{kwon2025tcfgtangentialdampingclassifierfree,
+      title={TCFG: Tangential Damping Classifier-free Guidance}, 
+      author={Mingi Kwon and Shin seong Kim and Jaeseok Jeong. Yi Ting Hsiao and Youngjung Uh},
+      year={2025},
+      eprint={2503.18137},
+      archivePrefix={arXiv},
+      primaryClass={cs.CV},
+      url={https://arxiv.org/abs/2503.18137}, 
+}
+
 Author: v0xie
 GitHub URL: https://github.com/v0xie/sd-webui-incantations
 
