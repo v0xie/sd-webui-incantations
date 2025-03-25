@@ -260,7 +260,8 @@ class CFGSchedulerExtensionScript(UIWrapper):
                         xyz_grid.AxisOption("[CFG-SCHED] CFG Noise Interval Low", float, cfgs_apply_field("cfg_interval_low")),
                         xyz_grid.AxisOption("[CFG-SCHED] CFG Noise Interval High", float, cfgs_apply_field("cfg_interval_high")),
                         xyz_grid.AxisOption("[CFG-SCHED] CFG Schedule Type", str, cfgs_apply_override('cfg_interval_schedule', boolean=False), choices=lambda: SCHEDULES),
-                        xyz_grid.AxisOption("[CFG-SCHED] EP-CFG Enable", str, cfgs_apply_override('ep_cfg_enable', boolean=True), choices=xyz_grid.boolean_choice(reverse=True))
+                        xyz_grid.AxisOption("[CFG-SCHED] EP-CFG Enable", str, cfgs_apply_override('ep_cfg_enable', boolean=True), choices=xyz_grid.boolean_choice(reverse=True)),
+                        xyz_grid.AxisOption("[CFG-SCHED] TCFG Enable", str, cfgs_apply_override('tcfg_enable', boolean=True), choices=xyz_grid.boolean_choice(reverse=True))
                 }
                 return extra_axis_options
 
