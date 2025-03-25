@@ -244,22 +244,11 @@ def combine_denoised_pass_conds_list(*args, **kwargs):
                 ### Combine Denoised
                 for i, conds in enumerate(conds_list):
                         for cond_index, weight in conds:
-                                if cfgi_params is not None:
-                                        # 7. TCFG [arXiv:2503.18137] Kwon et. al.
-                                        if cfgi_params.tcfg_enable:
-                                                uncond = denoised[i].reshape(-1) # (D,)
-                                                cond = x_out[cond_index].reshape(-1) # (D,)
 
-                                                A = torch.stack([uncond, cond], dim=0) # (2, D)
-                                                U, S, Vh = torch.linalg.svd(A, full_matrices=False)
-                                                # U: (2, 2) 
-                                                # S: (2,)
-                                                # Vh: (2, D)
-                                                v1 = Vh[0, :] # (D,)
-                                                dotval = torch.dot(uncond,v1)
-                                                uncond_proj = dotval * v1
-                                                # reshape to (C, H, W)
-                                                uncond_proj = uncond_proj.view_as(denoised[i])
+                                # 7. TCFG [arXiv:2503.18137] Kwon et. al.
+                                if cfgi_params is not None:
+                                        if cfgi_params.tcfg_enable:
+                                                uncond_proj = tcfg(denoised[i], x_out[cond_index])
                                                 denoised[i] = uncond_proj
 
                                 model_delta = x_out[cond_index] - denoised[i]
@@ -277,6 +266,11 @@ def combine_denoised_pass_conds_list(*args, **kwargs):
                                         # do pag
                                         else:
                                                 try:
+                                                        # 7. TCFG [arXiv:2503.18137] Kwon et. al.
+                                                        if cfgi_params is not None:
+                                                                if cfgi_params.tcfg_enable:
+                                                                        pag_uncond_proj = tcfg(pag_x_out[i], x_out[cond_index])
+                                                                        pag_x_out[i] = pag_uncond_proj
                                                         pag_delta = x_out[cond_index] - pag_x_out[i]
                                                         pag_x = pag_delta * (weight * pag_scale)
 
@@ -316,6 +310,11 @@ def combine_denoised_pass_conds_list(*args, **kwargs):
                                         # do pag
                                         else:
                                                 try:
+                                                        # 7. TCFG [arXiv:2503.18137] Kwon et. al.
+                                                        if cfgi_params is not None:
+                                                                if cfgi_params.tcfg_enable:
+                                                                        sg_uncond_proj = tcfg(sg_params.sg_x_out[i], x_out[cond_index])
+                                                                        sg_params.sg_x_out[i] = sg_uncond_proj
                                                         sg_delta = x_out[cond_index] - sg_params.sg_x_out[i]
                                                         sg_x = sg_delta * (weight * sg_params.sg_scale)
 
@@ -395,15 +394,45 @@ def combine_denoised_pass_conds_list(*args, **kwargs):
                                                 scaling_factor = torch.sqrt(robust_energy_xc / (robust_energy_xcfg + 1e-6))
                                                 cfg_x = cfg_x * scaling_factor.unsqueeze(-1).unsqueeze(-1)
 
+                                #if cfgi_params is not None:
+                                        # 7. TCFG [arXiv:2503.18137] Kwon et. al.
+                                        # if cfgi_params.tcfg_enable:
+                                        #         uncond_proj = tcfg(denoised[i], cfg_x)
+                                        #         #uncond_proj = tcfg(denoised[i], x_out[cond_index])
+                                        #         denoised[i] = uncond_proj
+
                                 # 6. Add to denoised
                                 denoised[i] += cfg_x
-                                
+
 
                                 devices.torch_gc()
 
                 return denoised
 
         return new_combine_denoised(*args)
+
+# 7. TCFG [arXiv:2503.18137] Kwon et. al.
+#if cfgi_params.tcfg_enable:
+def tcfg(denoised_i, x_out_cond_index):
+        """ TCFG [arXiv:2503.18137] Kwon et. al. 
+        Parameters:
+                denoised: uncond indexed denoised image (C, H, W)
+                x_out_cond_index: cond indexed conditional image (C, H, W)
+        Returns:
+                uncond_proj: projected uncond image (C, H, W)
+        """
+        dtype = denoised_i.dtype
+        uncond = denoised_i.reshape(-1) # (D,)
+        cond = x_out_cond_index.reshape(-1) # (D,)
+        A = torch.stack([uncond, cond], dim=0) # (2, D)
+        A = A.to(dtype=torch.float32)
+        _, _, Vh = torch.linalg.svd(A, full_matrices=False)
+        v1 = Vh[0, :] # (D,)
+        dotval = torch.dot(uncond,v1)
+        uncond_proj = dotval * v1
+        uncond_proj = uncond_proj.view_as(denoised_i) # reshape to (C, H, W)
+        uncond_proj = uncond_proj.to(dtype=dtype)
+        return uncond_proj
 
 # 3. Saliency Adaptive Noise Fusion arXiv.2311.10329v5
 def sanf(cfg_x, pag_x):
