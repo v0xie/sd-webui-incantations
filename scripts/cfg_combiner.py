@@ -244,7 +244,26 @@ def combine_denoised_pass_conds_list(*args, **kwargs):
                 ### Combine Denoised
                 for i, conds in enumerate(conds_list):
                         for cond_index, weight in conds:
-                                model_delta = x_out[cond_index] - denoised_uncond[i]
+                                if cfgi_params is not None:
+                                        # 7. TCFG [arXiv:2503.18137] Kwon et. al.
+                                        if cfgi_params.tcfg_enable:
+                                                uncond = denoised[i].reshape(-1) # (D,)
+                                                cond = x_out[cond_index].reshape(-1) # (D,)
+
+                                                A = torch.stack([uncond, cond], dim=0) # (2, D)
+                                                U, S, Vh = torch.linalg.svd(A, full_matrices=False)
+                                                # U: (2, 2) 
+                                                # S: (2,)
+                                                # Vh: (2, D)
+                                                v1 = Vh[0, :] # (D,)
+                                                dotval = torch.dot(uncond,v1)
+                                                uncond_proj = dotval * v1
+                                                # reshape to (C, H, W)
+                                                uncond_proj = uncond_proj.view_as(denoised[i])
+                                                denoised[i] = uncond_proj
+
+                                model_delta = x_out[cond_index] - denoised[i]
+                                #model_delta = x_out[cond_index] - denoised_uncond[i]
 
                                 # 1. Experimental formulation for S-CFG combined with CFG combined with APG
                                 cfg_o = model_delta * (weight * cfg_scale) # original delta
@@ -328,8 +347,6 @@ def combine_denoised_pass_conds_list(*args, **kwargs):
                                                pass
                                 cfg_x = rate * cfg_x
 
-
-
                                 # 5. APG
                                 if apg_params is not None:
                                         if apg_params.apg_start_step <= cfg_params.current_step <= apg_params.apg_end_step:
@@ -377,24 +394,6 @@ def combine_denoised_pass_conds_list(*args, **kwargs):
                                                 # Step 4: Rescale xcfg based on the ratio of robust energies
                                                 scaling_factor = torch.sqrt(robust_energy_xc / (robust_energy_xcfg + 1e-6))
                                                 cfg_x = cfg_x * scaling_factor.unsqueeze(-1).unsqueeze(-1)
-
-                                        # 7. TCFG [arXiv:2503.18137] Kwon et. al.
-                                        if cfgi_params.tcfg_enable:
-                                                C, H, W = cfg_x.shape
-                                                uncond = denoised[i].reshape(-1) # (D,)
-                                                cond = cfg_x.reshape(-1) # (D,)
-
-                                                A = torch.stack([uncond, cond], dim=0) # (2, D)
-                                                U, S, Vh = torch.linalg.svd(A, full_matrices=False)
-                                                # U: (2, 2) 
-                                                # S: (2,)
-                                                # Vh: (2, D)
-                                                v1 = Vh[0, :] # (D,)
-                                                dotval = torch.dot(uncond,v1)
-                                                uncond_proj = dotval * v1
-                                                # reshape to (C, H, W)
-                                                uncond_proj = uncond_proj.view_as(denoised[i])
-                                                denoised[i] = uncond_proj
 
                                 # 6. Add to denoised
                                 denoised[i] += cfg_x
