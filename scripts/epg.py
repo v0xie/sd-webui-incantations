@@ -41,7 +41,7 @@ class EPGExtensionScript(UIWrapper):
     def setup_ui(self, is_img2img) -> list:
         with gr.Accordion(self.title(), open=False):
             with gr.Row():
-                active = gr.Checkbox(label="Active", value=True, elem_id="epg_active")
+                active = gr.Checkbox(label="Active", value=False, elem_id="epg_active")
                 temperature = gr.Slider(label="Temperature", minimum=0, maximum=1, value=0.01, step=0.01, elem_id="epg_tau")
             with gr.Row():
                 start_idx = gr.Slider(label="Start Index", minimum=0, maximum=300, value=5, step=1, elem_id="epg_start_idx")
