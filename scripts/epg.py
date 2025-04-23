@@ -10,6 +10,17 @@ from scripts.ui_wrapper import UIWrapper
 from scripts.incant_utils import module_hooks
 
 """
+An unofficial implementation of ERG (Entropy Rectifying Guidance) for stable-diffusion-webui.
+
+@misc{ifriqi2025entropyrectifyingguidancediffusion,
+      title={Entropy Rectifying Guidance for Diffusion and Flow Models}, 
+      author={Tariq Berrada Ifriqi and Adriana Romero-Soriano and Michal Drozdzal and Jakob Verbeek and Karteek Alahari},
+      year={2025},
+      eprint={2504.13987},
+      archivePrefix={arXiv},
+      primaryClass={cs.CV},
+      url={https://arxiv.org/abs/2504.13987}, 
+}
 
 """
 
