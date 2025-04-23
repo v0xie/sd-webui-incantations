@@ -96,6 +96,8 @@ class EPGExtensionScript(UIWrapper):
             return output
 
         def epg_get_conds_with_caching_wrapper(*args, **kwargs):
+            # TODO: workaround sdxl requires some negative prompt because of modules/sd_models_xl.py#32
+
             # run on negative only
             prompts = args[1]
             if not prompts.is_negative_prompt:
@@ -108,11 +110,14 @@ class EPGExtensionScript(UIWrapper):
             # patch
             handles = []
             crossattn_modules = self.get_crossattn_modules()
-            for i, module in enumerate(crossattn_modules):
-                #if 5 < i < 10: 
+            module_start_idx = max(0, start_idx) 
+            module_end_idx = min(len(crossattn_modules), end_idx)
+
+            for module_idx, module in enumerate(crossattn_modules):
+                if module_start_idx < module_idx < module_end_idx: 
                     module_hooks.module_add_forward_hook(module, pl_forward_hook, hook_type='forward', with_kwargs=True)
                     handles.append(module)
-                    logger.debug(f"EPG: Added forward hook to {i}: {module.network_layer_name}")
+                    logger.debug(f"EPG: Added forward hook to {module_idx}: {module.network_layer_name}")
             if not crossattn_modules:
                 logger.error("No self attention modules found, cannot run")
             if not self.og_func:
@@ -151,10 +156,10 @@ class EPGExtensionScript(UIWrapper):
         xyz_grid = [x for x in scripts.scripts_data if x.script_class.__module__ in ("xyz_grid.py", "scripts.xyz_grid")][0].module
         extra_axis_options = {
                 xyz_grid.AxisOption("[EPG] Enable EPG", str, epg_apply_override('epg_enable', boolean=True), choices=xyz_grid.boolean_choice(reverse=True)),
-                # xyz_grid.AxisOption("[CFG-SCHED] CFG Noise Interval Low", float, cfgs_apply_field("cfg_interval_low")),
-                # xyz_grid.AxisOption("[CFG-SCHED] CFG Noise Interval High", float, cfgs_apply_field("cfg_interval_high")),
-                # xyz_grid.AxisOption("[CFG-SCHED] CFG Schedule Type", str, cfgs_apply_override('cfg_interval_schedule', boolean=False), choices=lambda: SCHEDULES),
-                # xyz_grid.AxisOption("[CFG-SCHED] EP-CFG Enable", str, cfgs_apply_override('ep_cfg_enable', boolean=True), choices=xyz_grid.boolean_choice(reverse=True))
+                xyz_grid.AxisOption("[EPG] Temperature", float, epg_apply_field("epg_tau")),
+                xyz_grid.AxisOption("[EPG] Start Index", int, epg_apply_field("epg_start_idx")),
+                xyz_grid.AxisOption("[EPG] End Index", int, epg_apply_field("epg_end_idx")),
+                # xyz_grid.AxisOption("[CFG-SCHED] CFG Schedule Type", str, epg_apply_override('cfg_interval_schedule', boolean=False), choices=lambda: SCHEDULES),
         }
         return extra_axis_options
 
