@@ -107,7 +107,8 @@ class EPGExtensionScript(UIWrapper):
             if not self.og_func:
                 logger.error("EPG: get_conds_with_caching_wrapper called without original function")
             # call the original function
-            output = self.og_func(*args, **kwargs)
+            output = self.og_func(args[0], args[1], args[2], [[None, None]], args[4])
+            #output = self.og_func(*args, **kwargs)
             # unpatch
             for handle in handles:
                 module_hooks.remove_module_forward_hook(handle, 'pl_forward_hook')
