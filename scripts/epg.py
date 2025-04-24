@@ -41,7 +41,7 @@ class EPGExtensionScript(UIWrapper):
     def setup_ui(self, is_img2img) -> list:
         with gr.Accordion(self.title(), open=False):
             with gr.Row():
-                active = gr.Checkbox(label="Active", value=False, elem_id="epg_active")
+                active = gr.Checkbox(label="Active", value=False, elem_id="epg_active", info="Enable ERG. Lower temperatures need CFG.")
             with gr.Row():
                 temperature = gr.Slider(label="I Temperature", minimum=0.01, maximum=1, value=1, step=0.01, elem_id="epg_tau", info="Temperature for I-ERG, 1 is disabled")
                 c_temperature = gr.Slider(label="C Temperature", minimum=0, maximum=1, value=1, step=0.01, elem_id="epg_c_tau", info="Temperature for C-ERG, 1 is disabled")
