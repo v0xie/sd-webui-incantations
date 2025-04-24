@@ -197,14 +197,14 @@ def epg_apply_override(field, boolean: bool = False):
         if boolean:
             x = True if x.lower() == "true" else False
         setattr(p, field, x)
-        if 'epg_' in field and not hasattr(p, "epg_enable"):
-            p.epg_enable = True
+        if 'epg_' in field and not hasattr(p, "epg_active"):
+            p.epg_active = True
     return fun
 
 
 def epg_apply_field(field):
     def fun(p, x, xs):
-        if not hasattr(p, "epg_enable"):
-                p.epg_enable = True
+        if not hasattr(p, "epg_active"):
+                p.epg_active = True
         setattr(p, field, x)
     return fun
