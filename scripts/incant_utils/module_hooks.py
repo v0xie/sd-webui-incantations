@@ -116,12 +116,24 @@ def remove_module_forward_hook(
                 else:
                     m._forward_hooks: Dict[int, Callable] = OrderedDict()
 
+    def _remove_pre_hooks(m: torch.nn.Module, name: Optional[str] = None) -> None:
+        if hasattr(module, "_forward_pre_hooks"):
+            if m._forward_pre_hooks != OrderedDict():
+                if name is not None:
+                    dict_items = list(m._forward_pre_hooks.items())
+                    m._forward_pre_hooks = OrderedDict(
+                        [(i, fn) for i, fn in dict_items if fn.__name__ != name]
+                    )
+                else:
+                    m._forward_pre_hooks: Dict[int, Callable] = OrderedDict()
+
     def _remove_child_hooks(
         target_module: torch.nn.Module, hook_name: Optional[str] = None
     ) -> None:
         for name, child in target_module._modules.items():
             if child is not None:
                 _remove_hooks(child, hook_name)
+                _remove_pre_hooks(child, hook_name)
                 _remove_child_hooks(child, hook_name)
 
     # Remove hooks from target submodules
@@ -129,6 +141,7 @@ def remove_module_forward_hook(
 
     # Remove hooks from the target module
     _remove_hooks(module, hook_fn_name)
+    _remove_pre_hooks(module, hook_fn_name)
 
 
 def module_add_forward_hook(module, hook_fn, hook_type="forward", with_kwargs=False):
