@@ -49,6 +49,7 @@ class EPGExtensionScript(UIWrapper):
             with gr.Row():
                 start_step = gr.Slider(label="Start Step", minimum=0, maximum=300, value=5, step=1, elem_id="epg_start_step")
 
+
         params = [active, temperature, start_idx, end_idx, start_step]
         for p in params:
             p.do_not_save_to_config = True
@@ -85,15 +86,18 @@ class EPGExtensionScript(UIWrapper):
                 StableDiffusionProcessing.cached_uc = [None, None]
             self.og_func = None
             return
-        tau = getattr(p, "epg_tau", temperature)
+        temperature = getattr(p, "epg_tau", temperature)
         start_idx = getattr(p, "epg_start_idx", start_idx)
         end_idx = getattr(p, "epg_end_idx", end_idx)
         start_step = getattr(p, "epg_start_step", start_step)
 
         # Hooks
         def pl_forward_hook(module, input, kwargs, output):
-            output[:] *= tau
+            output[:] *= temperature 
             return output
+
+        def pl_to_q_forward_hook(module, input):
+            input[0][-input[0].shape[0]//2 :] *= module.epg_tau
 
         def epg_get_conds_with_caching_wrapper(*args, **kwargs):
             # TODO: workaround sdxl requires some negative prompt because of modules/sd_models_xl.py#32
@@ -136,10 +140,25 @@ class EPGExtensionScript(UIWrapper):
             self.og_func = p.get_conds_with_caching
         p.get_conds_with_caching = epg_get_conds_with_caching_wrapper
 
+        # patch to_q layers in selfattn modules
+        selfattn_modules = self.get_all_selfattn_modules()
+        module_start_idx = max(0, start_idx) 
+        module_end_idx = min(len(selfattn_modules), end_idx)
+        for module_idx, module in enumerate(selfattn_modules):
+                if module_start_idx < module_idx < module_end_idx: 
+                    module_hooks.modules_add_field(module, 'epg_tau', temperature)
+                    module_hooks.module_add_forward_hook(module, pl_to_q_forward_hook, hook_type='pre_forward', with_kwargs=False)
+                    logger.debug(f"EPG: Added pre-forward hook to {module.network_layer_name}")
+
+
     def get_crossattn_modules(self):
         crossattn_modules = module_hooks.get_modules( network_layer_name_filter='transformer_text_model_encoder_layers', module_name_filter='Linear')
         crossattn_modules = [x for x in crossattn_modules if x.network_layer_name.endswith('self_attn_q_proj')]
         return crossattn_modules
+
+    def get_all_selfattn_modules(self):
+        selfattn_modules = module_hooks.get_modules( network_layer_name_filter='attn1_to_q', module_name_filter='Linear')
+        return selfattn_modules
 
     def postprocess_batch(self, p, active, *args, **kwargs):
         pass
@@ -150,7 +169,10 @@ class EPGExtensionScript(UIWrapper):
         crossattn_modules = self.get_crossattn_modules()
         for module in crossattn_modules:
             module_hooks.remove_module_forward_hook(module, 'pl_forward_hook')
-        pass
+        selfattn_modules = self.get_all_selfattn_modules()
+        for module in selfattn_modules:
+            module_hooks.modules_remove_field(module, 'epg_tau')
+            module_hooks.remove_module_forward_hook(module, 'pl_to_q_forward_hook')
 
     def get_xyz_axis_options(self) -> dict:
         xyz_grid = [x for x in scripts.scripts_data if x.script_class.__module__ in ("xyz_grid.py", "scripts.xyz_grid")][0].module
